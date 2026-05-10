@@ -17,7 +17,7 @@ from tkinter import BOTH, DISABLED, END, LEFT, NORMAL, StringVar, Tk, ttk, messa
 import psutil
 import requests
 
-API_URL = os.getenv("DIAGNOSTIC_API_URL", "http://localhost:8000").rstrip("/")
+API_URL = os.getenv("DIAGNOSTIC_API_URL", "https://test-v7a8.onrender.com").rstrip("/")
 CONSENT_VERSION = "2026-05-10.local-demo"
 
 SCAN_STAGES = [
