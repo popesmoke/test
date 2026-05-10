@@ -27,7 +27,7 @@ call "%CLIENT%\.venv\Scripts\pip.exe" install -r "%CLIENT%\requirements.txt" pyi
 if errorlevel 1 goto :fail
 
 pushd "%CLIENT%"
-call ".venv\Scripts\pyinstaller.exe" --noconfirm --onefile --windowed --name SecureRemoteDiagnostic app.py
+call ".venv\Scripts\pyinstaller.exe" --clean --noconfirm --onefile --windowed --name SecureRemoteDiagnostic app.py
 if errorlevel 1 (
   popd
   goto :fail
