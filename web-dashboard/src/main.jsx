@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { Clipboard, KeyRound, Lock, RefreshCw, ShieldCheck } from "lucide-react";
 import "./styles.css";
 
-const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
+const API_URL = import.meta.env.VITE_API_URL || "https://test-v7a8.onrender.com";
 
 function authHeaders(token) {
   return { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
@@ -17,17 +17,21 @@ function Login({ onLogin }) {
   async function submit(event) {
     event.preventDefault();
     setError("");
-    const response = await fetch(`${API_URL}/auth/login`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password }),
-    });
-    if (!response.ok) {
-      setError("Login failed");
-      return;
+    try {
+      const response = await fetch(`${API_URL}/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      if (!response.ok) {
+        setError("Login failed. Check the email and password.");
+        return;
+      }
+      const data = await response.json();
+      onLogin(data.token);
+    } catch (error) {
+      setError(`Could not reach backend at ${API_URL}`);
     }
-    const data = await response.json();
-    onLogin(data.token);
   }
 
   return (
@@ -136,23 +140,44 @@ function Dashboard({ token }) {
   const [selectedId, setSelectedId] = useState(null);
   const [detail, setDetail] = useState(null);
   const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
 
   async function loadSessions() {
-    const response = await fetch(`${API_URL}/sessions`, { headers: authHeaders(token) });
-    const data = await response.json();
-    setSessions(data);
-    if (!selectedId && data[0]) {
-      setSelectedId(data[0].id);
+    try {
+      const response = await fetch(`${API_URL}/sessions`, { headers: authHeaders(token) });
+      if (response.status === 401) {
+        localStorage.removeItem("checkerToken");
+        window.location.reload();
+        return;
+      }
+      if (!response.ok) {
+        throw new Error(`Session load failed: ${response.status}`);
+      }
+      const data = await response.json();
+      setError("");
+      setSessions(data);
+      if (!selectedId && data[0]) {
+        setSelectedId(data[0].id);
+      }
+    } catch (caught) {
+      setError(`Could not load sessions from ${API_URL}. ${caught.message}`);
     }
   }
 
   async function createPin() {
-    const response = await fetch(`${API_URL}/sessions`, { method: "POST", headers: authHeaders(token) });
-    const data = await response.json();
-    setMessage(`Generated PIN ${data.pin}`);
-    setSelectedId(data.id);
-    await navigator.clipboard?.writeText(data.pin).catch(() => {});
-    await loadSessions();
+    try {
+      const response = await fetch(`${API_URL}/sessions`, { method: "POST", headers: authHeaders(token) });
+      if (!response.ok) {
+        throw new Error(`PIN creation failed: ${response.status}`);
+      }
+      const data = await response.json();
+      setMessage(`Generated PIN ${data.pin}`);
+      setSelectedId(data.id);
+      await navigator.clipboard?.writeText(data.pin).catch(() => {});
+      await loadSessions();
+    } catch (caught) {
+      setError(caught.message);
+    }
   }
 
   useEffect(() => {
@@ -164,8 +189,12 @@ function Dashboard({ token }) {
   useEffect(() => {
     if (!selectedId) return;
     fetch(`${API_URL}/sessions/${selectedId}`, { headers: authHeaders(token) })
-      .then((response) => response.json())
-      .then(setDetail);
+      .then((response) => {
+        if (!response.ok) throw new Error(`Result load failed: ${response.status}`);
+        return response.json();
+      })
+      .then(setDetail)
+      .catch((caught) => setError(caught.message));
   }, [selectedId, sessions]);
 
   const selectedPin = useMemo(() => sessions.find((session) => session.id === selectedId)?.pin, [sessions, selectedId]);
@@ -192,6 +221,7 @@ function Dashboard({ token }) {
         </div>
       </header>
       {message && <div className="notice">{message}</div>}
+      {error && <div className="error-banner">{error}</div>}
       <div className="layout">
         <SessionList sessions={sessions} selectedId={selectedId} onSelect={setSelectedId} />
         <Results detail={detail} />
@@ -209,4 +239,8 @@ function App() {
   return token ? <Dashboard token={token} /> : <Login onLogin={login} />;
 }
 
-createRoot(document.getElementById("root")).render(<App />);
+try {
+  createRoot(document.getElementById("root")).render(<App />);
+} catch (error) {
+  document.body.innerHTML = `<main class="login-shell"><section class="login-panel"><h1>Dashboard Error</h1><p class="error">${error.message}</p></section></main>`;
+}

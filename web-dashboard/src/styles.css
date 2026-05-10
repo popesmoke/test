@@ -137,6 +137,15 @@ input {
   margin-bottom: 14px;
 }
 
+.error-banner {
+  border: 1px solid #bb3d4b;
+  background: #2b0d13;
+  color: #ffc4cb;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 14px;
+}
+
 .layout {
   display: grid;
   grid-template-columns: 320px 1fr;
