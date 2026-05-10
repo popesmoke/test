@@ -1,0 +1,23 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.db
+
+# Node / Vite
+node_modules/
+dist/
+build/
+.vite/
+
+# Desktop builds
+*.spec
+desktop-client/dist/
+desktop-client/build/
+
+# Local OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/

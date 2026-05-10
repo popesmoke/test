@@ -1,0 +1,2 @@
+# The local prototype backend uses only the Python standard library.
+# Keep this file so the installer can run consistently.
