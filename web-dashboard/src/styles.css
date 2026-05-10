@@ -228,6 +228,159 @@ input {
   min-width: 0;
 }
 
+.scan-results {
+  display: grid;
+  grid-template-columns: 230px minmax(0, 1fr);
+  gap: 18px;
+  min-height: calc(100vh - 132px);
+}
+
+.results-nav {
+  border-right: 1px solid #121f2b;
+  padding: 4px 14px 18px 0;
+}
+
+.results-nav .back-link {
+  border: 0;
+  background: transparent;
+  color: #9eb7c0;
+  min-height: 28px;
+  padding: 0;
+  justify-content: flex-start;
+}
+
+.results-nav h2 {
+  margin-top: 18px;
+  font-size: 24px;
+}
+
+.results-nav p {
+  color: #8eabb6;
+  font-size: 13px;
+  margin: 8px 0 12px;
+}
+
+.download-button {
+  min-height: 34px;
+  font-size: 13px;
+  margin-bottom: 18px;
+}
+
+.results-nav nav {
+  display: grid;
+  gap: 8px;
+}
+
+.results-nav nav button {
+  justify-content: flex-start;
+  min-height: 42px;
+  border-color: transparent;
+  background: transparent;
+  color: #aebdc5;
+  font-weight: 600;
+}
+
+.results-nav nav button.active {
+  background: #073f31;
+  border-color: #0b674e;
+  color: #39e5b0;
+}
+
+.result-content {
+  min-width: 0;
+  display: grid;
+  gap: 18px;
+  align-content: start;
+}
+
+.result-card {
+  border: 1px solid #182635;
+  border-radius: 8px;
+  background: #111a25;
+  padding: 20px;
+  box-shadow: 0 16px 50px rgba(0, 0, 0, 0.18);
+}
+
+.card-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.card-title h3 {
+  font-size: 16px;
+  margin: 0;
+}
+
+.icon-box {
+  display: inline-grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 6px;
+  background: #073f31;
+  color: #28d89d;
+}
+
+.chevron {
+  margin-left: auto;
+  color: #9eb7c0;
+}
+
+.account-list {
+  display: grid;
+  gap: 10px;
+  border-radius: 8px;
+  background: #081018;
+  padding: 16px;
+}
+
+.account-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 58px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  background: #0b131c;
+}
+
+.avatar {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: #1f2f40;
+  color: #6df0c1;
+  font-weight: 800;
+}
+
+.account-row strong {
+  display: block;
+  color: #23cf9b;
+}
+
+.account-row span {
+  display: block;
+  color: #9eb7c0;
+  font-size: 13px;
+  margin-top: 4px;
+}
+
+.muted {
+  color: #9eb7c0;
+}
+
+.section-search {
+  width: 100%;
+  margin-bottom: 14px;
+  border-radius: 6px;
+  background: #080f16;
+}
+
 .result-header,
 .meta-grid {
   display: flex;
@@ -256,13 +409,13 @@ input {
 }
 
 .terminal {
-  min-height: 420px;
-  max-height: calc(100vh - 300px);
+  min-height: 80px;
+  max-height: 520px;
   overflow: auto;
   margin: 0;
   border-radius: 8px;
-  border: 1px solid #213545;
-  background: #03080c;
+  border: 1px solid #0e1822;
+  background: #070d13;
   color: #b8f7d2;
   padding: 16px;
   font: 13px/1.55 "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
@@ -279,9 +432,15 @@ input {
 
 @media (max-width: 860px) {
   .topbar,
-  .layout {
+  .layout,
+  .scan-results {
     display: grid;
     grid-template-columns: 1fr;
+  }
+
+  .results-nav {
+    border-right: 0;
+    padding-right: 0;
   }
 
   .actions {
