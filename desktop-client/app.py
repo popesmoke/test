@@ -38,6 +38,8 @@ COLLECTED_CATEGORIES = [
     "Windows Prefetch file metadata where available",
     "Windows Amcache metadata and BAM registry entries where available",
     "Recent Windows Event Log summaries and exported XML event-log file metadata where available",
+    "Windows Defender settings, exclusions, and recent protection-history summaries where available",
+    "Recent items, PowerShell/CMD history keyword hits, services state, USB event summaries, and shellbag clearing indicators where available",
     "Known Roblox executor indicator names in common app/log locations and traceback logs",
     "Running process name snapshot with PIDs and publishers omitted",
     "Hashed hostname and hardware UUID identifiers for session correlation",
@@ -68,6 +70,15 @@ EXECUTOR_NAMES = [
     "Cryptic",
     "Vega X",
     "Codex",
+    "Luna",
+    "Bootstrapper",
+    "Loader",
+    "FN Cleaner",
+    "Resource Hacker",
+    "AutoExec",
+    "Auto Execute",
+    "Fast Flag",
+    "FastFlags",
 ]
 
 
@@ -288,6 +299,198 @@ def xml_event_log_files() -> dict:
     return {"count": len(items[:80]), "items": items[:80]}
 
 
+def windows_defender_signals() -> dict:
+    if platform.system() != "Windows":
+        return {"available": False, "reason": "Windows Defender signals are Windows-only"}
+
+    preference_script = (
+        "try {"
+        "$p=Get-MpPreference;"
+        "[pscustomobject]@{"
+        "DisableRealtimeMonitoring=$p.DisableRealtimeMonitoring;"
+        "ExclusionPath=$p.ExclusionPath;"
+        "ExclusionProcess=$p.ExclusionProcess;"
+        "ExclusionExtension=$p.ExclusionExtension;"
+        "PUAProtection=$p.PUAProtection"
+        "} | ConvertTo-Json -Depth 4"
+        "} catch { $_.Exception.Message }"
+    )
+    history_script = (
+        "$start=(Get-Date).AddDays(-14);"
+        "Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Windows Defender/Operational'; StartTime=$start} "
+        "-ErrorAction SilentlyContinue | "
+        "Select-Object -First 80 TimeCreated,Id,LevelDisplayName,Message | ConvertTo-Json -Depth 3"
+    )
+    return {
+        "available": True,
+        "settings": run_command(["powershell", "-NoProfile", "-Command", preference_script])[:12000],
+        "protection_history": run_command(["powershell", "-NoProfile", "-Command", history_script])[:20000],
+    }
+
+
+def recent_items_metadata() -> dict:
+    folders = []
+    if platform.system() == "Windows":
+        appdata = os.getenv("APPDATA")
+        if appdata:
+            folders.append(Path(appdata) / "Microsoft" / "Windows" / "Recent")
+        userprofile = os.getenv("USERPROFILE")
+        if userprofile:
+            folders.extend([Path(userprofile) / "Downloads", Path(userprofile) / "Desktop"])
+    else:
+        folders.extend([Path.home() / "Downloads", Path.home() / "Desktop"])
+
+    items = []
+    for folder in folders:
+        if not folder.exists():
+            continue
+        try:
+            paths = [path for path in folder.iterdir() if path.is_file()]
+        except Exception:
+            continue
+        for path in paths:
+            try:
+                stat = path.stat()
+                name = path.name
+                matched = [term for term in EXECUTOR_NAMES if re.search(re.escape(term).replace(r"\ ", r"[\s._-]*"), name, re.IGNORECASE)]
+                items.append(
+                    {
+                        "name": name,
+                        "folder": str(folder),
+                        "modified": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+                        "size_bytes": stat.st_size,
+                        "matched_indicator_names": matched,
+                    }
+                )
+            except Exception:
+                continue
+    items.sort(key=lambda item: item["modified"], reverse=True)
+    return {"count": len(items[:120]), "items": items[:120]}
+
+
+def command_history_keyword_hits() -> dict:
+    if platform.system() != "Windows":
+        return {"available": False, "reason": "PowerShell/CMD history paths are Windows-focused in this prototype"}
+
+    candidates = []
+    appdata = os.getenv("APPDATA")
+    userprofile = os.getenv("USERPROFILE")
+    if appdata:
+        candidates.append(Path(appdata) / "Microsoft" / "Windows" / "PowerShell" / "PSReadLine" / "ConsoleHost_history.txt")
+    if userprofile:
+        candidates.append(Path(userprofile) / "AppData" / "Roaming" / "Microsoft" / "Windows" / "PowerShell" / "PSReadLine" / "ConsoleHost_history.txt")
+
+    keywords = EXECUTOR_NAMES + ["prefetch", "usn", "fsutil", "journal", "wevtutil", "clear-log", "Clear-EventLog", "Set-MpPreference", "Add-MpPreference"]
+    hits = []
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            lines = path.read_text(errors="replace").splitlines()[-500:]
+        except Exception:
+            continue
+        for index, line in enumerate(lines, start=max(1, len(lines) - 499)):
+            matched = [keyword for keyword in keywords if keyword.lower() in line.lower()]
+            if matched:
+                hits.append({"path": str(path), "line_number_from_tail": index, "matched": matched, "line": line[:500]})
+    return {"available": True, "hits": hits[:120], "note": "Only lines matching diagnostic keywords are included."}
+
+
+def windows_service_signals() -> dict:
+    if platform.system() != "Windows":
+        return {"available": False, "reason": "Windows services are Windows-only"}
+
+    services = ["SysMain", "EventLog", "WinDefend", "SecurityHealthService", "DiagTrack", "PcaSvc"]
+    script = (
+        "$names=@('SysMain','EventLog','WinDefend','SecurityHealthService','DiagTrack','PcaSvc');"
+        "$names | ForEach-Object {"
+        "$s=Get-Service -Name $_ -ErrorAction SilentlyContinue;"
+        "if($s){ [pscustomobject]@{Name=$s.Name; DisplayName=$s.DisplayName; Status=$s.Status; StartType=$s.StartType} }"
+        "} | ConvertTo-Json -Depth 3"
+    )
+    return {"available": True, "services_checked": services, "raw": run_command(["powershell", "-NoProfile", "-Command", script])[:8000]}
+
+
+def usb_event_summary() -> dict:
+    if platform.system() != "Windows":
+        return {"available": False, "reason": "USB event summary is Windows-only"}
+
+    script = (
+        "$start=(Get-Date).AddDays(-30);"
+        "Get-WinEvent -FilterHashtable @{LogName='System'; StartTime=$start; Id=@(20001,20003,2100,2101,2102,2105,2106)} "
+        "-ErrorAction SilentlyContinue | "
+        "Select-Object -First 80 TimeCreated,ProviderName,Id,Message | ConvertTo-Json -Depth 3"
+    )
+    return {
+        "available": True,
+        "window": "last 30 days",
+        "raw_sample": run_command(["powershell", "-NoProfile", "-Command", script])[:20000],
+    }
+
+
+def shellbag_clear_signal() -> dict:
+    if platform.system() != "Windows":
+        return {"available": False, "reason": "Shellbag signal is Windows-only"}
+
+    script = (
+        "$paths=@("
+        "'HKCU:\\Software\\Microsoft\\Windows\\Shell\\BagMRU',"
+        "'HKCU:\\Software\\Microsoft\\Windows\\ShellNoRoam\\BagMRU'"
+        ");"
+        "$paths | ForEach-Object {"
+        "$exists=Test-Path $_;"
+        "$count=0;"
+        "if($exists){ $count=(Get-ChildItem $_ -Recurse -ErrorAction SilentlyContinue | Measure-Object).Count }"
+        "[pscustomobject]@{Path=$_; Exists=$exists; KeyCount=$count}"
+        "} | ConvertTo-Json -Depth 3"
+    )
+    return {
+        "available": True,
+        "raw": run_command(["powershell", "-NoProfile", "-Command", script])[:8000],
+        "note": "Very low shellbag key counts can be a clearing signal but are not proof by themselves.",
+    }
+
+
+def deletion_and_log_clearing_signals() -> dict:
+    if platform.system() != "Windows":
+        return {"available": False, "reason": "Deletion/log clearing signals are Windows-only"}
+
+    script = (
+        "$start=(Get-Date).AddDays(-30);"
+        "Get-WinEvent -FilterHashtable @{LogName=@('System','Security','Application'); StartTime=$start} "
+        "-ErrorAction SilentlyContinue | "
+        "Where-Object { $_.Id -in @(104,1102,1100,1104,1105,3079) -or $_.Message -match 'journal|usn|deleted|cleared|truncate' } | "
+        "Select-Object -First 100 TimeCreated,LogName,ProviderName,Id,Message | ConvertTo-Json -Depth 3"
+    )
+    return {
+        "available": True,
+        "window": "last 30 days",
+        "raw_sample": run_command(["powershell", "-NoProfile", "-Command", script])[:20000],
+        "note": "These are signals for reviewer triage, not automatic proof.",
+    }
+
+
+def prefetch_health_signals(prefetch: dict) -> dict:
+    if platform.system() != "Windows" or not prefetch.get("available"):
+        return {"available": False, "reason": "Prefetch health signals require available Windows Prefetch metadata"}
+
+    items = prefetch.get("items", [])
+    if not items:
+        return {"available": True, "count": 0, "oldest_modified": None, "newest_modified": None}
+    modified = sorted(item["modified"] for item in items if item.get("modified"))
+    return {
+        "available": True,
+        "count_sampled": len(items),
+        "oldest_modified": modified[0] if modified else None,
+        "newest_modified": modified[-1] if modified else None,
+        "indicator_hits": [
+            item
+            for item in items
+            if any(re.search(re.escape(term).replace(r"\ ", r"[\s._-]*"), item["name"], re.IGNORECASE) for term in EXECUTOR_NAMES)
+        ][:80],
+    }
+
+
 def executor_indicator_scan() -> dict:
     roots = []
     if platform.system() == "Windows":
@@ -410,6 +613,7 @@ def roblox_diagnostics() -> dict:
 def build_report() -> dict:
     memory = psutil.virtual_memory()
     disk = psutil.disk_usage(str(Path.home().anchor or Path.home()))
+    prefetch = prefetch_metadata()
     processes = []
     for proc in psutil.process_iter(["pid", "name", "username", "status"]):
         try:
@@ -440,7 +644,7 @@ def build_report() -> dict:
             "boot_time": datetime.fromtimestamp(psutil.boot_time(), timezone.utc).isoformat(),
             "installed_applications": installed_apps_summary(),
             "trash": most_recent_trash_item(),
-            "prefetch": prefetch_metadata(),
+            "prefetch": prefetch,
         },
         "application_diagnostics": {"roblox": roblox_diagnostics()},
         "process_overview": {
@@ -450,8 +654,16 @@ def build_report() -> dict:
         "security_integrity_signals": {
             "amcache": amcache_metadata(),
             "bam": bam_registry_entries(),
+            "defender": windows_defender_signals(),
             "windows_event_logs": windows_event_log_summary(),
             "xml_event_log_files": xml_event_log_files(),
+            "recent_items": recent_items_metadata(),
+            "command_history_keyword_hits": command_history_keyword_hits(),
+            "services": windows_service_signals(),
+            "usb_events": usb_event_summary(),
+            "shellbag_clear_signal": shellbag_clear_signal(),
+            "deletion_and_log_clearing_signals": deletion_and_log_clearing_signals(),
+            "prefetch_health": prefetch_health_signals(prefetch),
             "roblox_executor_indicators": executor_indicator_scan(),
         },
     }
