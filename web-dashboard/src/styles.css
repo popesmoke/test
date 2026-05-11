@@ -224,6 +224,23 @@ input {
   padding: 6px 10px;
 }
 
+.header-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.score-badge {
+  border: 1px solid #ef233c;
+  border-radius: 999px;
+  background: #21070c;
+  color: #ffb8c1;
+  font-size: 13px;
+  font-weight: 800;
+  padding: 6px 10px;
+}
+
 .results {
   padding: 18px;
   min-width: 0;

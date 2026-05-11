@@ -96,7 +96,7 @@ function SessionList({ sessions, selectedId, onSelect }) {
           >
             <span className="pin">{session.pin}</span>
             <span className={`status ${session.status}`}>{session.status}</span>
-            <small>{new Date(session.created_at).toLocaleString()}</small>
+            <small>{formatGmtPlus3(session.created_at)}</small>
           </button>
         ))}
       </div>
@@ -116,7 +116,12 @@ function TerminalBlock({ children, query = "" }) {
 }
 
 function asJson(value) {
-  return JSON.stringify(value ?? {}, null, 2);
+  return JSON.stringify(value ?? {}, (_, nextValue) => {
+    if (typeof nextValue === "string" && isIsoDateString(nextValue)) {
+      return formatGmtPlus3(nextValue);
+    }
+    return nextValue;
+  }, 2);
 }
 
 function lines(items, mapper) {
@@ -142,9 +147,17 @@ function textHasSignal(value) {
   return typeof value === "string" && value.trim() && value.trim() !== "[]" && !value.toLowerCase().startsWith("unavailable");
 }
 
+function isIsoDateString(value) {
+  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(value) && !Number.isNaN(new Date(normalizeIsoDateString(value)).getTime());
+}
+
+function normalizeIsoDateString(value) {
+  return String(value).replace(/\.(\d{3})\d+/, ".$1");
+}
+
 function formatGmtPlus3(value) {
   if (!value) return "unknown";
-  const date = new Date(value);
+  const date = new Date(normalizeIsoDateString(value));
   if (Number.isNaN(date.getTime())) return String(value);
   const formatted = new Intl.DateTimeFormat("en-GB", {
     timeZone: "Etc/GMT-3",
@@ -156,7 +169,7 @@ function formatGmtPlus3(value) {
     second: "2-digit",
     hour12: false,
   }).format(date);
-  return `${formatted} GMT+3`;
+  return `${formatted.replace(",", "")} GMT+3`;
 }
 
 function buildSuspicionSummary(report) {
@@ -396,7 +409,8 @@ function RobloxSection({ report, query }) {
             const signals = log.signals ?? {};
             return [
               `Log Name: ${log.name}`,
-              `Date Modified: ${log.modified}`,
+              `Date Modified: ${formatGmtPlus3(log.modified)}`,
+              `Date Opened: ${formatGmtPlus3(log.accessed ?? log.modified)}`,
               `Usernames: ${(signals.usernames ?? []).join(", ") || "none"}`,
               `User IDs: ${(signals.user_ids ?? []).join(", ") || "none"}`,
               `Place IDs: ${(signals.place_ids ?? []).join(", ") || "none"}`,
@@ -423,7 +437,7 @@ function SystemSection({ report, query }) {
             `Hardware Model: ${system.hardware?.hardware_model ?? system.machine ?? "unknown"}`,
             `Architecture: ${system.machine ?? "unknown"}`,
             `CPU Cores: ${system.cpu_count_physical ?? "unknown"} physical / ${system.cpu_count_logical ?? "unknown"} logical`,
-            `Boot Time: ${perf.boot_time ?? "unknown"}`,
+            `Boot Time: ${formatGmtPlus3(perf.boot_time)}`,
             `Hashed Hostname: ${system.hostname_hash ?? "unknown"}`,
             `Hashed Hardware UUID: ${system.hardware?.uuid_hash ?? "unknown"}`,
           ].join("\n")}
@@ -579,7 +593,7 @@ function MemorySection({ report, query }) {
 }
 
 const resultSections = [
-  { id: "starter", label: "Starter", icon: Gauge, component: StarterSection },
+  { id: "starter", label: "Suspicion Score", icon: Gauge, component: StarterSection },
   { id: "roblox", label: "Roblox", icon: Gamepad2, component: RobloxSection },
   { id: "system", label: "System", icon: Cpu, component: SystemSection },
   { id: "bypass", label: "Bypass Detection", icon: Shield, component: BypassSection },
@@ -596,6 +610,7 @@ function Results({ detail }) {
   const [sectionId, setSectionId] = useState("starter");
   const [query, setQuery] = useState("");
   const report = detail?.report ?? {};
+  const summary = buildSuspicionSummary(report);
   const activeSection = resultSections.find((section) => section.id === sectionId) ?? resultSections[0];
   const ActiveComponent = activeSection.component;
 
@@ -608,7 +623,7 @@ function Results({ detail }) {
       <aside className="results-nav">
         <button className="back-link">← My Pins</button>
         <h2>Scan results</h2>
-        <p>Submitted {detail.completed_at ? new Date(detail.completed_at).toLocaleString() : "Waiting"}</p>
+        <p>Submitted {detail.completed_at ? formatGmtPlus3(detail.completed_at) : "Waiting"}</p>
         <button className="download-button" onClick={() => downloadReport(detail)}>
           <Download size={15} /> Download report
         </button>
@@ -633,7 +648,10 @@ function Results({ detail }) {
           <p className="eyebrow">Session PIN</p>
           <h2>{detail.pin}</h2>
         </div>
-        <span className={`status large ${detail.status}`}>{detail.status}</span>
+        <div className="header-badges">
+          {detail.status === "completed" && <span className="score-badge">Suspicion {summary.score}/100</span>}
+          <span className={`status large ${detail.status}`}>{detail.status}</span>
+        </div>
         </div>
         {detail.status !== "completed" ? (
           <div className="empty-state">Waiting for the desktop client to submit results.</div>
