@@ -17,13 +17,13 @@ import {
   RefreshCw,
   ScanSearch,
   Shield,
-  ShieldCheck,
   Terminal,
   Trash2,
 } from "lucide-react";
 import "./styles.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "https://test-v7a8.onrender.com";
+const BRAND_LOGO = "/assets/dangerouscity-logo.png";
 
 function authHeaders(token) {
   return { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
@@ -57,11 +57,13 @@ function Login({ onLogin }) {
   return (
     <main className="login-shell">
       <section className="login-panel">
+        <div className="login-logo-wrap">
+          <img src={BRAND_LOGO} alt="DangerousCity" className="login-logo" />
+        </div>
         <div className="brand-row">
-          <ShieldCheck size={30} />
           <div>
-            <h1>dngscanner</h1>
-            <p>Secure diagnostic review</p>
+            <h1>DangerousCity</h1>
+            <p>Reviewer dashboard</p>
           </div>
         </div>
         <form onSubmit={submit} className="form-stack">
@@ -86,7 +88,13 @@ function Login({ onLogin }) {
 function SessionList({ sessions, selectedId, onSelect }) {
   return (
     <aside className="sidebar">
-      <h2>PIN Sessions</h2>
+      <div className="sidebar-brand">
+        <img src={BRAND_LOGO} alt="" />
+        <div>
+          <h2>DangerousCity</h2>
+          <span>PIN Sessions</span>
+        </div>
+      </div>
       <div className="session-list">
         {sessions.map((session) => (
           <button
@@ -803,9 +811,12 @@ function Dashboard({ token }) {
   return (
     <main className="dashboard">
       <header className="topbar">
-        <div>
-          <p className="eyebrow">PIN-based diagnostic review</p>
-          <h1>dngscanner dashboard</h1>
+        <div className="topbar-brand">
+          <img src={BRAND_LOGO} alt="" />
+          <div>
+            <p className="eyebrow">DangerousCity Reborn V2</p>
+            <h1>Reviewer Dashboard</h1>
+          </div>
         </div>
         <div className="actions">
           {selectedPin && (
