@@ -1,12 +1,15 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
+  AlertTriangle,
   ChevronUp,
+  Clock3,
   Clipboard,
   Cpu,
   Database,
   Download,
   FileText,
+  Gauge,
   Gamepad2,
   KeyRound,
   Lock,
@@ -121,6 +124,166 @@ function lines(items, mapper) {
   return items.map(mapper).filter(Boolean).join("\n");
 }
 
+function countItems(value) {
+  if (Array.isArray(value)) return value.length;
+  return 0;
+}
+
+function parseMaybeJson(value) {
+  if (!value || typeof value !== "string") return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function textHasSignal(value) {
+  return typeof value === "string" && value.trim() && value.trim() !== "[]" && !value.toLowerCase().startsWith("unavailable");
+}
+
+function formatGmtPlus3(value) {
+  if (!value) return "unknown";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  const formatted = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Etc/GMT-3",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(date);
+  return `${formatted} GMT+3`;
+}
+
+function buildSuspicionSummary(report) {
+  const sec = report.security_integrity_signals ?? {};
+  const executor = sec.roblox_executor_indicators ?? {};
+  const fileHits = executor.file_hits ?? [];
+  const logHits = executor.traceback_or_log_hits ?? [];
+  const prefetchHits = sec.prefetch_health?.indicator_hits ?? [];
+  const recentMatched = (sec.recent_items?.items ?? []).filter((item) => item.matched_indicator_names?.length);
+  const defenderText = `${sec.defender?.settings ?? ""}\n${sec.defender?.protection_history ?? ""}`;
+  const clearingText = sec.deletion_and_log_clearing_signals?.raw_sample ?? "";
+  const userAssistText = sec.userassist?.raw_sample ?? "";
+  const bamText = sec.bam?.raw_sample ?? "";
+
+  const reasons = [];
+  let score = 0;
+
+  if (fileHits.length) {
+    const points = Math.min(35, fileHits.length * 7);
+    score += points;
+    reasons.push({
+      label: "Executor file indicators",
+      points,
+      detail: `${fileHits.length} file or folder path matched known executor names.`,
+    });
+  }
+  if (recentMatched.length) {
+    const points = Math.min(20, recentMatched.length * 6);
+    score += points;
+    reasons.push({
+      label: "Recent opened files",
+      points,
+      detail: `${recentMatched.length} recent item matched suspicious names.`,
+    });
+  }
+  if (prefetchHits.length) {
+    const points = Math.min(20, prefetchHits.length * 8);
+    score += points;
+    reasons.push({
+      label: "Prefetch execution traces",
+      points,
+      detail: `${prefetchHits.length} Prefetch artifact matched a checked executor name.`,
+    });
+  }
+  if (logHits.length) {
+    const points = Math.min(15, logHits.length * 5);
+    score += points;
+    reasons.push({
+      label: "Crash or log matches",
+      points,
+      detail: `${logHits.length} log file contained traceback or executor keywords.`,
+    });
+  }
+  if (textHasSignal(userAssistText) && /executor|loader|bootstrapper|inject|bypass|cleaner|roblox/i.test(userAssistText)) {
+    score += 8;
+    reasons.push({
+      label: "UserAssist activity",
+      points: 8,
+      detail: "UserAssist contained activity names matching reviewed keywords.",
+    });
+  }
+  if (textHasSignal(bamText) && /executor|loader|inject|roblox|solara|wave|xeno|synapse/i.test(bamText)) {
+    score += 7;
+    reasons.push({
+      label: "BAM activity",
+      points: 7,
+      detail: "BAM registry output included paths matching reviewed keywords.",
+    });
+  }
+  if (/exclusion|DisableRealtimeMonitoring|threat|detected|quarantine/i.test(defenderText)) {
+    score += 8;
+    reasons.push({
+      label: "Defender signal",
+      points: 8,
+      detail: "Windows Defender settings or history had security-relevant entries.",
+    });
+  }
+  if (textHasSignal(clearingText) && !/^\s*\[\s*\]\s*$/.test(clearingText)) {
+    score += 7;
+    reasons.push({
+      label: "Deletion or log clearing",
+      points: 7,
+      detail: "Event log or deletion-clearing signals were present for reviewer triage.",
+    });
+  }
+
+  if (!reasons.length) {
+    reasons.push({
+      label: "No matched indicators",
+      points: 0,
+      detail: "The dashboard did not find executor, recent-file, Prefetch, crash-log, Defender, or clearing indicators in this report.",
+    });
+  }
+
+  const openedFiles = [
+    ...recentMatched.map((item) => ({
+      name: item.name,
+      path: item.folder,
+      openedAt: item.accessed ?? item.modified,
+      matched: item.matched_indicator_names ?? [],
+      source: item.accessed ? "last accessed" : "recent item timestamp",
+    })),
+    ...fileHits.slice(0, 25).map((item) => ({
+      name: item.path?.split(/[\\/]/).pop() ?? item.path,
+      path: item.path,
+      openedAt: item.accessed ?? item.modified,
+      matched: item.matched_names ?? [],
+      source: item.accessed ? "last accessed" : "last modified",
+    })),
+  ]
+    .filter((item) => item.name || item.path)
+    .sort((a, b) => new Date(b.openedAt ?? 0) - new Date(a.openedAt ?? 0));
+
+  return {
+    score: Math.min(100, score),
+    reasons,
+    openedFiles,
+    counts: {
+      fileHits: countItems(fileHits),
+      recentMatched: countItems(recentMatched),
+      prefetchHits: countItems(prefetchHits),
+      logHits: countItems(logHits),
+      defenderEntries: countItems(parseMaybeJson(sec.defender?.protection_history)),
+    },
+  };
+}
+
 function Card({ icon: Icon, title, children }) {
   return (
     <article className="result-card">
@@ -131,6 +294,66 @@ function Card({ icon: Icon, title, children }) {
       </header>
       {children}
     </article>
+  );
+}
+
+function StarterSection({ report }) {
+  const summary = buildSuspicionSummary(report);
+  const band = summary.score >= 70 ? "High" : summary.score >= 35 ? "Medium" : "Low";
+
+  return (
+    <>
+      <Card icon={Gauge} title="Suspicion Score">
+        <div className="score-panel">
+          <div className="score-ring" aria-label={`Suspicion score ${summary.score} out of 100`}>
+            <strong>{summary.score}</strong>
+            <span>/100</span>
+          </div>
+          <div>
+            <p className="score-band">{band} suspicion</p>
+            <p className="muted">Score is based on matched file names, recent opened items, Prefetch hits, crash/log text, registry activity, Defender signals, and deletion or clearing signals.</p>
+          </div>
+        </div>
+        <div className="signal-grid">
+          <span>File hits <strong>{summary.counts.fileHits}</strong></span>
+          <span>Recent matches <strong>{summary.counts.recentMatched}</strong></span>
+          <span>Prefetch hits <strong>{summary.counts.prefetchHits}</strong></span>
+          <span>Log hits <strong>{summary.counts.logHits}</strong></span>
+        </div>
+      </Card>
+      <Card icon={AlertTriangle} title="Why It Scored This Way">
+        <div className="reason-list">
+          {summary.reasons.map((reason) => (
+            <div className="reason-row" key={reason.label}>
+              <span>{reason.points > 0 ? `+${reason.points}` : "0"}</span>
+              <div>
+                <strong>{reason.label}</strong>
+                <p>{reason.detail}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </Card>
+      <Card icon={Clock3} title="Files Opened in GMT+3">
+        {summary.openedFiles.length ? (
+          <div className="opened-file-list">
+            {summary.openedFiles.slice(0, 30).map((item, index) => (
+              <div className="opened-file-row" key={`${item.path}-${index}`}>
+                <div>
+                  <strong>{item.name}</strong>
+                  <p>{item.path}</p>
+                  <small>{(item.matched ?? []).join(", ") || "matched scan signal"}</small>
+                </div>
+                <time>{formatGmtPlus3(item.openedAt)}</time>
+                <span>{item.source}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="muted">No recent opened file indicators were found in this report.</p>
+        )}
+      </Card>
+    </>
   );
 }
 
@@ -356,6 +579,7 @@ function MemorySection({ report, query }) {
 }
 
 const resultSections = [
+  { id: "starter", label: "Starter", icon: Gauge, component: StarterSection },
   { id: "roblox", label: "Roblox", icon: Gamepad2, component: RobloxSection },
   { id: "system", label: "System", icon: Cpu, component: SystemSection },
   { id: "bypass", label: "Bypass Detection", icon: Shield, component: BypassSection },
@@ -369,7 +593,7 @@ const resultSections = [
 ];
 
 function Results({ detail }) {
-  const [sectionId, setSectionId] = useState("roblox");
+  const [sectionId, setSectionId] = useState("starter");
   const [query, setQuery] = useState("");
   const report = detail?.report ?? {};
   const activeSection = resultSections.find((section) => section.id === sectionId) ?? resultSections[0];

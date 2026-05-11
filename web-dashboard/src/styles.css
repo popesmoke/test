@@ -375,6 +375,120 @@ input {
   color: #9eb7c0;
 }
 
+.score-panel {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 18px;
+  align-items: center;
+}
+
+.score-ring {
+  display: grid;
+  place-items: center;
+  width: 124px;
+  height: 124px;
+  border: 2px solid #ef233c;
+  border-radius: 50%;
+  background: #21070c;
+  color: #ffffff;
+}
+
+.score-ring strong {
+  font-size: 44px;
+  line-height: 0.95;
+}
+
+.score-ring span {
+  color: #ffb8c1;
+  font-weight: 700;
+}
+
+.score-band {
+  margin-bottom: 8px;
+  color: #ff6b7a;
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.signal-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.signal-grid span {
+  display: grid;
+  gap: 6px;
+  min-height: 62px;
+  border: 1px solid #24171c;
+  border-radius: 7px;
+  background: #080708;
+  color: #9eb7c0;
+  padding: 10px;
+  font-size: 13px;
+}
+
+.signal-grid strong {
+  color: #f5f5f6;
+  font-size: 20px;
+}
+
+.reason-list,
+.opened-file-list {
+  display: grid;
+  gap: 10px;
+}
+
+.reason-row {
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  border-radius: 7px;
+  background: #080708;
+  padding: 12px;
+}
+
+.reason-row > span {
+  display: inline-grid;
+  place-items: center;
+  min-height: 34px;
+  border-radius: 6px;
+  background: #32090f;
+  color: #ff6b7a;
+  font-weight: 800;
+}
+
+.reason-row p,
+.opened-file-row p {
+  margin-top: 4px;
+  color: #9eb7c0;
+  overflow-wrap: anywhere;
+}
+
+.opened-file-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 190px 112px;
+  gap: 14px;
+  align-items: center;
+  border-radius: 7px;
+  background: #080708;
+  padding: 12px;
+}
+
+.opened-file-row time {
+  color: #ffd6db;
+  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+}
+
+.opened-file-row span,
+.opened-file-row small {
+  color: #9eb7c0;
+  font-size: 12px;
+}
+
 .section-search {
   width: 100%;
   margin-bottom: 14px;
@@ -446,5 +560,11 @@ input {
 
   .actions {
     justify-content: flex-start;
+  }
+
+  .score-panel,
+  .signal-grid,
+  .opened-file-row {
+    grid-template-columns: 1fr;
   }
 }

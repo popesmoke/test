@@ -142,6 +142,7 @@ def most_recent_trash_item() -> dict:
                     "name": path.name,
                     "location": str(path.parent),
                     "modified": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+                    "accessed": datetime.fromtimestamp(stat.st_atime, timezone.utc).isoformat(),
                     "size_bytes": stat.st_size,
                 }
                 if latest is None or item["modified"] > latest["modified"]:
@@ -172,6 +173,7 @@ def prefetch_metadata() -> dict:
                 {
                     "name": path.name,
                     "modified": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+                    "accessed": datetime.fromtimestamp(stat.st_atime, timezone.utc).isoformat(),
                     "size_bytes": stat.st_size,
                 }
             )
@@ -194,6 +196,7 @@ def amcache_metadata() -> dict:
             "available": True,
             "path": str(path),
             "modified": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+            "accessed": datetime.fromtimestamp(stat.st_atime, timezone.utc).isoformat(),
             "size_bytes": stat.st_size,
             "note": "Raw hive parsing is not performed by this prototype.",
         }
@@ -310,6 +313,7 @@ def xml_event_log_files() -> dict:
                         "name": path.name,
                         "path": str(path),
                         "modified": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+                        "accessed": datetime.fromtimestamp(stat.st_atime, timezone.utc).isoformat(),
                         "size_bytes": stat.st_size,
                     }
                 )
@@ -378,6 +382,7 @@ def recent_items_metadata() -> dict:
                         "name": name,
                         "folder": str(folder),
                         "modified": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+                        "accessed": datetime.fromtimestamp(stat.st_atime, timezone.utc).isoformat(),
                         "size_bytes": stat.st_size,
                         "matched_indicator_names": matched,
                     }
@@ -547,6 +552,7 @@ def executor_indicator_scan() -> dict:
                                 "matched_names": matched,
                                 "path": str(path),
                                 "modified": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+                                "accessed": datetime.fromtimestamp(stat.st_atime, timezone.utc).isoformat(),
                                 "is_file": path.is_file(),
                                 "size_bytes": stat.st_size if path.is_file() else None,
                             }
@@ -615,11 +621,13 @@ def roblox_diagnostics() -> dict:
         if folder.exists():
             for path in sorted(folder.glob("*.log"), key=lambda p: p.stat().st_mtime, reverse=True)[:5]:
                 try:
+                    stat = path.stat()
                     text = path.read_text(errors="replace")
                     logs.append(
                         {
                             "name": path.name,
-                            "modified": datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat(),
+                            "modified": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+                            "accessed": datetime.fromtimestamp(stat.st_atime, timezone.utc).isoformat(),
                             "signals": extract_roblox_signals(text),
                             "tail": text[-4000:],
                         }
