@@ -10,9 +10,10 @@ import subprocess
 import sys
 import threading
 import time
+import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
-from tkinter import BOTH, StringVar, Tk, ttk, messagebox
+from tkinter import BOTH, BooleanVar, PhotoImage, StringVar, Tk, ttk, messagebox
 
 import psutil
 import requests
@@ -21,21 +22,26 @@ API_URL = "https://test-v7a8.onrender.com"
 CONSENT_VERSION = "2026-05-11.dngscanner"
 
 SCAN_STAGES = [
-    "System Information Scan",
-    "Application Environment Check",
-    "Roblox Diagnostic Scan",
-    "Approved Log Collection",
-    "Process Overview Snapshot",
-    "Package and Upload",
+    "Preparing Scan",
+    "Checking Device",
+    "Reviewing App Data",
+    "Collecting Diagnostics",
+    "Finalizing Report",
+    "Uploading Results",
 ]
 
 COLLECTED_CATEGORIES = [
-    "System and hardware summary with hashed device identifiers",
-    "Performance summary, process snapshot, and installed application summary",
-    "Roblox diagnostic logs if present",
-    "Windows diagnostic artifact metadata such as Prefetch, Amcache, BAM, UserAssist, Defender, and Event Log summaries",
-    "Recent items, command history keyword matches, services state, USB event summaries, and deletion/clearing signals",
+    "Device and app diagnostic metadata needed for review.",
+    "Recent activity and security signals relevant to the support case.",
+    "No passwords, messages, or personal file contents are intentionally collected.",
 ]
+
+DISCORD_URL = "https://discord.gg/dangerouscityroblox"
+
+
+def resource_path(relative_path: str) -> Path:
+    base_path = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    return base_path / relative_path
 
 EXECUTOR_NAMES = [
     "Volt",
@@ -749,16 +755,35 @@ def build_report() -> dict:
 class DiagnosticApp:
     def __init__(self) -> None:
         self.root = Tk()
-        self.root.title("dngscanner")
-        self.root.geometry("760x560")
+        self.root.title("DangerousCity Scanner")
+        self.root.geometry("760x620")
         self.root.configure(bg="#08080a")
+        self.logo_image = self.load_logo()
+        if self.logo_image:
+            try:
+                self.root.iconphoto(True, self.logo_image)
+            except Exception:
+                pass
         self.pin = StringVar()
+        self.consent = BooleanVar(value=False)
         self.status = StringVar(value="Ready")
         self.progress_percent = StringVar(value="0%")
         self.stage_labels: dict[str, ttk.Label] = {}
         self.progress = ttk.Progressbar(self.root, maximum=len(SCAN_STAGES), mode="determinate")
         self.configure_style()
         self.build_welcome()
+
+    def load_logo(self) -> PhotoImage | None:
+        path = resource_path("assets/scanner-icon.png")
+        if not path.exists():
+            return None
+        try:
+            image = PhotoImage(file=str(path))
+            max_size = 210
+            factor = max(image.width() // max_size, image.height() // max_size, 1)
+            return image.subsample(factor, factor)
+        except Exception:
+            return None
 
     def configure_style(self) -> None:
         style = ttk.Style()
@@ -768,11 +793,15 @@ class DiagnosticApp:
         style.configure("Muted.TLabel", background="#08080a", foreground="#b7b7bd")
         style.configure("Title.TLabel", background="#08080a", foreground="#ffffff", font=("Segoe UI", 24, "bold"))
         style.configure("Header.TLabel", background="#08080a", foreground="#ffffff", font=("Segoe UI", 18, "bold"))
+        style.configure("CenterTitle.TLabel", background="#08080a", foreground="#ffffff", font=("Segoe UI", 28, "bold"))
+        style.configure("CenterMuted.TLabel", background="#08080a", foreground="#b7b7bd", font=("Segoe UI", 10))
         style.configure("Red.TButton", background="#b11220", foreground="#ffffff", bordercolor="#ef233c", focusthickness=0, padding=(14, 8))
         style.map("Red.TButton", background=[("active", "#ef233c")])
         style.configure("TButton", background="#17171d", foreground="#ffffff", bordercolor="#3a3a45", padding=(12, 7))
         style.map("TButton", background=[("active", "#23232b")])
         style.configure("TEntry", fieldbackground="#111116", foreground="#ffffff", bordercolor="#3a3a45")
+        style.configure("TCheckbutton", background="#08080a", foreground="#f4f4f5", font=("Segoe UI", 10))
+        style.map("TCheckbutton", background=[("active", "#08080a")], foreground=[("active", "#ffffff")])
         style.configure("red.Horizontal.TProgressbar", troughcolor="#111116", background="#ef233c", bordercolor="#3a3a45", lightcolor="#ef233c", darkcolor="#7f0b16")
 
     def clear(self) -> None:
@@ -783,24 +812,31 @@ class DiagnosticApp:
         self.clear()
         frame = ttk.Frame(self.root, padding=32)
         frame.pack(fill=BOTH, expand=True)
-        ttk.Label(frame, text="dngscanner", style="Title.TLabel").pack(anchor="w")
+        hero = ttk.Frame(frame)
+        hero.pack(fill=BOTH, expand=True)
+        if self.logo_image:
+            ttk.Label(hero, image=self.logo_image).pack(anchor="center", pady=(8, 16))
+        ttk.Label(hero, text="DangerousCity Scanner", style="CenterTitle.TLabel").pack(anchor="center")
         ttk.Label(
-            frame,
+            hero,
             text=(
-                "This tool runs a one-time diagnostic scan only after you enter a support PIN "
-                "and start the scan. It collects the categories below and uploads them to the reviewer session."
+                "Run a one-time diagnostic review with a session PIN. Results are uploaded to the reviewer dashboard."
             ),
-            style="Muted.TLabel",
-            wraplength=680,
-        ).pack(anchor="w", pady=(16, 12))
-        for item in COLLECTED_CATEGORIES:
-            ttk.Label(frame, text=f"- {item}", wraplength=680).pack(anchor="w")
-        ttk.Button(frame, text="Get Started", style="Red.TButton", command=self.build_pin_screen).pack(anchor="w", pady=(24, 8))
+            style="CenterMuted.TLabel",
+            wraplength=560,
+            justify="center",
+        ).pack(anchor="center", pady=(12, 20))
+        actions = ttk.Frame(hero)
+        actions.pack(anchor="center")
+        ttk.Button(actions, text="Get Started", style="Red.TButton", command=self.build_pin_screen).pack(side="left", padx=(0, 10))
+        ttk.Button(actions, text="Join Discord", command=lambda: webbrowser.open(DISCORD_URL)).pack(side="left")
 
     def build_pin_screen(self) -> None:
         self.clear()
         frame = ttk.Frame(self.root, padding=32)
         frame.pack(fill=BOTH, expand=True)
+        if self.logo_image:
+            ttk.Label(frame, image=self.logo_image).pack(anchor="w", pady=(0, 14))
         ttk.Label(frame, text="Enter Session PIN", style="Header.TLabel").pack(anchor="w")
         ttk.Label(frame, text="Enter the PIN provided by your reviewer.", style="Muted.TLabel").pack(anchor="w", pady=(8, 16))
         entry = ttk.Entry(frame, textvariable=self.pin, font=("Consolas", 18), width=12)
@@ -808,8 +844,15 @@ class DiagnosticApp:
         entry.focus()
         ttk.Label(
             frame,
-            text="By continuing, you confirm you understand the disclosed scan scope and want to submit the results.",
+            text="Before scanning, please review and agree to the diagnostic collection summary:",
             wraplength=680,
+        ).pack(anchor="w", pady=(18, 12))
+        for item in COLLECTED_CATEGORIES:
+            ttk.Label(frame, text=f"- {item}", style="Muted.TLabel", wraplength=680).pack(anchor="w")
+        ttk.Checkbutton(
+            frame,
+            text="I agree to run this diagnostic scan and submit the results for review.",
+            variable=self.consent,
         ).pack(anchor="w", pady=(18, 12))
         ttk.Button(frame, text="Start Scan", style="Red.TButton", command=self.start_scan).pack(anchor="w")
         ttk.Button(frame, text="Back", command=self.build_welcome).pack(anchor="w", pady=(8, 0))
@@ -818,7 +861,9 @@ class DiagnosticApp:
         self.clear()
         frame = ttk.Frame(self.root, padding=32)
         frame.pack(fill=BOTH, expand=True)
-        ttk.Label(frame, text="dngscanner scan", style="Header.TLabel").pack(anchor="w")
+        if self.logo_image:
+            ttk.Label(frame, image=self.logo_image).pack(anchor="w", pady=(0, 14))
+        ttk.Label(frame, text="DangerousCity scan", style="Header.TLabel").pack(anchor="w")
         ttk.Label(frame, textvariable=self.status).pack(anchor="w", pady=(8, 16))
         self.progress = ttk.Progressbar(frame, maximum=len(SCAN_STAGES), mode="determinate", length=620, style="red.Horizontal.TProgressbar")
         self.progress.pack(anchor="w", pady=(0, 18))
@@ -842,6 +887,9 @@ class DiagnosticApp:
     def start_scan(self) -> None:
         if not self.pin.get().strip():
             messagebox.showerror("PIN required", "Enter the session PIN provided by your checker.")
+            return
+        if not self.consent.get():
+            messagebox.showerror("Agreement required", "Please agree to run the diagnostic scan before continuing.")
             return
         self.build_progress_screen()
         thread = threading.Thread(target=self.scan_and_upload, daemon=True)

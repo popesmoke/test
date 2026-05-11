@@ -27,7 +27,17 @@ call "%CLIENT%\.venv\Scripts\pip.exe" install -r "%CLIENT%\requirements.txt" pyi
 if errorlevel 1 goto :fail
 
 pushd "%CLIENT%"
-call ".venv\Scripts\pyinstaller.exe" --clean --noconfirm --onefile --windowed --name dngscanner app.py
+set "ICON_ARGS="
+if exist "%CLIENT%\assets\scanner-icon.ico" (
+  set "ICON_ARGS=--icon assets\scanner-icon.ico"
+)
+
+set "DATA_ARGS="
+if exist "%CLIENT%\assets\scanner-icon.png" (
+  set "DATA_ARGS=--add-data assets;assets"
+)
+
+call ".venv\Scripts\pyinstaller.exe" --clean --noconfirm --onefile --windowed --name dngscanner %ICON_ARGS% %DATA_ARGS% app.py
 if errorlevel 1 (
   popd
   goto :fail
