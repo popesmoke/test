@@ -71,8 +71,9 @@ def hashed_identifier(value: str) -> str:
 
 def run_command(command: list[str]) -> str:
     try:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=8, check=False)
-        return (result.stdout or result.stderr).strip()[:8000]
+        result = subprocess.run(command, capture_output=True, timeout=8, check=False)
+        output = result.stdout or result.stderr or b""
+        return output.decode("utf-8", errors="replace").strip()[:8000]
     except Exception as exc:
         return f"Unavailable: {exc}"
 
@@ -108,7 +109,7 @@ def installed_apps_summary() -> dict:
             "-NoProfile",
             "-Command",
             "Get-ItemProperty HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\* | "
-            "Select-Object -First 80 DisplayName,DisplayVersion,Publisher | ConvertTo-Json",
+            "Select-Object -First 80 DisplayName,DisplayVersion,Publisher,InstallDate | ConvertTo-Json",
         ])
         return {"source": "Windows uninstall registry", "sample": output}
     if system == "Darwin":
@@ -120,14 +121,43 @@ def installed_apps_summary() -> dict:
     return {"source": "unsupported", "sample": []}
 
 
-def most_recent_trash_item() -> dict:
+def windows_filetime_to_iso(value: int) -> str | None:
+    if value <= 0:
+        return None
+    timestamp = (value - 116444736000000000) / 10_000_000
+    try:
+        return datetime.fromtimestamp(timestamp, timezone.utc).isoformat()
+    except (OSError, ValueError, OverflowError):
+        return None
+
+
+def recycle_info_record(path: Path) -> dict | None:
+    try:
+        data = path.read_bytes()
+    except Exception:
+        return None
+    if len(data) < 28:
+        return None
+    original_size = int.from_bytes(data[8:16], "little", signed=False)
+    deleted_at = windows_filetime_to_iso(int.from_bytes(data[16:24], "little", signed=False))
+    raw_path = data[24:].decode("utf-16-le", errors="replace").split("\x00", 1)[0]
+    return {
+        "recycle_metadata_file": path.name,
+        "original_path": raw_path,
+        "deleted_at": deleted_at,
+        "original_size_bytes": original_size,
+        "metadata_modified": datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat(),
+    }
+
+
+def recycle_bin_metadata() -> dict:
     candidates: list[Path] = []
     if platform.system() == "Windows":
         candidates.extend(Path(drive) / "$Recycle.Bin" for drive in ["C:\\"])
     elif platform.system() == "Darwin":
         candidates.append(Path.home() / ".Trash")
 
-    latest = None
+    items = []
     for folder in candidates:
         if not folder.exists():
             continue
@@ -138,6 +168,7 @@ def most_recent_trash_item() -> dict:
         for path in paths:
             try:
                 stat = path.stat()
+                info_record = recycle_info_record(path) if path.name.startswith("$I") else None
                 item = {
                     "name": path.name,
                     "location": str(path.parent),
@@ -145,11 +176,18 @@ def most_recent_trash_item() -> dict:
                     "accessed": datetime.fromtimestamp(stat.st_atime, timezone.utc).isoformat(),
                     "size_bytes": stat.st_size,
                 }
-                if latest is None or item["modified"] > latest["modified"]:
-                    latest = item
+                if info_record:
+                    item.update(info_record)
+                items.append(item)
             except Exception:
                 continue
-    return latest or {"status": "No accessible Trash/Recycle Bin item found"}
+    items.sort(key=lambda item: item.get("deleted_at") or item.get("modified") or "", reverse=True)
+    return {
+        "status": "Recycle Bin metadata collected" if items else "No accessible Trash/Recycle Bin item found",
+        "count": len(items[:120]),
+        "latest": items[0] if items else None,
+        "items": items[:120],
+    }
 
 
 def prefetch_metadata() -> dict:
@@ -480,18 +518,26 @@ def deletion_and_log_clearing_signals() -> dict:
     if platform.system() != "Windows":
         return {"available": False, "reason": "Deletion/log clearing signals are Windows-only"}
 
-    script = (
+    event_script = (
         "$start=(Get-Date).AddDays(-30);"
-        "Get-WinEvent -FilterHashtable @{LogName=@('System','Security','Application'); StartTime=$start} "
-        "-ErrorAction SilentlyContinue | "
-        "Where-Object { $_.Id -in @(104,1102,1100,1104,1105,3079) -or $_.Message -match 'journal|usn|deleted|cleared|truncate' } | "
+        "$events=@();"
+        "$events += Get-WinEvent -FilterHashtable @{LogName=@('System','Security','Application'); StartTime=$start} -ErrorAction SilentlyContinue | "
+        "Where-Object { $_.Id -in @(104,1102,1100,1104,1105,3079,4660,4663) -or $_.Message -match 'journal|usn|deleted|cleared|truncate|recycle' };"
+        "$events += Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Sysmon/Operational'; StartTime=$start; Id=@(23,26)} -ErrorAction SilentlyContinue;"
+        "$events | Sort-Object TimeCreated -Descending | "
         "Select-Object -First 100 TimeCreated,LogName,ProviderName,Id,Message | ConvertTo-Json -Depth 3"
+    )
+    usn_script = (
+        "$vol=$env:SystemDrive;"
+        "try { fsutil usn readjournal $vol csv 2>$null | Select-String -Pattern 'FILE_DELETE|CLOSE' | Select-Object -First 80 | ForEach-Object { $_.Line } } "
+        "catch { $_.Exception.Message }"
     )
     return {
         "available": True,
         "window": "last 30 days",
-        "raw_sample": run_command(["powershell", "-NoProfile", "-Command", script])[:20000],
-        "note": "These are signals for reviewer triage, not automatic proof.",
+        "raw_sample": run_command(["powershell", "-NoProfile", "-Command", event_script])[:20000],
+        "usn_delete_sample": run_command(["powershell", "-NoProfile", "-Command", usn_script])[:20000],
+        "note": "These are deletion and clearing signals for reviewer triage. Permanently deleted files only appear when Windows auditing, Sysmon, or USN journal evidence is available.",
     }
 
 
@@ -673,7 +719,7 @@ def build_report() -> dict:
             "disk_free_gb": round(disk.free / (1024**3), 2),
             "boot_time": datetime.fromtimestamp(psutil.boot_time(), timezone.utc).isoformat(),
             "installed_applications": installed_apps_summary(),
-            "trash": most_recent_trash_item(),
+            "trash": recycle_bin_metadata(),
             "prefetch": prefetch,
         },
         "application_diagnostics": {"roblox": roblox_diagnostics()},

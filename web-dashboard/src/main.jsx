@@ -524,6 +524,7 @@ function BypassSection({ report, query }) {
 
 function RegistrySection({ report, query }) {
   const sec = report.security_integrity_signals ?? {};
+  const perf = report.performance_environment ?? {};
   return (
     <>
       <Card icon={Database} title="Registry Activity">
@@ -541,7 +542,16 @@ function RegistrySection({ report, query }) {
         </TerminalBlock>
       </Card>
       <Card icon={FileText} title="Execution Artifacts">
-        <TerminalBlock query={query}>{asJson(report.performance_environment?.installed_applications)}</TerminalBlock>
+        <TerminalBlock query={query}>
+          {[
+            `Report Date: ${formatGmtPlus3(report.generated_at)}`,
+            `Amcache Modified: ${formatGmtPlus3(sec.amcache?.modified)}`,
+            `Prefetch Newest Modified: ${formatGmtPlus3(sec.prefetch_health?.newest_modified)}`,
+            "",
+            "Installed Applications:",
+            asJson(perf.installed_applications),
+          ].join("\n")}
+        </TerminalBlock>
       </Card>
     </>
   );
@@ -555,6 +565,7 @@ function FileAnalysisSection({ report, query }) {
         <TerminalBlock query={query}>
           {[
             "Keyword Scan",
+            `Report Date: ${formatGmtPlus3(report.generated_at)}`,
             "============================================================",
             asJson(sec.roblox_executor_indicators?.file_hits),
             "",
@@ -598,18 +609,24 @@ function CrashLogsSection({ report, query }) {
 
 function DeletionsSection({ report, query }) {
   const sec = report.security_integrity_signals ?? {};
+  const trash = report.performance_environment?.trash ?? {};
   return (
     <Card icon={Trash2} title="File Deletions">
       <TerminalBlock query={query}>
         {[
-          "Roblox Log Summary:",
-          asJson(report.application_diagnostics?.roblox),
+          `Report Date: ${formatGmtPlus3(report.generated_at)}`,
+          "",
+          "Recently Deleted Files From Recycle Bin Metadata:",
+          asJson(trash.items ?? trash),
           "",
           "Deleted / Clearing Signals:",
           asJson(sec.deletion_and_log_clearing_signals),
           "",
-          "Recycle Bin:",
-          asJson(report.performance_environment?.trash),
+          "USN Delete Sample:",
+          sec.deletion_and_log_clearing_signals?.usn_delete_sample || "No USN delete sample available.",
+          "",
+          "Roblox Log Summary:",
+          asJson(report.application_diagnostics?.roblox),
         ].join("\n")}
       </TerminalBlock>
     </Card>
