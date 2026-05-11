@@ -12,13 +12,13 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from tkinter import BOTH, DISABLED, END, LEFT, NORMAL, StringVar, Tk, ttk, messagebox
+from tkinter import BOTH, StringVar, Tk, ttk, messagebox
 
 import psutil
 import requests
 
 API_URL = "https://test-v7a8.onrender.com"
-CONSENT_VERSION = "2026-05-10.local-demo"
+CONSENT_VERSION = "2026-05-11.dngscanner"
 
 SCAN_STAGES = [
     "System Information Scan",
@@ -30,19 +30,11 @@ SCAN_STAGES = [
 ]
 
 COLLECTED_CATEGORIES = [
-    "Operating system and hardware summary",
-    "CPU, memory, disk, and boot-time resource summary",
-    "Installed application summary where available",
-    "Roblox installation and approved diagnostic logs if present, including user IDs, usernames, place IDs, and LoadClientSettings lines found in logs",
-    "Most recent item in Trash/Recycle Bin where available",
-    "Windows Prefetch file metadata where available",
-    "Windows Amcache metadata and BAM registry entries where available",
-    "Recent Windows Event Log summaries and exported XML event-log file metadata where available",
-    "Windows Defender settings, exclusions, and recent protection-history summaries where available",
-    "Recent items, PowerShell/CMD history keyword hits, services state, USB event summaries, and shellbag clearing indicators where available",
-    "Known Roblox executor indicator names in common app/log locations and traceback logs",
-    "Running process name snapshot with PIDs and publishers omitted",
-    "Hashed hostname and hardware UUID identifiers for session correlation",
+    "System and hardware summary with hashed device identifiers",
+    "Performance summary, process snapshot, and installed application summary",
+    "Roblox diagnostic logs if present",
+    "Windows diagnostic artifact metadata such as Prefetch, Amcache, BAM, UserAssist, Defender, and Event Log summaries",
+    "Recent items, command history keyword matches, services state, USB event summaries, and deletion/clearing signals",
 ]
 
 EXECUTOR_NAMES = [
@@ -70,15 +62,6 @@ EXECUTOR_NAMES = [
     "Cryptic",
     "Vega X",
     "Codex",
-    "Luna",
-    "Bootstrapper",
-    "Loader",
-    "FN Cleaner",
-    "Resource Hacker",
-    "AutoExec",
-    "Auto Execute",
-    "Fast Flag",
-    "FastFlags",
 ]
 
 
@@ -237,6 +220,43 @@ def bam_registry_entries() -> dict:
         "source": "HKLM SYSTEM CurrentControlSet Services bam State UserSettings",
         "raw_sample": output[:12000],
         "note": "BAM entries are reported as a bounded raw PowerShell JSON sample.",
+    }
+
+
+def userassist_registry_entries() -> dict:
+    if platform.system() != "Windows":
+        return {"available": False, "reason": "UserAssist is a Windows registry artifact"}
+
+    script = (
+        "function Decode-Rot13($s){"
+        "-join ($s.ToCharArray() | ForEach-Object {"
+        "$c=[int][char]$_;"
+        "if($c -ge 65 -and $c -le 90){[char]((($c-65+13)%26)+65)}"
+        "elseif($c -ge 97 -and $c -le 122){[char]((($c-97+13)%26)+97)}"
+        "else{[char]$c}"
+        "})"
+        "};"
+        "$base='HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\UserAssist';"
+        "$out=@();"
+        "if(Test-Path $base){"
+        "Get-ChildItem $base -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -eq 'Count' } | ForEach-Object {"
+        "$props=Get-ItemProperty $_.PSPath;"
+        "$props.PSObject.Properties | Where-Object { $_.Name -notlike 'PS*' } | ForEach-Object {"
+        "$decoded=Decode-Rot13 $_.Name;"
+        "$matches=@();"
+        "$keywords=@('Roblox','executor','loader','bootstrapper','script','inject','bypass','cleaner');"
+        "foreach($k in $keywords){ if($decoded -match [regex]::Escape($k)){ $matches += $k } }"
+        "$out += [pscustomobject]@{DecodedPath=$decoded; MatchedKeywords=$matches}"
+        "}"
+        "}"
+        "};"
+        "$out | Select-Object -First 120 | ConvertTo-Json -Depth 4"
+    )
+    return {
+        "available": True,
+        "source": "HKCU Software Microsoft Windows CurrentVersion Explorer UserAssist",
+        "raw_sample": run_command(["powershell", "-NoProfile", "-Command", script])[:16000],
+        "note": "UserAssist entries are collected as bounded metadata for reviewer triage.",
     }
 
 
@@ -654,6 +674,7 @@ def build_report() -> dict:
         "security_integrity_signals": {
             "amcache": amcache_metadata(),
             "bam": bam_registry_entries(),
+            "userassist": userassist_registry_entries(),
             "defender": windows_defender_signals(),
             "windows_event_logs": windows_event_log_summary(),
             "xml_event_log_files": xml_event_log_files(),
@@ -672,13 +693,31 @@ def build_report() -> dict:
 class DiagnosticApp:
     def __init__(self) -> None:
         self.root = Tk()
-        self.root.title("Secure Remote Diagnostic")
+        self.root.title("dngscanner")
         self.root.geometry("760x560")
+        self.root.configure(bg="#08080a")
         self.pin = StringVar()
         self.status = StringVar(value="Ready")
+        self.progress_percent = StringVar(value="0%")
         self.stage_labels: dict[str, ttk.Label] = {}
         self.progress = ttk.Progressbar(self.root, maximum=len(SCAN_STAGES), mode="determinate")
+        self.configure_style()
         self.build_welcome()
+
+    def configure_style(self) -> None:
+        style = ttk.Style()
+        style.theme_use("clam")
+        style.configure("TFrame", background="#08080a")
+        style.configure("TLabel", background="#08080a", foreground="#f4f4f5", font=("Segoe UI", 10))
+        style.configure("Muted.TLabel", background="#08080a", foreground="#b7b7bd")
+        style.configure("Title.TLabel", background="#08080a", foreground="#ffffff", font=("Segoe UI", 24, "bold"))
+        style.configure("Header.TLabel", background="#08080a", foreground="#ffffff", font=("Segoe UI", 18, "bold"))
+        style.configure("Red.TButton", background="#b11220", foreground="#ffffff", bordercolor="#ef233c", focusthickness=0, padding=(14, 8))
+        style.map("Red.TButton", background=[("active", "#ef233c")])
+        style.configure("TButton", background="#17171d", foreground="#ffffff", bordercolor="#3a3a45", padding=(12, 7))
+        style.map("TButton", background=[("active", "#23232b")])
+        style.configure("TEntry", fieldbackground="#111116", foreground="#ffffff", bordercolor="#3a3a45")
+        style.configure("red.Horizontal.TProgressbar", troughcolor="#111116", background="#ef233c", bordercolor="#3a3a45", lightcolor="#ef233c", darkcolor="#7f0b16")
 
     def clear(self) -> None:
         for child in self.root.winfo_children():
@@ -688,26 +727,26 @@ class DiagnosticApp:
         self.clear()
         frame = ttk.Frame(self.root, padding=32)
         frame.pack(fill=BOTH, expand=True)
-        ttk.Label(frame, text="Secure Remote Diagnostic", font=("Segoe UI", 22, "bold")).pack(anchor="w")
+        ttk.Label(frame, text="dngscanner", style="Title.TLabel").pack(anchor="w")
         ttk.Label(
             frame,
             text=(
                 "This tool runs a one-time diagnostic scan only after you enter a support PIN "
                 "and start the scan. It collects the categories below and uploads them to the reviewer session."
             ),
+            style="Muted.TLabel",
             wraplength=680,
         ).pack(anchor="w", pady=(16, 12))
         for item in COLLECTED_CATEGORIES:
             ttk.Label(frame, text=f"- {item}", wraplength=680).pack(anchor="w")
-        ttk.Button(frame, text="Get Started", command=self.build_pin_screen).pack(anchor="w", pady=(24, 8))
-        ttk.Button(frame, text="Join Discord / Support", command=lambda: messagebox.showinfo("Support", "Add your support link in desktop-client/app.py.")).pack(anchor="w")
+        ttk.Button(frame, text="Get Started", style="Red.TButton", command=self.build_pin_screen).pack(anchor="w", pady=(24, 8))
 
     def build_pin_screen(self) -> None:
         self.clear()
         frame = ttk.Frame(self.root, padding=32)
         frame.pack(fill=BOTH, expand=True)
-        ttk.Label(frame, text="Enter Session PIN", font=("Segoe UI", 18, "bold")).pack(anchor="w")
-        ttk.Label(frame, text="Enter the PIN provided by your support technician or checker.").pack(anchor="w", pady=(8, 16))
+        ttk.Label(frame, text="Enter Session PIN", style="Header.TLabel").pack(anchor="w")
+        ttk.Label(frame, text="Enter the PIN provided by your reviewer.", style="Muted.TLabel").pack(anchor="w", pady=(8, 16))
         entry = ttk.Entry(frame, textvariable=self.pin, font=("Consolas", 18), width=12)
         entry.pack(anchor="w")
         entry.focus()
@@ -716,17 +755,18 @@ class DiagnosticApp:
             text="By continuing, you confirm you understand the disclosed scan scope and want to submit the results.",
             wraplength=680,
         ).pack(anchor="w", pady=(18, 12))
-        ttk.Button(frame, text="Start Scan", command=self.start_scan).pack(anchor="w")
+        ttk.Button(frame, text="Start Scan", style="Red.TButton", command=self.start_scan).pack(anchor="w")
         ttk.Button(frame, text="Back", command=self.build_welcome).pack(anchor="w", pady=(8, 0))
 
     def build_progress_screen(self) -> None:
         self.clear()
         frame = ttk.Frame(self.root, padding=32)
         frame.pack(fill=BOTH, expand=True)
-        ttk.Label(frame, text="Diagnostic Scan", font=("Segoe UI", 18, "bold")).pack(anchor="w")
+        ttk.Label(frame, text="dngscanner scan", style="Header.TLabel").pack(anchor="w")
         ttk.Label(frame, textvariable=self.status).pack(anchor="w", pady=(8, 16))
-        self.progress = ttk.Progressbar(frame, maximum=len(SCAN_STAGES), mode="determinate", length=620)
+        self.progress = ttk.Progressbar(frame, maximum=len(SCAN_STAGES), mode="determinate", length=620, style="red.Horizontal.TProgressbar")
         self.progress.pack(anchor="w", pady=(0, 18))
+        ttk.Label(frame, textvariable=self.progress_percent, style="Header.TLabel").pack(anchor="w", pady=(0, 16))
         self.stage_labels = {}
         for stage in SCAN_STAGES:
             label = ttk.Label(frame, text=f"{stage}: pending")
@@ -735,6 +775,12 @@ class DiagnosticApp:
 
     def set_stage(self, stage: str, state: str) -> None:
         self.stage_labels[stage].config(text=f"{stage}: {state}")
+        self.root.update_idletasks()
+
+    def set_progress(self, value: int) -> None:
+        percent = round((value / len(SCAN_STAGES)) * 100)
+        self.progress.config(value=value)
+        self.progress_percent.set(f"{percent}%")
         self.root.update_idletasks()
 
     def start_scan(self) -> None:
@@ -764,7 +810,7 @@ class DiagnosticApp:
                 else:
                     time.sleep(0.4)
                 self.root.after(0, self.set_stage, stage, "complete")
-                self.root.after(0, self.progress.config, {"value": index})
+                self.root.after(0, self.set_progress, index)
             self.root.after(0, self.complete)
         except Exception as exc:
             self.root.after(0, self.fail, str(exc))

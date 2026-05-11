@@ -17,7 +17,6 @@ import {
   ShieldCheck,
   Terminal,
   Trash2,
-  Users,
 } from "lucide-react";
 import "./styles.css";
 
@@ -28,8 +27,8 @@ function authHeaders(token) {
 }
 
 function Login({ onLogin }) {
-  const [email, setEmail] = useState("checker@example.com");
-  const [password, setPassword] = useState("change-me");
+  const [email, setEmail] = useState("dng@email.com");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState("");
 
   async function submit(event) {
@@ -58,7 +57,7 @@ function Login({ onLogin }) {
         <div className="brand-row">
           <ShieldCheck size={30} />
           <div>
-            <h1>Checker Panel</h1>
+            <h1>dngscanner</h1>
             <p>Secure diagnostic review</p>
           </div>
         </div>
@@ -102,8 +101,15 @@ function SessionList({ sessions, selectedId, onSelect }) {
   );
 }
 
-function TerminalBlock({ children }) {
-  return <pre className="terminal">{children || "No relevant data found."}</pre>;
+function TerminalBlock({ children, query = "" }) {
+  const text = String(children || "No relevant data found.");
+  const filtered = query.trim()
+    ? text
+        .split("\n")
+        .filter((line) => line.toLowerCase().includes(query.trim().toLowerCase()))
+        .join("\n") || "No keyword matches in this section."
+    : text;
+  return <pre className="terminal">{filtered}</pre>;
 }
 
 function asJson(value) {
@@ -128,7 +134,7 @@ function Card({ icon: Icon, title, children }) {
   );
 }
 
-function RobloxSection({ report }) {
+function RobloxSection({ report, query }) {
   const roblox = report.application_diagnostics?.roblox ?? {};
   const logs = roblox.logs ?? [];
   const accounts = [];
@@ -161,11 +167,8 @@ function RobloxSection({ report }) {
           )}
         </div>
       </Card>
-      <Card icon={Users} title="Discord Accounts">
-        <TerminalBlock>Discord account harvesting is not collected by this consent diagnostic build.</TerminalBlock>
-      </Card>
       <Card icon={Gamepad2} title="Roblox Logs">
-        <TerminalBlock>
+        <TerminalBlock query={query}>
           {lines(logs, (log) => {
             const signals = log.signals ?? {};
             return [
@@ -184,14 +187,14 @@ function RobloxSection({ report }) {
   );
 }
 
-function SystemSection({ report }) {
+function SystemSection({ report, query }) {
   const system = report.system_overview ?? {};
   const perf = report.performance_environment ?? {};
   const sec = report.security_integrity_signals ?? {};
   return (
     <>
-      <Card icon={Cpu} title="Install Date">
-        <TerminalBlock>
+      <Card icon={Cpu} title="System Overview">
+        <TerminalBlock query={query}>
           {[
             `OS: ${system.os ?? "unknown"}`,
             `Hardware Model: ${system.hardware?.hardware_model ?? system.machine ?? "unknown"}`,
@@ -204,24 +207,24 @@ function SystemSection({ report }) {
         </TerminalBlock>
       </Card>
       <Card icon={Cpu} title="Services">
-        <TerminalBlock>{sec.services?.raw}</TerminalBlock>
+        <TerminalBlock query={query}>{sec.services?.raw}</TerminalBlock>
       </Card>
       <Card icon={Trash2} title="Recycle Bin">
-        <TerminalBlock>{asJson(perf.trash)}</TerminalBlock>
+        <TerminalBlock query={query}>{asJson(perf.trash)}</TerminalBlock>
       </Card>
       <Card icon={Terminal} title="Shell History">
-        <TerminalBlock>{asJson(sec.command_history_keyword_hits)}</TerminalBlock>
+        <TerminalBlock query={query}>{asJson(sec.command_history_keyword_hits)}</TerminalBlock>
       </Card>
     </>
   );
 }
 
-function BypassSection({ report }) {
+function BypassSection({ report, query }) {
   const sec = report.security_integrity_signals ?? {};
   return (
     <>
       <Card icon={Shield} title="Bypass Detection">
-        <TerminalBlock>
+        <TerminalBlock query={query}>
           {[
             "Event Log / USN / Clearing Signals:",
             asJson(sec.deletion_and_log_clearing_signals),
@@ -237,22 +240,25 @@ function BypassSection({ report }) {
           ].join("\n")}
         </TerminalBlock>
       </Card>
-      <Card icon={Shield} title="File Replacement">
-        <TerminalBlock>{asJson(sec.roblox_executor_indicators?.traceback_or_log_hits)}</TerminalBlock>
+      <Card icon={Shield} title="Log Keyword Hits">
+        <TerminalBlock query={query}>{asJson(sec.roblox_executor_indicators?.traceback_or_log_hits)}</TerminalBlock>
       </Card>
     </>
   );
 }
 
-function RegistrySection({ report }) {
+function RegistrySection({ report, query }) {
   const sec = report.security_integrity_signals ?? {};
   return (
     <>
       <Card icon={Database} title="Registry Activity">
-        <TerminalBlock>
+        <TerminalBlock query={query}>
           {[
             "BAM Registry Entries:",
             asJson(sec.bam),
+            "",
+            "UserAssist Execution Evidence:",
+            asJson(sec.userassist),
             "",
             "Shellbag Registry Signal:",
             asJson(sec.shellbag_clear_signal),
@@ -260,21 +266,20 @@ function RegistrySection({ report }) {
         </TerminalBlock>
       </Card>
       <Card icon={FileText} title="Execution Artifacts">
-        <TerminalBlock>{asJson(report.performance_environment?.installed_applications)}</TerminalBlock>
+        <TerminalBlock query={query}>{asJson(report.performance_environment?.installed_applications)}</TerminalBlock>
       </Card>
     </>
   );
 }
 
-function FileAnalysisSection({ report }) {
+function FileAnalysisSection({ report, query }) {
   const sec = report.security_integrity_signals ?? {};
   return (
     <>
       <Card icon={ScanSearch} title="Execution Artifacts">
-        <input className="section-search" placeholder="Search..." />
-        <TerminalBlock>
+        <TerminalBlock query={query}>
           {[
-            "Cheat Scan [Advanced]",
+            "Keyword Scan",
             "============================================================",
             asJson(sec.roblox_executor_indicators?.file_hits),
             "",
@@ -283,20 +288,20 @@ function FileAnalysisSection({ report }) {
           ].join("\n")}
         </TerminalBlock>
       </Card>
-      <Card icon={ScanSearch} title="Unsigned / Missing Files">
-        <TerminalBlock>Unsigned binary verification is not enabled in this prototype. Use indicator hits and Defender history for triage.</TerminalBlock>
+      <Card icon={ScanSearch} title="File Verification">
+        <TerminalBlock query={query}>Unsigned binary verification is not enabled in this prototype. Use indicator hits and Defender history for triage.</TerminalBlock>
       </Card>
     </>
   );
 }
 
-function SuspiciousFilesSection({ report }) {
+function SuspiciousFilesSection({ report, query }) {
   const sec = report.security_integrity_signals ?? {};
   return (
     <Card icon={ScanSearch} title="Suspicious Files">
-      <TerminalBlock>
+      <TerminalBlock query={query}>
         {[
-          "Recent files with matched indicator names:",
+          "Recent files with matched keywords:",
           asJson((sec.recent_items?.items ?? []).filter((item) => item.matched_indicator_names?.length)),
           "",
           "Defender Integrity:",
@@ -307,23 +312,22 @@ function SuspiciousFilesSection({ report }) {
   );
 }
 
-function CrashLogsSection({ report }) {
+function CrashLogsSection({ report, query }) {
   const hits = report.security_integrity_signals?.roblox_executor_indicators?.traceback_or_log_hits ?? [];
   return (
     <Card icon={Terminal} title="Crash Logs">
-      <TerminalBlock>{hits.length ? asJson(hits) : "No crash logs detected."}</TerminalBlock>
+      <TerminalBlock query={query}>{hits.length ? asJson(hits) : "No crash logs detected."}</TerminalBlock>
     </Card>
   );
 }
 
-function DeletionsSection({ report }) {
+function DeletionsSection({ report, query }) {
   const sec = report.security_integrity_signals ?? {};
   return (
     <Card icon={Trash2} title="File Deletions">
-      <input className="section-search" placeholder="Search..." />
-      <TerminalBlock>
+      <TerminalBlock query={query}>
         {[
-          "Roblox Log Integrity Check:",
+          "Roblox Log Summary:",
           asJson(report.application_diagnostics?.roblox),
           "",
           "Deleted / Clearing Signals:",
@@ -337,21 +341,15 @@ function DeletionsSection({ report }) {
   );
 }
 
-function MemorySection({ report }) {
+function MemorySection({ report, query }) {
   const processes = report.process_overview?.items ?? [];
   const robloxProcesses = processes.filter((proc) => (proc.name ?? "").toLowerCase().includes("roblox"));
   return (
     <>
-      <Card icon={MemoryStick} title="Discord Downloads">
-        <TerminalBlock>Discord download history is not collected by this consent diagnostic build.</TerminalBlock>
-      </Card>
-      <Card icon={MemoryStick} title="Roblox Memory Scan">
-        <TerminalBlock>
+      <Card icon={MemoryStick} title="Process Snapshot">
+        <TerminalBlock query={query}>
           {robloxProcesses.length ? asJson(robloxProcesses) : "[OK] Roblox Memory: No running Roblox process found"}
         </TerminalBlock>
-      </Card>
-      <Card icon={MemoryStick} title="Injected Modules">
-        <TerminalBlock>Injected module enumeration is not enabled in this prototype.</TerminalBlock>
       </Card>
     </>
   );
@@ -372,6 +370,7 @@ const resultSections = [
 
 function Results({ detail }) {
   const [sectionId, setSectionId] = useState("roblox");
+  const [query, setQuery] = useState("");
   const report = detail?.report ?? {};
   const activeSection = resultSections.find((section) => section.id === sectionId) ?? resultSections[0];
   const ActiveComponent = activeSection.component;
@@ -415,7 +414,15 @@ function Results({ detail }) {
         {detail.status !== "completed" ? (
           <div className="empty-state">Waiting for the desktop client to submit results.</div>
         ) : (
-          <ActiveComponent report={report} />
+          <>
+            <input
+              className="section-search"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder={`Search ${activeSection.label} keywords...`}
+            />
+            <ActiveComponent report={report} query={query} />
+          </>
         )}
       </div>
     </section>
@@ -500,8 +507,8 @@ function Dashboard({ token }) {
     <main className="dashboard">
       <header className="topbar">
         <div>
-          <p className="eyebrow">Secure Remote System Diagnostic</p>
-          <h1>Checker Dashboard</h1>
+          <p className="eyebrow">PIN-based diagnostic review</p>
+          <h1>dngscanner dashboard</h1>
         </div>
         <div className="actions">
           {selectedPin && (

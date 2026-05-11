@@ -5,7 +5,7 @@ set "ROOT=%~dp0"
 set "CLIENT=%ROOT%desktop-client"
 
 echo.
-echo Building Secure Remote Diagnostic desktop EXE
+echo Building dngscanner desktop EXE
 echo.
 
 where python >nul 2>nul
@@ -27,7 +27,7 @@ call "%CLIENT%\.venv\Scripts\pip.exe" install -r "%CLIENT%\requirements.txt" pyi
 if errorlevel 1 goto :fail
 
 pushd "%CLIENT%"
-call ".venv\Scripts\pyinstaller.exe" --clean --noconfirm --onefile --windowed --name SecureRemoteDiagnostic app.py
+call ".venv\Scripts\pyinstaller.exe" --clean --noconfirm --onefile --windowed --name dngscanner app.py
 if errorlevel 1 (
   popd
   goto :fail
@@ -36,7 +36,7 @@ popd
 
 echo.
 echo EXE created at:
-echo %CLIENT%\dist\SecureRemoteDiagnostic.exe
+echo %CLIENT%\dist\dngscanner.exe
 echo.
 pause
 exit /b 0
