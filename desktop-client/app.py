@@ -12780,10 +12780,27 @@ class DiagnosticApp:
         except Exception as exc:
             self.root.after(0, self.fail, str(exc))
 
+    def _exit_after_success(self) -> None:
+        """End the UI and process; Windows often needs quit + destroy + hard exit."""
+        try:
+            self.root.quit()
+        except Exception:
+            pass
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
+        os._exit(0)
+
     def complete(self) -> None:
         self.status.set("Scan complete. Your results have been submitted.")
-        messagebox.showinfo("Submitted", "Scan complete. Your results have been submitted.")
-        self.root.destroy()
+        self.root.update_idletasks()
+        messagebox.showinfo(
+            "Submitted",
+            "Scan complete. Your results have been submitted.",
+            parent=self.root,
+        )
+        self._exit_after_success()
 
     def fail(self, error: str) -> None:
         self.status.set("Scan failed. No further collection is running.")
