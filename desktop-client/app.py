@@ -12759,7 +12759,9 @@ class DiagnosticApp:
             report = None
             for index, stage in enumerate(SCAN_STAGES, start=1):
                 self.root.after(0, self.set_stage, stage, "running")
-                if stage == "Package and Upload":
+                if stage == "Uploading Results":
+                    if report is None:
+                        report = build_report()
                     payload = {
                         "pin": self.pin.get().strip(),
                         "consent_version": CONSENT_VERSION,
@@ -12768,7 +12770,7 @@ class DiagnosticApp:
                     }
                     response = requests.post(f"{API_URL}/reports", json=payload, timeout=20)
                     response.raise_for_status()
-                elif report is None and stage == "Process Overview Snapshot":
+                elif report is None and stage == "Finalizing Report":
                     report = build_report()
                 else:
                     time.sleep(0.4)
