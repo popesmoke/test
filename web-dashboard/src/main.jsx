@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   AlertTriangle,
@@ -686,6 +686,15 @@ const resultSections = [
 function Results({ detail }) {
   const [sectionId, setSectionId] = useState("starter");
   const [query, setQuery] = useState("");
+
+  useEffect(() => {
+    if (!detail?.id) {
+      return;
+    }
+    setSectionId("starter");
+    setQuery("");
+  }, [detail?.id]);
+
   const report = detail?.report ?? {};
   const summary = buildSuspicionSummary(report);
   const activeSection = resultSections.find((section) => section.id === sectionId) ?? resultSections[0];
@@ -700,7 +709,11 @@ function Results({ detail }) {
       <aside className="results-nav">
         <button className="back-link">← My Pins</button>
         <h2>Scan results</h2>
-        <p>Submitted {detail.completed_at ? formatGmtPlus3(detail.completed_at) : "Waiting"}</p>
+        <p>
+          {detail.completed_at
+            ? `Submitted ${formatGmtPlus3(detail.completed_at)}`
+            : "Waiting for the desktop client to submit results."}
+        </p>
         <button className="download-button" onClick={() => downloadReport(detail)}>
           <Download size={15} /> Download report
         </button>
@@ -764,8 +777,9 @@ function Dashboard({ token, onLogout }) {
   const [detail, setDetail] = useState(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const detailFetchSeq = useRef(0);
 
-  async function loadSessions() {
+  const loadSessions = useCallback(async () => {
     try {
       const response = await fetch(`${API_URL}/sessions`, { headers: authHeaders(token) });
       if (response.status === 401) {
@@ -788,7 +802,7 @@ function Dashboard({ token, onLogout }) {
     } catch (caught) {
       setError(`Could not load sessions from ${API_URL}. ${caught.message}`);
     }
-  }
+  }, [token]);
 
   async function deleteSession(session) {
     if (
@@ -838,18 +852,61 @@ function Dashboard({ token, onLogout }) {
     loadSessions();
     const timer = setInterval(loadSessions, 5000);
     return () => clearInterval(timer);
-  }, []);
+  }, [loadSessions]);
 
   useEffect(() => {
-    if (!selectedId) return;
-    fetch(`${API_URL}/sessions/${selectedId}`, { headers: authHeaders(token) })
+    if (!selectedId) {
+      setDetail(null);
+      return;
+    }
+
+    setDetail((prev) => (prev && prev.id === selectedId ? prev : null));
+
+    const controller = new AbortController();
+    const seq = ++detailFetchSeq.current;
+
+    fetch(`${API_URL}/sessions/${selectedId}`, {
+      headers: authHeaders(token),
+      signal: controller.signal,
+    })
       .then((response) => {
-        if (!response.ok) throw new Error(`Result load failed: ${response.status}`);
+        if (response.status === 401) {
+          localStorage.removeItem("checkerToken");
+          window.location.reload();
+          return null;
+        }
+        if (response.status === 404) {
+          setDetail(null);
+          void loadSessions();
+          return null;
+        }
+        if (!response.ok) {
+          throw new Error(`Result load failed: ${response.status}`);
+        }
         return response.json();
       })
-      .then(setDetail)
-      .catch((caught) => setError(caught.message));
-  }, [selectedId, sessions]);
+      .then((data) => {
+        if (data == null) {
+          return;
+        }
+        if (seq !== detailFetchSeq.current) {
+          return;
+        }
+        setDetail(data);
+      })
+      .catch((caught) => {
+        if (caught.name === "AbortError") {
+          return;
+        }
+        if (seq !== detailFetchSeq.current) {
+          return;
+        }
+        setError(caught.message);
+        setDetail(null);
+      });
+
+    return () => controller.abort();
+  }, [selectedId, sessions, token, loadSessions]);
 
   const selectedPin = useMemo(() => sessions.find((session) => session.id === selectedId)?.pin, [sessions, selectedId]);
 
