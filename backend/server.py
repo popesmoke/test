@@ -98,12 +98,33 @@ class Handler(BaseHTTPRequestHandler):
     def end_headers(self) -> None:
         self.send_header("Access-Control-Allow-Origin", CORS_ORIGIN)
         self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
         super().end_headers()
 
     def do_OPTIONS(self) -> None:
         self.send_response(HTTPStatus.NO_CONTENT)
         self.end_headers()
+
+    def do_DELETE(self) -> None:
+        parsed = urlparse(self.path)
+        path = parsed.path.rstrip("/") or "/"
+        if not path.startswith("/sessions/"):
+            self.send_json(HTTPStatus.NOT_FOUND, {"detail": "Not found"})
+            return
+        if not self.require_checker():
+            return
+        try:
+            session_id = int(path.split("/")[-1])
+        except ValueError:
+            self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Invalid session id"})
+            return
+        with connect() as conn:
+            cursor = conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+            deleted = cursor.rowcount
+        if deleted == 0:
+            self.send_json(HTTPStatus.NOT_FOUND, {"detail": "Session not found"})
+            return
+        self.send_json(HTTPStatus.OK, {"status": "deleted"})
 
     def read_json(self) -> dict:
         length = int(self.headers.get("Content-Length", "0"))

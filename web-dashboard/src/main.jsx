@@ -13,6 +13,7 @@ import {
   Gamepad2,
   KeyRound,
   Lock,
+  LogOut,
   MemoryStick,
   RefreshCw,
   ScanSearch,
@@ -85,7 +86,7 @@ function Login({ onLogin }) {
   );
 }
 
-function SessionList({ sessions, selectedId, onSelect }) {
+function SessionList({ sessions, selectedId, onSelect, onDelete }) {
   return (
     <aside className="sidebar">
       <div className="sidebar-brand">
@@ -97,15 +98,28 @@ function SessionList({ sessions, selectedId, onSelect }) {
       </div>
       <div className="session-list">
         {sessions.map((session) => (
-          <button
-            className={`session-row ${selectedId === session.id ? "active" : ""}`}
+          <div
             key={session.id}
-            onClick={() => onSelect(session.id)}
+            className={`session-row-wrap ${selectedId === session.id ? "active" : ""}`}
           >
-            <span className="pin">{session.pin}</span>
-            <span className={`status ${session.status}`}>{session.status}</span>
-            <small>{formatGmtPlus3(session.created_at)}</small>
-          </button>
+            <button type="button" className="session-row" onClick={() => onSelect(session.id)}>
+              <span className="pin">{session.pin}</span>
+              <span className={`status ${session.status}`}>{session.status}</span>
+              <small>{formatGmtPlus3(session.created_at)}</small>
+            </button>
+            <button
+              type="button"
+              className="session-delete"
+              title="Delete this session"
+              aria-label={`Delete session ${session.pin}`}
+              onClick={(event) => {
+                event.stopPropagation();
+                onDelete(session);
+              }}
+            >
+              <Trash2 size={18} />
+            </button>
+          </div>
         ))}
       </div>
     </aside>
@@ -744,7 +758,7 @@ function downloadReport(detail) {
   URL.revokeObjectURL(url);
 }
 
-function Dashboard({ token }) {
+function Dashboard({ token, onLogout }) {
   const [sessions, setSessions] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [detail, setDetail] = useState(null);
@@ -765,11 +779,42 @@ function Dashboard({ token }) {
       const data = await response.json();
       setError("");
       setSessions(data);
-      if (!selectedId && data[0]) {
-        setSelectedId(data[0].id);
-      }
+      setSelectedId((prev) => {
+        if (prev != null && data.some((s) => s.id === prev)) {
+          return prev;
+        }
+        return data[0]?.id ?? null;
+      });
     } catch (caught) {
       setError(`Could not load sessions from ${API_URL}. ${caught.message}`);
+    }
+  }
+
+  async function deleteSession(session) {
+    if (
+      !window.confirm(
+        `Delete session PIN ${session.pin}? The scan record will be removed from the dashboard.`,
+      )
+    ) {
+      return;
+    }
+    try {
+      const response = await fetch(`${API_URL}/sessions/${session.id}`, {
+        method: "DELETE",
+        headers: authHeaders(token),
+      });
+      if (response.status === 401) {
+        localStorage.removeItem("checkerToken");
+        window.location.reload();
+        return;
+      }
+      if (!response.ok) {
+        throw new Error(`Delete failed: ${response.status}`);
+      }
+      setMessage(`Deleted session ${session.pin}`);
+      await loadSessions();
+    } catch (caught) {
+      setError(caught.message);
     }
   }
 
@@ -830,12 +875,20 @@ function Dashboard({ token }) {
           <button className="primary" onClick={createPin}>
             <KeyRound size={18} /> Generate New PIN
           </button>
+          <button type="button" onClick={onLogout}>
+            <LogOut size={18} /> Log out
+          </button>
         </div>
       </header>
       {message && <div className="notice">{message}</div>}
       {error && <div className="error-banner">{error}</div>}
       <div className="layout">
-        <SessionList sessions={sessions} selectedId={selectedId} onSelect={setSelectedId} />
+        <SessionList
+          sessions={sessions}
+          selectedId={selectedId}
+          onSelect={setSelectedId}
+          onDelete={deleteSession}
+        />
         <Results detail={detail} />
       </div>
     </main>
@@ -848,7 +901,11 @@ function App() {
     localStorage.setItem("checkerToken", nextToken);
     setToken(nextToken);
   }
-  return token ? <Dashboard token={token} /> : <Login onLogin={login} />;
+  function logout() {
+    localStorage.removeItem("checkerToken");
+    setToken("");
+  }
+  return token ? <Dashboard token={token} onLogout={logout} /> : <Login onLogin={login} />;
 }
 
 try {

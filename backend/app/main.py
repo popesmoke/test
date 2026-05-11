@@ -189,6 +189,16 @@ def list_sessions(_: str = Depends(require_checker)) -> list[SessionSummary]:
     return [row_to_summary(row) for row in rows]
 
 
+@app.delete("/sessions/{session_id}")
+def delete_session(session_id: int, _: str = Depends(require_checker)) -> dict[str, str]:
+    with connect() as conn:
+        cursor = conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+        deleted = cursor.rowcount
+    if deleted == 0:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+    return {"status": "deleted"}
+
+
 @app.get("/sessions/{session_id}")
 def get_session(session_id: int, _: str = Depends(require_checker)) -> dict[str, Any]:
     with connect() as conn:

@@ -259,6 +259,23 @@ input {
   gap: 8px;
 }
 
+.session-row-wrap {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0;
+  align-items: stretch;
+  border: 1px solid #502029;
+  border-radius: 8px;
+  overflow: hidden;
+  background: linear-gradient(180deg, #1b1719, #100d10);
+}
+
+.session-row-wrap.active {
+  border-color: #ef233c;
+  background: linear-gradient(180deg, #30090f, #17070a);
+  box-shadow: 0 0 0 2px rgba(239, 35, 60, 0.12);
+}
+
 .session-row {
   display: grid;
   justify-content: stretch;
@@ -266,11 +283,33 @@ input {
   gap: 6px;
   padding: 12px;
   min-height: 82px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  justify-self: stretch;
 }
 
-.session-row.active {
-  border-color: #ef233c;
-  background: linear-gradient(180deg, #30090f, #17070a);
+.session-row:hover {
+  box-shadow: none;
+}
+
+.session-delete {
+  min-width: 48px;
+  min-height: auto;
+  padding: 0 10px;
+  border: none;
+  border-left: 1px solid #24171c;
+  border-radius: 0;
+  background: rgba(14, 11, 13, 0.96);
+  color: #f5a8b0;
+}
+
+.session-delete:hover {
+  color: #ffffff;
+  background: rgba(80, 20, 30, 0.55);
+  border-left-color: #ef233c;
+  box-shadow: none;
 }
 
 .pin {
