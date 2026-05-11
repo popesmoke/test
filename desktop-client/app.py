@@ -639,6 +639,7 @@ def roblox_diagnostics() -> dict:
 
 
 def build_report() -> dict:
+    scan_started_at = datetime.now(timezone.utc).isoformat()
     memory = psutil.virtual_memory()
     disk = psutil.disk_usage(str(Path.home().anchor or Path.home()))
     prefetch = prefetch_metadata()
@@ -651,6 +652,7 @@ def build_report() -> dict:
             continue
 
     return {
+        "scan_started_at": scan_started_at,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "system_overview": {
             "os": platform.platform(),

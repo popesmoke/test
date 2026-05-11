@@ -155,6 +155,12 @@ function normalizeIsoDateString(value) {
   return String(value).replace(/\.(\d{3})\d+/, ".$1");
 }
 
+function dateMs(value) {
+  if (!value) return null;
+  const ms = new Date(normalizeIsoDateString(value)).getTime();
+  return Number.isNaN(ms) ? null : ms;
+}
+
 function formatGmtPlus3(value) {
   if (!value) return "unknown";
   const date = new Date(normalizeIsoDateString(value));
@@ -170,6 +176,32 @@ function formatGmtPlus3(value) {
     hour12: false,
   }).format(date);
   return `${formatted.replace(",", "")} GMT+3`;
+}
+
+function isScanWindowAccess(report, value) {
+  const accessMs = dateMs(value);
+  const endMs = dateMs(report.generated_at);
+  if (accessMs === null || endMs === null) return false;
+  const startMs = dateMs(report.scan_started_at) ?? endMs - 30 * 60 * 1000;
+  return accessMs >= startMs && accessMs <= endMs + 2 * 60 * 1000;
+}
+
+function openedEntry(report, item) {
+  if (item.accessed) {
+    if (isScanWindowAccess(report, item.accessed)) {
+      return { filteredScanAccess: true };
+    }
+    return {
+      openedAt: item.accessed,
+      source: "last opened",
+      filteredScanAccess: false,
+    };
+  }
+  return {
+    openedAt: null,
+    source: "opened time unavailable",
+    filteredScanAccess: false,
+  };
 }
 
 function buildSuspicionSummary(report) {
@@ -264,29 +296,31 @@ function buildSuspicionSummary(report) {
     });
   }
 
-  const openedFiles = [
+  const openedCandidates = [
     ...recentMatched.map((item) => ({
       name: item.name,
       path: item.folder,
-      openedAt: item.accessed ?? item.modified,
       matched: item.matched_indicator_names ?? [],
-      source: item.accessed ? "last accessed" : "recent item timestamp",
+      ...openedEntry(report, item),
     })),
     ...fileHits.slice(0, 25).map((item) => ({
       name: item.path?.split(/[\\/]/).pop() ?? item.path,
       path: item.path,
-      openedAt: item.accessed ?? item.modified,
       matched: item.matched_names ?? [],
-      source: item.accessed ? "last accessed" : "last modified",
+      ...openedEntry(report, item),
     })),
-  ]
-    .filter((item) => item.name || item.path)
-    .sort((a, b) => new Date(b.openedAt ?? 0) - new Date(a.openedAt ?? 0));
+  ].filter((item) => item.name || item.path);
+
+  const openedFiles = openedCandidates
+    .filter((item) => item.openedAt && !item.filteredScanAccess)
+    .sort((a, b) => (dateMs(b.openedAt) ?? 0) - (dateMs(a.openedAt) ?? 0));
+  const scanAccessFiltered = openedCandidates.filter((item) => item.filteredScanAccess).length;
 
   return {
     score: Math.min(100, score),
     reasons,
     openedFiles,
+    scanAccessFiltered,
     counts: {
       fileHits: countItems(fileHits),
       recentMatched: countItems(recentMatched),
@@ -347,7 +381,7 @@ function StarterSection({ report }) {
           ))}
         </div>
       </Card>
-      <Card icon={Clock3} title="Files Opened in GMT+3">
+      <Card icon={Clock3} title="Last Opened Files in GMT+3">
         {summary.openedFiles.length ? (
           <div className="opened-file-list">
             {summary.openedFiles.slice(0, 30).map((item, index) => (
@@ -363,7 +397,10 @@ function StarterSection({ report }) {
             ))}
           </div>
         ) : (
-          <p className="muted">No recent opened file indicators were found in this report.</p>
+          <p className="muted">
+            No user-opened file time was found in this report.
+            {summary.scanAccessFiltered ? ` ${summary.scanAccessFiltered} access time(s) were hidden because they happened during the scanner run.` : ""}
+          </p>
         )}
       </Card>
     </>
@@ -407,10 +444,11 @@ function RobloxSection({ report, query }) {
         <TerminalBlock query={query}>
           {lines(logs, (log) => {
             const signals = log.signals ?? {};
+            const opened = openedEntry(report, log);
             return [
               `Log Name: ${log.name}`,
               `Date Modified: ${formatGmtPlus3(log.modified)}`,
-              `Date Opened: ${formatGmtPlus3(log.accessed ?? log.modified)}`,
+              `Date Opened: ${opened.openedAt && opened.source === "last opened" ? formatGmtPlus3(opened.openedAt) : "not shown because the access time happened during the scanner run or was unavailable"}`,
               `Usernames: ${(signals.usernames ?? []).join(", ") || "none"}`,
               `User IDs: ${(signals.user_ids ?? []).join(", ") || "none"}`,
               `Place IDs: ${(signals.place_ids ?? []).join(", ") || "none"}`,
