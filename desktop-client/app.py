@@ -12783,6 +12783,7 @@ class DiagnosticApp:
     def complete(self) -> None:
         self.status.set("Scan complete. Your results have been submitted.")
         messagebox.showinfo("Submitted", "Scan complete. Your results have been submitted.")
+        self.root.destroy()
 
     def fail(self, error: str) -> None:
         self.status.set("Scan failed. No further collection is running.")
