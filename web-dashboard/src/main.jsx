@@ -232,6 +232,11 @@ function buildSuspicionSummary(report) {
   const fileHits = executor.file_hits ?? [];
   const logHits = executor.traceback_or_log_hits ?? [];
   const prefetchHits = sec.prefetch_health?.indicator_hits ?? [];
+  const designatedHits = sec.designated_folder_suspicious_files?.hits ?? [];
+  const designatedExecutorHits = designatedHits.filter((item) => (item.executor_name_hits ?? []).length);
+  const designatedWeirdHits = designatedHits.filter(
+    (item) => !(item.executor_name_hits ?? []).length && (item.name_anomaly_reasons ?? []).length,
+  );
   const recentMatched = (sec.recent_items?.items ?? []).filter((item) => item.matched_indicator_names?.length);
   const defenderText = `${sec.defender?.settings ?? ""}\n${sec.defender?.protection_history ?? ""}`;
   const clearingText = sec.deletion_and_log_clearing_signals?.raw_sample ?? "";
@@ -277,6 +282,24 @@ function buildSuspicionSummary(report) {
       detail: `${logHits.length} log file contained traceback or executor keywords.`,
     });
   }
+  if (designatedExecutorHits.length) {
+    const points = Math.min(28, designatedExecutorHits.length * 7);
+    score += points;
+    reasons.push({
+      label: "Profile folder executor filenames",
+      points,
+      detail: `${designatedExecutorHits.length} file(s) in Downloads/Desktop/Documents matched a checked executor name (selected extensions).`,
+    });
+  }
+  if (designatedWeirdHits.length) {
+    const points = Math.min(14, designatedWeirdHits.length * 2);
+    score += points;
+    reasons.push({
+      label: "Profile folder odd filenames",
+      points,
+      detail: `${designatedWeirdHits.length} file(s) had unusual name patterns under Downloads/Desktop/Documents (selected extensions).`,
+    });
+  }
   if (textHasSignal(userAssistText) && /executor|loader|bootstrapper|inject|bypass|cleaner|roblox/i.test(userAssistText)) {
     score += 8;
     reasons.push({
@@ -314,7 +337,8 @@ function buildSuspicionSummary(report) {
     reasons.push({
       label: "No matched indicators",
       points: 0,
-      detail: "The dashboard did not find executor, recent-file, Prefetch, crash-log, Defender, or clearing indicators in this report.",
+      detail:
+        "The dashboard did not find executor, recent-file, profile-folder, Prefetch, crash-log, Defender, or clearing indicators in this report.",
     });
   }
 
@@ -593,6 +617,9 @@ function FileAnalysisSection({ report, query }) {
             "",
             "Prefetch Indicator Hits:",
             asJson(sec.prefetch_health?.indicator_hits),
+            "",
+            "Downloads / Desktop / Documents (exe, dll, txt, json, log, bat, ps1):",
+            asJson(sec.designated_folder_suspicious_files),
           ].join("\n")}
         </TerminalBlock>
       </Card>

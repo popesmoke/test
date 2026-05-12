@@ -11928,6 +11928,163 @@ EXECUTOR_NAMES = [
     "Codex",
 ]
 
+USER_FOLDER_SCAN_EXTENSIONS = frozenset({".exe", ".dll", ".txt", ".json", ".log", ".bat", ".ps1"})
+USER_FOLDER_SCAN_SUBDIRS = ("Downloads", "Desktop", "Documents")
+USER_FOLDER_SCAN_MAX_DEPTH = 4
+USER_FOLDER_SCAN_MAX_ENUMERATED = 50_000
+USER_FOLDER_SCAN_MAX_HITS = 350
+
+
+def executor_name_patterns() -> dict[str, re.Pattern[str]]:
+    return {name: re.compile(re.escape(name).replace(r"\ ", r"[\s._-]*"), re.IGNORECASE) for name in EXECUTOR_NAMES}
+
+
+def designated_user_folder_roots() -> list[Path]:
+    roots: list[Path] = []
+    if platform.system() == "Windows":
+        base = os.getenv("USERPROFILE")
+        if base:
+            for sub in USER_FOLDER_SCAN_SUBDIRS:
+                path = Path(base) / sub
+                if path.is_dir():
+                    roots.append(path)
+    else:
+        home = Path.home()
+        for sub in USER_FOLDER_SCAN_SUBDIRS:
+            path = home / sub
+            if path.is_dir():
+                roots.append(path)
+    return roots
+
+
+def walk_files_depth_limited(root: Path, max_depth: int):
+    try:
+        root = root.resolve()
+    except Exception:
+        root = root
+    if not root.is_dir():
+        return
+    for dirpath, dirnames, filenames in os.walk(root, topdown=True, followlinks=False):
+        current = Path(dirpath)
+        try:
+            rel_depth = len(current.relative_to(root).parts)
+        except ValueError:
+            dirnames[:] = []
+            continue
+        if rel_depth >= max_depth:
+            dirnames.clear()
+        for fn in filenames:
+            yield current / fn
+
+
+def weird_filename_reasons(stem: str, full_name: str) -> list[str]:
+    reasons: list[str] = []
+    if not stem:
+        reasons.append("empty_base_name")
+        return reasons
+    letters = [c for c in stem if c.isalpha()]
+    digits = sum(1 for c in stem if c.isdigit())
+    alnum = sum(1 for c in stem if c.isalnum())
+    if len(stem) >= 52:
+        reasons.append("very_long_name")
+    if full_name.count(".") >= 3:
+        reasons.append("multiple_dot_segments")
+    if re.search(r"\.[A-Za-z0-9]{1,5}\.(exe|dll|bat|ps1)\Z", full_name, re.IGNORECASE):
+        reasons.append("double_extension_style")
+    if digits and alnum and (digits / max(alnum, 1)) >= 0.38 and len(stem) >= 12:
+        reasons.append("high_digit_ratio")
+    if re.fullmatch(r"[0-9A-Fa-f]{24,}", stem):
+        reasons.append("hex_like_name")
+    if len(stem) >= 18 and re.fullmatch(r"[A-Za-z0-9+/=_-]+", stem) and any(c.islower() for c in stem) and any(c.isupper() for c in stem):
+        reasons.append("mixed_case_alnum_blob")
+    if re.search(r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}", stem):
+        reasons.append("guid_like_segment")
+    if re.search(r"[_-]{4,}", stem):
+        reasons.append("long_separator_run")
+    non_word = sum(1 for c in stem if not (c.isalnum() or c in "._- "))
+    if non_word >= 3:
+        reasons.append("unusual_symbols")
+    if len(letters) >= 14:
+        transitions = sum(1 for i in range(len(letters) - 1) if letters[i].islower() != letters[i + 1].islower())
+        if transitions >= min(10, max(6, len(letters) // 3)):
+            reasons.append("chaotic_mixed_case")
+    if stem.lower() in {"setup", "installer", "update", "patch", "crack", "loader", "inject", "bypass", "exploit"}:
+        reasons.append("generic_risky_token")
+    return reasons
+
+
+def match_executor_labels(text: str, patterns: dict[str, re.Pattern[str]]) -> list[str]:
+    return [name for name, pattern in patterns.items() if pattern.search(text)]
+
+
+def designated_folder_extension_scan() -> dict:
+    patterns = executor_name_patterns()
+    roots = designated_user_folder_roots()
+    hits: list[dict] = []
+    enumerated = 0
+    enumeration_reached_cap = False
+    skipped_permission = 0
+
+    for root in roots:
+        try:
+            for path in walk_files_depth_limited(root, USER_FOLDER_SCAN_MAX_DEPTH):
+                enumerated += 1
+                if enumerated > USER_FOLDER_SCAN_MAX_ENUMERATED:
+                    enumeration_reached_cap = True
+                    break
+                try:
+                    if not path.is_file():
+                        continue
+                except OSError:
+                    continue
+                ext = path.suffix.lower()
+                if ext not in USER_FOLDER_SCAN_EXTENSIONS:
+                    continue
+                stem = path.stem
+                full_name = path.name
+                executor_labels = sorted(set(match_executor_labels(full_name, patterns)))
+                weird = weird_filename_reasons(stem, full_name)
+                if not executor_labels and not weird:
+                    continue
+                try:
+                    stat = path.stat()
+                except OSError:
+                    continue
+                entry = {
+                    "path": str(path),
+                    "name": full_name,
+                    "extension": ext,
+                    "size_bytes": stat.st_size,
+                    "modified": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+                    "executor_name_hits": executor_labels,
+                    "name_anomaly_reasons": weird,
+                }
+                hits.append(entry)
+                if len(hits) >= USER_FOLDER_SCAN_MAX_HITS:
+                    break
+        except PermissionError:
+            skipped_permission += 1
+        except OSError:
+            skipped_permission += 1
+        if len(hits) >= USER_FOLDER_SCAN_MAX_HITS or enumeration_reached_cap:
+            break
+
+    executor_hits = sum(1 for item in hits if item["executor_name_hits"])
+    weird_only = sum(1 for item in hits if not item["executor_name_hits"] and item["name_anomaly_reasons"])
+
+    return {
+        "extensions_scanned": sorted(USER_FOLDER_SCAN_EXTENSIONS),
+        "folders_scanned": [str(p) for p in roots],
+        "max_depth": USER_FOLDER_SCAN_MAX_DEPTH,
+        "enumeration_reached_cap": enumeration_reached_cap,
+        "files_enumerated": enumerated,
+        "hit_count": len(hits),
+        "executor_name_hits": executor_hits,
+        "weird_name_only_hits": weird_only,
+        "skipped_roots_permission_errors": skipped_permission,
+        "hits": hits,
+    }
+
 
 def hashed_identifier(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
@@ -12439,7 +12596,7 @@ def executor_indicator_scan() -> dict:
     else:
         roots.extend([Path.home()])
 
-    patterns = {name: re.compile(re.escape(name).replace(r"\ ", r"[\s._-]*"), re.IGNORECASE) for name in EXECUTOR_NAMES}
+    patterns = executor_name_patterns()
     file_hits = []
     traceback_hits = []
     scanned_files = 0
@@ -12606,6 +12763,7 @@ def build_report() -> dict:
             "deletion_and_log_clearing_signals": deletion_and_log_clearing_signals(),
             "prefetch_health": prefetch_health_signals(prefetch),
             "roblox_executor_indicators": executor_indicator_scan(),
+            "designated_folder_suspicious_files": designated_folder_extension_scan(),
         },
     }
 
