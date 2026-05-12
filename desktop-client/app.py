@@ -7,6 +7,7 @@ import os
 import platform
 import re
 import socket
+import string
 import subprocess
 import sys
 import threading
@@ -12090,11 +12091,11 @@ def hashed_identifier(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def run_command(command: list[str]) -> str:
+def run_command(command: list[str], timeout: float = 8, max_chars: int = 8000) -> str:
     try:
-        result = subprocess.run(command, capture_output=True, timeout=8, check=False)
+        result = subprocess.run(command, capture_output=True, timeout=timeout, check=False)
         output = result.stdout or result.stderr or b""
-        return output.decode("utf-8", errors="replace").strip()[:8000]
+        return output.decode("utf-8", errors="replace").strip()[:max_chars]
     except Exception as exc:
         return f"Unavailable: {exc}"
 
@@ -12174,9 +12175,21 @@ def recycle_info_record(path: Path) -> dict | None:
 def recycle_bin_metadata() -> dict:
     candidates: list[Path] = []
     if platform.system() == "Windows":
-        candidates.extend(Path(drive) / "$Recycle.Bin" for drive in ["C:\\"])
+        for letter in string.ascii_uppercase:
+            recycle = Path(f"{letter}:\\$Recycle.Bin")
+            if recycle.is_dir():
+                candidates.append(recycle)
     elif platform.system() == "Darwin":
         candidates.append(Path.home() / ".Trash")
+        volumes = Path("/Volumes")
+        if volumes.is_dir():
+            try:
+                for vol in volumes.iterdir():
+                    trashes = vol / ".Trashes"
+                    if trashes.is_dir():
+                        candidates.append(trashes)
+            except OSError:
+                pass
 
     items = []
     for folder in candidates:
@@ -12205,9 +12218,11 @@ def recycle_bin_metadata() -> dict:
     items.sort(key=lambda item: item.get("deleted_at") or item.get("modified") or "", reverse=True)
     return {
         "status": "Recycle Bin metadata collected" if items else "No accessible Trash/Recycle Bin item found",
-        "count": len(items[:120]),
+        "count": len(items[:180]),
         "latest": items[0] if items else None,
-        "items": items[:120],
+        "items": items[:180],
+        "note": "Windows: all fixed-drive $Recycle.Bin folders scanned. $I metadata lists original paths before "
+        "emptying; after permanent delete, USN / Security / Sysmon samples below may still show evidence.",
     }
 
 
@@ -12548,17 +12563,72 @@ def deletion_and_log_clearing_signals() -> dict:
         "$events | Sort-Object TimeCreated -Descending | "
         "Select-Object -First 100 TimeCreated,LogName,ProviderName,Id,Message | ConvertTo-Json -Depth 3"
     )
-    usn_script = (
-        "$vol=$env:SystemDrive;"
-        "try { fsutil usn readjournal $vol csv 2>$null | Select-String -Pattern 'FILE_DELETE|CLOSE' | Select-Object -First 80 | ForEach-Object { $_.Line } } "
-        "catch { $_.Exception.Message }"
+    extended_script = (
+        "$ErrorActionPreference='SilentlyContinue';"
+        "$start=(Get-Date).AddDays(-14);"
+        "$usnList = New-Object System.Collections.Generic.List[string];"
+        "foreach ($d in (Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | ForEach-Object { $_.DeviceID })) {"
+        " try {"
+        "  fsutil usn readjournal $d csv 2>$null |"
+        "    Select-String -Pattern 'FILE_DELETE|0x80000002|0x80000200' |"
+        "    Select-Object -First 45 |"
+        "    ForEach-Object { [void]$usnList.Add(($d + [char]9 + $_.Line)) }"
+        " } catch {}"
+        "};"
+        "$sec = @();"
+        "try {"
+        " $sec = Get-WinEvent -FilterHashtable @{LogName='Security'; StartTime=$start; Id=4660,4663} -MaxEvents 250 -ErrorAction SilentlyContinue |"
+        "   Where-Object { $_.Message -match '(?i)delete|eliminated|removed' } |"
+        "   Select-Object -First 50 @{N='TimeCreated';E={$_.TimeCreated.ToString('u')}},Id,"
+        "   @{N='Message';E={ if ($_.Message.Length -gt 1200) { $_.Message.Substring(0,1200) } else { $_.Message } }}"
+        "} catch {};"
+        "$sm = @();"
+        "try {"
+        " $sm = Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Sysmon/Operational'; StartTime=$start; Id=23} -MaxEvents 120 -ErrorAction SilentlyContinue |"
+        "   Select-Object -First 55 @{N='TimeCreated';E={$_.TimeCreated.ToString('u')}},"
+        "   @{N='Message';E={ if ($_.Message.Length -gt 1400) { $_.Message.Substring(0,1400) } else { $_.Message } }}"
+        "} catch {};"
+        "[pscustomobject]@{"
+        " usn_file_delete_lines = @($usnList | Select-Object -First 130);"
+        " security_object_deletion_events = @($sec);"
+        " sysmon_file_delete_events = @($sm)"
+        "} | ConvertTo-Json -Depth 5 -Compress"
     )
+    extended_raw = run_command(["powershell", "-NoProfile", "-Command", extended_script], timeout=28, max_chars=32000)
+    extended_parsed: dict | str
+    try:
+        extended_parsed = json.loads(extended_raw) if extended_raw and not extended_raw.startswith("Unavailable:") else {"raw": extended_raw}
+    except json.JSONDecodeError:
+        extended_parsed = {"json_parse_error": True, "raw_head": extended_raw[:4000]}
+
+    usn_lines: list | None = None
+    if isinstance(extended_parsed, dict):
+        raw_lines = extended_parsed.get("usn_file_delete_lines")
+        if isinstance(raw_lines, list) and raw_lines:
+            usn_lines = raw_lines
+    usn_text = "\n".join(str(line) for line in usn_lines) if usn_lines else ""
+    if not usn_text.strip():
+        usn_text = run_command(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "$d=$env:SystemDrive; try { fsutil usn readjournal $d csv 2>$null | Select-String -Pattern 'FILE_DELETE' | "
+                "Select-Object -First 60 | ForEach-Object { $_.Line } } catch { }",
+            ],
+            timeout=12,
+            max_chars=12000,
+        )
+
     return {
         "available": True,
-        "window": "last 30 days",
-        "raw_sample": run_command(["powershell", "-NoProfile", "-Command", event_script])[:20000],
-        "usn_delete_sample": run_command(["powershell", "-NoProfile", "-Command", usn_script])[:20000],
-        "note": "These are deletion and clearing signals for reviewer triage. Permanently deleted files only appear when Windows auditing, Sysmon, or USN journal evidence is available.",
+        "window": "last 30 days (general events); last 14 days (USN / Security / Sysmon file delete)",
+        "raw_sample": run_command(["powershell", "-NoProfile", "-Command", event_script], max_chars=20000),
+        "deleted_file_evidence": extended_parsed,
+        "usn_delete_sample": usn_text[:20000],
+        "note": "Recycle Bin $I metadata (in trash report) shows files still in the bin. After emptying or Shift+Delete, "
+        "look here: USN FILE_DELETE lines (Admin may be required), Security 4660/4663 if auditing is on, Sysmon ID 23 if installed, "
+        "and general event raw_sample.",
     }
 
 
