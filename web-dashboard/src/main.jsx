@@ -975,15 +975,15 @@ function Results({ detail }) {
     setQuery("");
   }, [detail?.id]);
 
-  const report = detail?.report ?? {};
+  if (!detail) {
+    return <section className="empty-state">Select or generate a PIN session.</section>;
+  }
+
+  const report = detail.report ?? {};
   const summary = buildSuspicionSummary(report);
   const activeSection = resultSections.find((section) => section.id === sectionId) ?? resultSections[0];
   const ActiveComponent = activeSection.component;
   const showSectionContent = detail.status === "completed" || sectionId === "tutorial";
-
-  if (!detail) {
-    return <section className="empty-state">Select or generate a PIN session.</section>;
-  }
 
   return (
     <section className="scan-results">
