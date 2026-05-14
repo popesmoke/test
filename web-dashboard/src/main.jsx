@@ -462,7 +462,7 @@ function StarterSection({ report }) {
         </div>
       </Card>
       <Card icon={Clock3} title="Tracked files (modified + OS access, GMT+3)">
-        <p className="muted" style={{ marginBottom: 12 }}>
+        <p className="muted opened-files-intro">
           Primary time is <strong>file modified (mtime)</strong> — when the file last changed on disk. Secondary line is{" "}
           <strong>OS last access (atime)</strong>; Windows updates this when <em>any</em> program reads the file (games,
           antivirus, search), so it is <em>not</em> reliable as &quot;you opened it in Explorer&quot;.

@@ -624,7 +624,10 @@ input {
 }
 
 .reason-list,
-.opened-file-list {
+.opened-files-intro {
+  margin-bottom: 12px;
+}
+
   display: grid;
   gap: 10px;
 }
