@@ -854,70 +854,69 @@ function ForensicArtifactsSection({ report, query }) {
 function TutorialSection() {
   return (
     <>
-      <Card icon={BookOpen} title="Reading a session (quick path)">
+      <Card icon={BookOpen} title="Πώς διαβάζετε μία συνεδρία (γρήγορη διαδρομή)">
         <ol className="tutorial-steps">
           <li>
-            Start on <strong>Suspicion Score</strong> for the rolled-up number and the reasons list. That view tells you
-            which indicator families fired (executors, Prefetch, recent files, logs, Defender, clearing signals, and
-            others).
+            Ξεκινήστε από το <strong>Suspicion Score</strong> για τον συνολικό βαθμό και τη λίστα με τους λόγους. Εκεί
+            φαίνεται ποιες οικογένειες δεικτών ενεργοποιήθηκαν (executors, Prefetch, πρόσφατα αρχεία, logs, Defender,
+            σήματα καθαρισμού κ.ά.).
           </li>
           <li>
-            Open <strong>Forensics</strong> (also <em>Evidence review</em>, <em>Signal deep-dive</em>) for individual
-            findings: severity, risk score, file path, signature, entropy, and correlated evidence. High severity with
-            recent timestamps is worth prioritizing.
+            Ανοίξτε <strong>Evidence review</strong> για μεμονωμένα ευρήματα: σοβαρότητα, risk score, διαδρομή αρχείου,
+            υπογραφή, εντροπία και συσχετισμένα τεκμήρια. Υψηλή σοβαρότητα με πρόσφατες χρονοσφραγίδες έχει προτεραιότητα.
           </li>
           <li>
-            Use <strong>Correlation</strong> (<em>Cross-source timeline</em>, <em>Multi-artifact timing</em>) to see
-            whether separate artifacts line up in time—for example the same binary name appearing under BAM, Prefetch,
-            and profile folders around the same window.
+            Χρησιμοποιήστε <strong>Cross-source timeline</strong> για να δείτε αν ξεχωριστά ίχνη ευθυγραμμίζονται στον
+            χρόνο — π.χ. το ίδιο όνομα δυαδικού να εμφανίζεται σε BAM, Prefetch και φακέλους προφίλ περίπου στο ίδιο
+            παράθυρο.
           </li>
           <li>
-            Use <strong>Artifacts</strong> (<em>Structured OS traces</em>, <em>Raw host tables</em>) for raw structured
-            tables (BAM, PCA store, USN samples). This is where you confirm <em>whether</em> something ran or touched
-            disk, not just that a string matched.
+            Στο <strong>Structured OS traces</strong> βρίσκονται οι δομημένοι πίνακες (BAM, PCA store, δείγματα USN).
+            Εκεί επιβεβαιώνετε αν κάτι <em>έτρεξε</em> ή <em>άγγιξε</em> το δίσκο, όχι μόνο αν ταιριάζει μια συμβολοσειρά.
           </li>
           <li>
-            Cross-check <strong>Roblox</strong>, <strong>Bypass Detection</strong>, <strong>Deletions</strong>, and{" "}
-            <strong>Crash Logs</strong> for client-side narratives (errors, injectors named in traces, log clearing, or
-            tampering hints).
+            Συσχετίστε με <strong>Roblox</strong>, <strong>Bypass Detection</strong>, <strong>Deletions</strong> και{" "}
+            <strong>Crash Logs</strong> για αφήγηση από την πλευρά του πελάτη (σφάλματα, injectors στα traces, καθαρισμό
+            logs, ενδείξεις παρέμβασης).
           </li>
         </ol>
       </Card>
-      <Card icon={BookOpen} title="Spotting recent cheating (practical signs)">
+      <Card icon={BookOpen} title="Πρόσφατη απάτη / cheat — πρακτικά σημεία">
         <div className="tutorial-prose">
           <p>
-            <strong>Fast “did they cheat recently?” pass:</strong> open <strong>Suspicion Score</strong> first. If the
-            score is elevated, jump to <strong>Forensics</strong> and sort mentally by time: anything tied to the last
-            few hours or to the Roblox session window matters more than months-old clutter. Then read{" "}
-            <strong>Correlation</strong> to see whether the same program name shows up across Prefetch, BAM, and
-            downloads, and finish in <strong>Artifacts</strong> if you still need proof the binary actually executed or
-            touched disk.
+            <strong>Γρήγορο πέρασμα «μήπως έκανε cheat πρόσφατα;»:</strong> πρώτα το <strong>Suspicion Score</strong>.
+            Αν ο βαθμός είναι ψηλός, πηγαίνετε στο <strong>Evidence review</strong> και ταξινομείτε νοητά με βάση τον
+            χρόνο: ό,τι δένει με τις τελευταίες ώρες ή με το παράθυρο της συνεδρίας Roblox μετράει περισσότερο από
+            παλιά υπολείμματα εγκαταστάσεων. Μετά <strong>Cross-source timeline</strong> για να δείτε αν το ίδιο
+            πρόγραμμα εμφανίζεται σε Prefetch, BAM και λήψεις, και τέλος <strong>Structured OS traces</strong> αν
+            χρειάζεστε απόδειξη ότι το δυαδικό όντως εκτελέστηκε ή άγγιξε δίσκο.
           </p>
           <p>
-            This dashboard does not prove intent; it surfaces <strong>technical indicators</strong> that often appear
-            when third-party tooling interacted with the game or the OS. Treat every item as a lead to verify with your
-            own policy and context.
+            Το dashboard <strong>δεν αποδεικνύει πρόθεση</strong>· αναδεικνύει <strong>τεχνικούς δείκτες</strong> που
+            συχνά εμφανίζονται όταν τρίτο εργαλείο αλληλεπιδρά με το παιχνίδι ή το λειτουργικό. Κάθε στοιχείο είναι
+            ιχνηλάτηση προς επαλήθευση με την πολιτική και το πλαίσιό σας.
           </p>
           <p>
-            <strong>Recency without relying on a single field:</strong> compare timestamps on forensic findings, USN
-            rows, Prefetch hits, and &quot;recent opened&quot; style lists against the scan window. Activity that clusters
-            <em>just before</em> the player joined your review, or during the session window, is more interesting than
-            old installer residue.
+            <strong>Πρόσφατη δραστηριότητα χωρίς εξάρτηση από ένα μόνο πεδίο:</strong> συγκρίνετε χρονοσφραγίδες σε
+            ευρήματα forensics, γραμμές USN, χτυπήματα Prefetch και λίστες «πρόσφατα ανοιγμένα» με το παράθυρο σάρωσης.
+            Δραστηριότητα που <em>συγκεντρώνεται λίγο πριν</em> μπει ο παίκτης στην ανασκόπησή σας ή κατά τη συνεδρία
+            ενδιαφέρει περισσότερο από παλιά installer noise.
           </p>
           <p>
-            <strong>Executor-style footprints:</strong> look for matching names across layers—disk path, BAM execution
-            residue, Prefetch for the same stem, crash logs mentioning inject or executor frameworks, and downloads or
-            desktop drops with suspicious filenames. One weak match can be noise; the same story repeated across
-            artifacts is stronger.
+            <strong>Ίχνη executor-style:</strong> ψάξτε για ταιριάζοντα ονόματα σε επίπεδα — διαδρομή δίσκου, υπόλοιπο
+            εκτέλεσης BAM, Prefetch για το ίδιο stem, crash logs με inject ή frameworks executors, λήψεις ή αρχεία
+            στην επιφάνεια εργασίας με ύποπτα ονόματα. Ένα αδύναμο ταιρίσμα μπορεί να είναι θόρυβος· η ίδια ιστορία σε
+            πολλά ίχνη είναι πιο ισχυρή.
           </p>
           <p>
-            <strong>Evasion or cleanup:</strong> spikes on deletion or log-clearing signals, Defender exclusions, or
-            &quot;missing file but Prefetch still present&quot; patterns deserve a closer read in Correlation and
-            Artifacts before you close the case as clean.
+            <strong>Αποφυγή ή καθαρισμός:</strong> αυξήσεις σε σήματα διαγραφής ή καθαρισμού logs, εξαιρέσεις Defender ή
+            μοτίβα «λείπει αρχείο αλλά υπάρχει ακόμα Prefetch» αξίζουν προσεκτική ανάγνωση σε{" "}
+            <strong>Cross-source timeline</strong> και <strong>Structured OS traces</strong> πριν κλείσετε την υπόθεση
+            ως καθαρή.
           </p>
           <p className="muted">
-            Always combine automated signals with gameplay evidence, eyewitness reports, and your organization&apos;s
-            standards. When in doubt, run a fresh PIN session after a clean reboot and compare to a baseline.
+            Συνδυάστε πάντα τα αυτόματα σήματα με στοιχεία gameplay, μαρτυρίες και τα πρότυπα του οργανισμού σας. Σε
+            αμφιβολία, τρέξτε νέα συνεδρία PIN μετά από καθαρή επανεκκίνηση και συγκρίνετε με baseline.
           </p>
         </div>
       </Card>
@@ -927,28 +926,22 @@ function TutorialSection() {
 
 const resultSections = [
   { id: "starter", label: "Suspicion Score", icon: Gauge, component: StarterSection },
-  { id: "tutorial", label: "Tutorial", icon: BookOpen, component: TutorialSection },
+  { id: "tutorial", label: "Οδηγός", icon: BookOpen, component: TutorialSection },
   {
     id: "forensic-findings",
-    label: "Forensics",
-    altLabel: "Evidence review",
-    altLabel2: "Signal deep-dive",
+    label: "Evidence review",
     icon: Fingerprint,
     component: ForensicFindingsSection,
   },
   {
     id: "forensic-corr",
-    label: "Correlation",
-    altLabel: "Cross-source timeline",
-    altLabel2: "Multi-artifact timing",
+    label: "Cross-source timeline",
     icon: GitBranch,
     component: ForensicCorrelationSection,
   },
   {
     id: "forensic-artifacts",
-    label: "Artifacts",
-    altLabel: "Structured OS traces",
-    altLabel2: "Raw host tables",
+    label: "Structured OS traces",
     icon: Boxes,
     component: ForensicArtifactsSection,
   },
@@ -1011,12 +1004,6 @@ function Results({ detail }) {
                 <Icon size={18} className="nav-tab-icon" />
                 <span className="nav-tab-labels">
                   <span className="nav-tab-primary">{section.label}</span>
-                  {"altLabel" in section && section.altLabel ? (
-                    <span className="nav-tab-alt">{section.altLabel}</span>
-                  ) : null}
-                  {"altLabel2" in section && section.altLabel2 ? (
-                    <span className="nav-tab-alt2">{section.altLabel2}</span>
-                  ) : null}
                 </span>
               </button>
             );
