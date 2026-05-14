@@ -11932,6 +11932,24 @@ EXECUTOR_NAMES = [
     "Codex",
 ]
 
+# File-name-only cheat / hack hints (matched on basename, not full path).
+CHEAT_FILENAME_HINT_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    ("roblox_hack", re.compile(r"roblox[\s._-]*hack", re.IGNORECASE)),
+    ("aimbot", re.compile(r"aim[\s._-]*bot|aimbot", re.IGNORECASE)),
+    ("wallhack", re.compile(r"wall[\s._-]*hack|wallhack", re.IGNORECASE)),
+    ("triggerbot", re.compile(r"trigger[\s._-]*bot|triggerbot", re.IGNORECASE)),
+    ("silent_aim", re.compile(r"silent[\s._-]*aim", re.IGNORECASE)),
+    ("speedhack", re.compile(r"speed[\s._-]*hack|speedhack", re.IGNORECASE)),
+    ("flyhack", re.compile(r"fly[\s._-]*hack|flyhack", re.IGNORECASE)),
+    ("noclip", re.compile(r"noclip|no[\s._-]*clip", re.IGNORECASE)),
+    ("cheat_engine", re.compile(r"cheat[\s._-]*engine|cheatengine", re.IGNORECASE)),
+    ("dll_injector", re.compile(r"dll[\s._-]*inject|injector", re.IGNORECASE)),
+    ("esp", re.compile(r"\besp\b", re.IGNORECASE)),
+    ("exploit", re.compile(r"\bexploit\b", re.IGNORECASE)),
+    ("free_cheat", re.compile(r"free[\s._-]*cheat", re.IGNORECASE)),
+    ("rbx_cheat", re.compile(r"rbx[\s._-]*cheat|rbx[\s._-]*hack", re.IGNORECASE)),
+]
+
 USER_FOLDER_SCAN_EXTENSIONS = frozenset({".exe", ".dll", ".txt", ".json", ".log", ".bat", ".ps1"})
 USER_FOLDER_SCAN_SUBDIRS = ("Downloads", "Desktop", "Documents")
 USER_FOLDER_SCAN_MAX_DEPTH = 4
@@ -11940,7 +11958,36 @@ USER_FOLDER_SCAN_MAX_HITS = 350
 
 
 def executor_name_patterns() -> dict[str, re.Pattern[str]]:
-    return {name: re.compile(re.escape(name).replace(r"\ ", r"[\s._-]*"), re.IGNORECASE) for name in EXECUTOR_NAMES}
+    """Match executor brands as standalone tokens in paths (avoid 'Wave' inside 'shockwave', etc.)."""
+    patterns: dict[str, re.Pattern[str]] = {}
+    for name in EXECUTOR_NAMES:
+        inner = re.escape(name).replace(r"\ ", r"[\s._-]+")
+        patterns[name] = re.compile(rf"(?<![A-Za-z0-9]){inner}(?![A-Za-z0-9])", re.IGNORECASE)
+    return patterns
+
+
+def cheat_filename_hint_labels(filename: str) -> list[str]:
+    labels: list[str] = []
+    for label, pattern in CHEAT_FILENAME_HINT_PATTERNS:
+        if pattern.search(filename):
+            labels.append(label)
+    return labels
+
+
+def executor_scan_path_excluded(path_str: str) -> bool:
+    """Skip game/content trees that cause noisy executor-token matches."""
+    low = path_str.lower().replace("/", "\\")
+    excluded = (
+        "\\roblox\\versions\\",
+        "\\roblox\\content\\",
+        "\\windows\\winsxs\\",
+        "\\windows\\servicing\\",
+        "\\microsoft\\windows\\inetcache\\",
+        "\\package cache\\",
+        "\\nuget\\packages\\",
+        "\\node_modules\\",
+    )
+    return any(fragment in low for fragment in excluded)
 
 
 def designated_user_folder_roots() -> list[Path]:
@@ -12048,7 +12095,8 @@ def designated_folder_extension_scan() -> dict:
                 full_name = path.name
                 executor_labels = sorted(set(match_executor_labels(full_name, patterns)))
                 weird = weird_filename_reasons(stem, full_name)
-                if not executor_labels and not weird:
+                cheat_hints = cheat_filename_hint_labels(full_name)
+                if not executor_labels and not weird and not cheat_hints:
                     continue
                 try:
                     stat = path.stat()
@@ -12062,6 +12110,7 @@ def designated_folder_extension_scan() -> dict:
                     "modified": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
                     "executor_name_hits": executor_labels,
                     "name_anomaly_reasons": weird,
+                    "cheat_filename_hints": cheat_hints,
                 }
                 hits.append(entry)
                 if len(hits) >= USER_FOLDER_SCAN_MAX_HITS:
@@ -12074,6 +12123,13 @@ def designated_folder_extension_scan() -> dict:
             break
 
     executor_hits = sum(1 for item in hits if item["executor_name_hits"])
+    cheat_only = sum(
+        1
+        for item in hits
+        if (item.get("cheat_filename_hints") or [])
+        and not item["executor_name_hits"]
+        and not item["name_anomaly_reasons"]
+    )
     weird_only = sum(1 for item in hits if not item["executor_name_hits"] and item["name_anomaly_reasons"])
 
     return {
@@ -12084,6 +12140,7 @@ def designated_folder_extension_scan() -> dict:
         "files_enumerated": enumerated,
         "hit_count": len(hits),
         "executor_name_hits": executor_hits,
+        "cheat_filename_only_hits": cheat_only,
         "weird_name_only_hits": weird_only,
         "skipped_roots_permission_errors": skipped_permission,
         "hits": hits,
@@ -12442,6 +12499,7 @@ def recent_items_metadata() -> dict:
         folders.extend([Path.home() / "Downloads", Path.home() / "Desktop"])
 
     items = []
+    patterns = executor_name_patterns()
     for folder in folders:
         if not folder.exists():
             continue
@@ -12452,22 +12510,26 @@ def recent_items_metadata() -> dict:
         for path in paths:
             try:
                 stat = path.stat()
-                name = path.name
-                matched = [term for term in EXECUTOR_NAMES if re.search(re.escape(term).replace(r"\ ", r"[\s._-]*"), name, re.IGNORECASE)]
+                fname = path.name
+                matched_exec = [label for label, pat in patterns.items() if pat.search(fname)]
+                cheat_hints = cheat_filename_hint_labels(fname)
+                if not matched_exec and not cheat_hints:
+                    continue
                 items.append(
                     {
-                        "name": name,
+                        "name": fname,
                         "folder": str(folder),
                         "modified": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
                         "accessed": datetime.fromtimestamp(stat.st_atime, timezone.utc).isoformat(),
                         "size_bytes": stat.st_size,
-                        "matched_indicator_names": matched,
+                        "matched_indicator_names": matched_exec,
+                        "matched_cheat_filename_hints": cheat_hints,
                     }
                 )
             except Exception:
                 continue
     items.sort(key=lambda item: item["modified"], reverse=True)
-    return {"count": len(items[:120]), "items": items[:120]}
+    return {"count": len(items[:120]), "items": items[:120], "note": "Only files whose names match known executor brands or cheat/hack filename hints are listed (not every file in these folders)."}
 
 
 def command_history_keyword_hits() -> dict:
@@ -12639,6 +12701,7 @@ def prefetch_health_signals(prefetch: dict) -> dict:
     if platform.system() != "Windows" or not prefetch.get("available"):
         return {"available": False, "reason": "Prefetch health signals require available Windows Prefetch metadata"}
 
+    patterns = executor_name_patterns()
     items = prefetch.get("items", [])
     if not items:
         return {"available": True, "count": 0, "oldest_modified": None, "newest_modified": None}
@@ -12651,45 +12714,75 @@ def prefetch_health_signals(prefetch: dict) -> dict:
         "indicator_hits": [
             item
             for item in items
-            if any(re.search(re.escape(term).replace(r"\ ", r"[\s._-]*"), item["name"], re.IGNORECASE) for term in EXECUTOR_NAMES)
+            if any(pattern.search(item["name"]) for pattern in patterns.values())
         ][:80],
     }
 
 
 def executor_indicator_scan() -> dict:
-    roots = []
-    if platform.system() == "Windows":
-        for env_name in ["LOCALAPPDATA", "APPDATA", "TEMP", "USERPROFILE"]:
-            value = os.getenv(env_name)
-            if value:
-                roots.append(Path(value))
-        roots.append(Path("C:\\Windows\\Prefetch"))
-    elif platform.system() == "Darwin":
-        roots.extend([Path.home() / "Library" / "Logs", Path.home() / "Library" / "Application Support", Path("/Applications")])
-    else:
-        roots.extend([Path.home()])
-
     patterns = executor_name_patterns()
-    file_hits = []
-    traceback_hits = []
+    file_hits: list[dict] = []
+    traceback_hits: list[dict] = []
     scanned_files = 0
 
-    for root in roots:
+    roots_spec: list[tuple[Path, int | None]] = []
+
+    if platform.system() == "Windows":
+        la = os.getenv("LOCALAPPDATA")
+        if la:
+            roots_spec.append((Path(la), 8))
+        ap = os.getenv("APPDATA")
+        if ap:
+            roots_spec.append((Path(ap), 6))
+        tmp = os.getenv("TEMP")
+        if tmp:
+            roots_spec.append((Path(tmp), 4))
+        up = os.getenv("USERPROFILE")
+        if up:
+            base = Path(up)
+            for sub in USER_FOLDER_SCAN_SUBDIRS:
+                p = base / sub
+                if p.is_dir():
+                    roots_spec.append((p, USER_FOLDER_SCAN_MAX_DEPTH))
+        roots_spec.append((Path(os.getenv("SystemRoot", "C:\\Windows")) / "Prefetch", None))
+    elif platform.system() == "Darwin":
+        roots_spec.extend(
+            [
+                (Path.home() / "Library" / "Logs", 6),
+                (Path.home() / "Library" / "Application Support", 6),
+                (Path("/Applications"), 3),
+            ]
+        )
+    else:
+        roots_spec.append((Path.home(), 6))
+
+    for root, max_depth in roots_spec:
         if not root.exists():
             continue
         try:
-            paths = root.rglob("*")
-            for path in paths:
+            if max_depth is None:
+                if root.name.lower() == "prefetch":
+                    path_iter = (p for p in root.glob("*.pf") if p.is_file())
+                else:
+                    path_iter = (p for p in root.rglob("*") if p.is_file() or p.is_dir())
+            else:
+                path_iter = walk_files_depth_limited(root, max_depth)
+
+            for path in path_iter:
                 try:
                     if len(file_hits) >= 200 and len(traceback_hits) >= 80:
                         break
                     name_text = str(path)
+                    if executor_scan_path_excluded(name_text):
+                        continue
                     matched = [name for name, pattern in patterns.items() if pattern.search(name_text)]
-                    if matched:
+                    cheat_h = cheat_filename_hint_labels(path.name)
+                    if matched or cheat_h:
                         stat = path.stat()
                         file_hits.append(
                             {
                                 "matched_names": matched,
+                                "cheat_filename_hints": cheat_h,
                                 "path": str(path),
                                 "modified": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
                                 "accessed": datetime.fromtimestamp(stat.st_atime, timezone.utc).isoformat(),
@@ -12706,11 +12799,20 @@ def executor_indicator_scan() -> dict:
                     if path.stat().st_size > 2_000_000:
                         continue
                     text = path.read_text(errors="replace")
-                    if "traceback" not in text.lower() and not any(pattern.search(text) for pattern in patterns.values()):
+                    cheat_in_text = any(p.search(text) for _, p in CHEAT_FILENAME_HINT_PATTERNS)
+                    if (
+                        "traceback" not in text.lower()
+                        and not any(pattern.search(text) for pattern in patterns.values())
+                        and not cheat_in_text
+                    ):
                         continue
                     lines = []
                     for line in text.splitlines():
-                        if "traceback" in line.lower() or any(pattern.search(line) for pattern in patterns.values()):
+                        if (
+                            "traceback" in line.lower()
+                            or any(pattern.search(line) for pattern in patterns.values())
+                            or any(p.search(line) for _, p in CHEAT_FILENAME_HINT_PATTERNS)
+                        ):
                             lines.append(line.strip()[:500])
                         if len(lines) >= 12:
                             break
@@ -12723,7 +12825,8 @@ def executor_indicator_scan() -> dict:
 
     return {
         "executor_names_checked": EXECUTOR_NAMES,
-        "roots_checked": [str(root) for root in roots],
+        "cheat_filename_patterns": [label for label, _ in CHEAT_FILENAME_HINT_PATTERNS],
+        "roots_checked": [str(r[0]) for r in roots_spec],
         "scanned_text_files": scanned_files,
         "file_hits": file_hits[:200],
         "traceback_or_log_hits": traceback_hits[:80],

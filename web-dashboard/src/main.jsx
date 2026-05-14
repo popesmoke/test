@@ -213,19 +213,25 @@ function isScanWindowAccess(report, value) {
 }
 
 function openedEntry(report, item) {
-  if (item.accessed) {
-    if (isScanWindowAccess(report, item.accessed)) {
-      return { filteredScanAccess: true };
-    }
+  const accessed = item.accessed ?? null;
+  const modified = item.modified ?? null;
+  if (accessed && isScanWindowAccess(report, accessed)) {
+    return { filteredScanAccess: true };
+  }
+  if (!modified && !accessed) {
     return {
-      openedAt: item.accessed,
-      source: "last opened",
+      displayAt: null,
+      accessedAt: null,
+      modifiedAt: null,
+      source: "timestamps unavailable",
       filteredScanAccess: false,
     };
   }
   return {
-    openedAt: null,
-    source: "opened time unavailable",
+    displayAt: modified ?? accessed,
+    accessedAt: accessed,
+    modifiedAt: modified,
+    source: "mtime + atime",
     filteredScanAccess: false,
   };
 }
@@ -238,10 +244,19 @@ function buildSuspicionSummary(report) {
   const prefetchHits = sec.prefetch_health?.indicator_hits ?? [];
   const designatedHits = sec.designated_folder_suspicious_files?.hits ?? [];
   const designatedExecutorHits = designatedHits.filter((item) => (item.executor_name_hits ?? []).length);
+  const designatedCheatOnlyHits = designatedHits.filter(
+    (item) =>
+      (item.cheat_filename_hints ?? []).length &&
+      !(item.executor_name_hits ?? []).length &&
+      !(item.name_anomaly_reasons ?? []).length,
+  );
   const designatedWeirdHits = designatedHits.filter(
     (item) => !(item.executor_name_hits ?? []).length && (item.name_anomaly_reasons ?? []).length,
   );
-  const recentMatched = (sec.recent_items?.items ?? []).filter((item) => item.matched_indicator_names?.length);
+  const recentMatched = (sec.recent_items?.items ?? []).filter(
+    (item) =>
+      (item.matched_indicator_names?.length ?? 0) > 0 || (item.matched_cheat_filename_hints?.length ?? 0) > 0,
+  );
   const defenderText = `${sec.defender?.settings ?? ""}\n${sec.defender?.protection_history ?? ""}`;
   const clearingText = sec.deletion_and_log_clearing_signals?.raw_sample ?? "";
   const userAssistText = sec.userassist?.raw_sample ?? "";
@@ -254,18 +269,18 @@ function buildSuspicionSummary(report) {
     const points = Math.min(35, fileHits.length * 7);
     score += points;
     reasons.push({
-      label: "Executor file indicators",
+      label: "Executor / cheat path matches",
       points,
-      detail: `${fileHits.length} file or folder path matched known executor names.`,
+      detail: `${fileHits.length} path(s) matched a known executor token or a cheat-like filename hint.`,
     });
   }
   if (recentMatched.length) {
     const points = Math.min(20, recentMatched.length * 6);
     score += points;
     reasons.push({
-      label: "Recent opened files",
+      label: "Executor / cheat-tagged recent files",
       points,
-      detail: `${recentMatched.length} recent item matched suspicious names.`,
+      detail: `${recentMatched.length} item(s) in Recent/Downloads/Desktop matched an executor brand or cheat-like filename hint.`,
     });
   }
   if (prefetchHits.length) {
@@ -293,6 +308,15 @@ function buildSuspicionSummary(report) {
       label: "Profile folder executor filenames",
       points,
       detail: `${designatedExecutorHits.length} file(s) in Downloads/Desktop/Documents matched a checked executor name (selected extensions).`,
+    });
+  }
+  if (designatedCheatOnlyHits.length) {
+    const points = Math.min(18, designatedCheatOnlyHits.length * 6);
+    score += points;
+    reasons.push({
+      label: "Profile folder cheat-like filenames",
+      points,
+      detail: `${designatedCheatOnlyHits.length} file(s) in Downloads/Desktop/Documents had cheat/hack-style filename hints.`,
     });
   }
   if (designatedWeirdHits.length) {
@@ -350,20 +374,26 @@ function buildSuspicionSummary(report) {
     ...recentMatched.map((item) => ({
       name: item.name,
       path: item.folder,
-      matched: item.matched_indicator_names ?? [],
+      matched: [
+        ...(item.matched_indicator_names ?? []),
+        ...(item.matched_cheat_filename_hints ?? []).map((h) => `cheat:${h}`),
+      ],
       ...openedEntry(report, item),
     })),
     ...fileHits.slice(0, 25).map((item) => ({
       name: item.path?.split(/[\\/]/).pop() ?? item.path,
       path: item.path,
-      matched: item.matched_names ?? [],
+      matched: [
+        ...(item.matched_names ?? []),
+        ...(item.cheat_filename_hints ?? []).map((h) => `cheat:${h}`),
+      ],
       ...openedEntry(report, item),
     })),
   ].filter((item) => item.name || item.path);
 
   const openedFiles = openedCandidates
-    .filter((item) => item.openedAt && !item.filteredScanAccess)
-    .sort((a, b) => (dateMs(b.openedAt) ?? 0) - (dateMs(a.openedAt) ?? 0));
+    .filter((item) => item.displayAt && !item.filteredScanAccess)
+    .sort((a, b) => (dateMs(b.displayAt) ?? 0) - (dateMs(a.displayAt) ?? 0));
   const scanAccessFiltered = openedCandidates.filter((item) => item.filteredScanAccess).length;
 
   return {
@@ -408,7 +438,7 @@ function StarterSection({ report }) {
           </div>
           <div>
             <p className="score-band">{band} suspicion</p>
-            <p className="muted">Score is based on matched file names, recent opened items, Prefetch hits, crash/log text, registry activity, Defender signals, and deletion or clearing signals.</p>
+            <p className="muted">Score is based on executor or cheat-like filename matches, profile-folder scans, Prefetch hits, crash/log text, registry activity, Defender signals, and deletion or clearing signals.</p>
           </div>
         </div>
         <div className="signal-grid">
@@ -431,7 +461,12 @@ function StarterSection({ report }) {
           ))}
         </div>
       </Card>
-      <Card icon={Clock3} title="Last Opened Files in GMT+3">
+      <Card icon={Clock3} title="Tracked files (modified + OS access, GMT+3)">
+        <p className="muted" style={{ marginBottom: 12 }}>
+          Primary time is <strong>file modified (mtime)</strong> — when the file last changed on disk. Secondary line is{" "}
+          <strong>OS last access (atime)</strong>; Windows updates this when <em>any</em> program reads the file (games,
+          antivirus, search), so it is <em>not</em> reliable as &quot;you opened it in Explorer&quot;.
+        </p>
         {summary.openedFiles.length ? (
           <div className="opened-file-list">
             {summary.openedFiles.slice(0, 30).map((item, index) => (
@@ -441,15 +476,25 @@ function StarterSection({ report }) {
                   <p>{item.path}</p>
                   <small>{(item.matched ?? []).join(", ") || "matched scan signal"}</small>
                 </div>
-                <time>{formatGmtPlus3(item.openedAt)}</time>
-                <span>{item.source}</span>
+                <div className="opened-file-times">
+                  <time>{formatGmtPlus3(item.displayAt)}</time>
+                  <span className="time-label">modified</span>
+                  {item.accessedAt ? (
+                    <>
+                      <time className="secondary-time">{formatGmtPlus3(item.accessedAt)}</time>
+                      <span className="time-label muted">OS access</span>
+                    </>
+                  ) : null}
+                </div>
               </div>
             ))}
           </div>
         ) : (
           <p className="muted">
-            No user-opened file time was found in this report.
-            {summary.scanAccessFiltered ? ` ${summary.scanAccessFiltered} access time(s) were hidden because they happened during the scanner run.` : ""}
+            No matching executor or cheat-hint files with usable timestamps were listed in this report.
+            {summary.scanAccessFiltered
+              ? ` ${summary.scanAccessFiltered} OS access time(s) were hidden because they fell during the scanner run.`
+              : ""}
           </p>
         )}
       </Card>
@@ -498,7 +543,12 @@ function RobloxSection({ report, query }) {
             return [
               `Log Name: ${log.name}`,
               `Date Modified: ${formatGmtPlus3(log.modified)}`,
-              `Date Opened: ${opened.openedAt && opened.source === "last opened" ? formatGmtPlus3(opened.openedAt) : "not shown because the access time happened during the scanner run or was unavailable"}`,
+              `Date Opened: ${
+                opened.displayAt && !opened.filteredScanAccess
+                  ? `mtime ${formatGmtPlus3(opened.displayAt)}` +
+                    (opened.accessedAt ? `; atime ${formatGmtPlus3(opened.accessedAt)}` : "")
+                  : "not shown because OS access fell during the scanner run or timestamps were unavailable"
+              }`,
               `Usernames: ${(signals.usernames ?? []).join(", ") || "none"}`,
               `User IDs: ${(signals.user_ids ?? []).join(", ") || "none"}`,
               `Place IDs: ${(signals.place_ids ?? []).join(", ") || "none"}`,

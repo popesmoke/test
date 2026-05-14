@@ -658,12 +658,36 @@ input {
 
 .opened-file-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 190px 112px;
+  grid-template-columns: minmax(0, 1fr) minmax(150px, 220px);
   gap: 14px;
   align-items: center;
   border-radius: 7px;
   background: #080708;
   padding: 12px;
+}
+
+.opened-file-times {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: flex-end;
+  text-align: right;
+}
+
+.opened-file-times .time-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #7a8f96;
+}
+
+.opened-file-times .time-label.muted {
+  color: #5f6f75;
+}
+
+.opened-file-times .secondary-time {
+  margin-top: 6px;
 }
 
 .opened-file-row time {
