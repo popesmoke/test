@@ -370,7 +370,7 @@ input {
 
 .scan-results {
   display: grid;
-  grid-template-columns: 230px minmax(0, 1fr);
+  grid-template-columns: minmax(200px, 248px) minmax(0, 1fr);
   gap: 18px;
   min-height: calc(100vh - 132px);
 }
@@ -674,6 +674,103 @@ input {
   padding: 16px;
   font: 13px/1.55 "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
   white-space: pre-wrap;
+}
+
+.terminal--compact {
+  max-height: 280px;
+  padding: 12px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.inline-code {
+  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+  background: rgba(239, 35, 60, 0.12);
+  padding: 2px 6px;
+  border-radius: 4px;
+  word-break: break-all;
+}
+
+.forensic-findings {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 70vh;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.forensic-finding {
+  border: 1px solid #2a1a20;
+  border-radius: 8px;
+  background: rgba(10, 8, 9, 0.65);
+}
+
+.forensic-finding-summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  font-weight: 600;
+}
+
+.forensic-finding-summary::-webkit-details-marker {
+  display: none;
+}
+
+.forensic-finding-body {
+  padding: 0 14px 14px;
+  border-top: 1px solid #24171c;
+  font-size: 13px;
+  color: #d8d2d5;
+}
+
+.forensic-finding-body p {
+  margin: 8px 0;
+}
+
+.forensic-sev {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-weight: 800;
+}
+
+.forensic-sev-high {
+  background: rgba(239, 35, 60, 0.25);
+  color: #ffb8c1;
+  border: 1px solid #ef233c;
+}
+
+.forensic-sev-medium {
+  background: rgba(241, 197, 92, 0.18);
+  color: #f1c55c;
+  border: 1px solid #c49a2e;
+}
+
+.forensic-sev-low {
+  background: rgba(158, 183, 192, 0.15);
+  color: #9eb7c0;
+  border: 1px solid #3a4a52;
+}
+
+.forensic-risk {
+  font-size: 12px;
+  color: #f5a8b0;
+  font-variant-numeric: tabular-nums;
+}
+
+.forensic-reason {
+  flex: 1;
+  min-width: 140px;
+  font-weight: 600;
+  color: #f4f4f5;
 }
 
 .empty-state {

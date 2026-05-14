@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createRoot } from "react-dom/client";
 import {
   AlertTriangle,
+  Boxes,
   ChevronUp,
   Clock3,
   Clipboard,
@@ -9,8 +10,10 @@ import {
   Database,
   Download,
   FileText,
+  Fingerprint,
   Gauge,
   Gamepad2,
+  GitBranch,
   KeyRound,
   Lock,
   LogOut,
@@ -699,6 +702,154 @@ function MemorySection({ report, query }) {
   );
 }
 
+function forensicSeverityClass(severity) {
+  const s = String(severity ?? "").toLowerCase();
+  if (s === "critical" || s === "high") return "forensic-sev forensic-sev-high";
+  if (s === "medium") return "forensic-sev forensic-sev-medium";
+  return "forensic-sev forensic-sev-low";
+}
+
+function ForensicFindingsSection({ report, query }) {
+  const fa = report.security_integrity_signals?.forensic_analysis;
+  if (!fa || fa.available === false) {
+    return (
+      <Card icon={Fingerprint} title="Forensic findings">
+        <p className="muted">
+          No forensic analysis bundle on this report. Scans from older desktop builds, or non-Windows hosts, will not
+          include this section.
+        </p>
+      </Card>
+    );
+  }
+  const flat = [...(fa.detections_flat ?? [])];
+  const q = query.trim().toLowerCase();
+  const filtered = q
+    ? flat.filter((d) =>
+        [d.reason, d.file_path, d.artifact_source, d.severity, JSON.stringify(d.correlated_evidence ?? [])]
+          .join(" ")
+          .toLowerCase()
+          .includes(q),
+      )
+    : flat;
+  const counts = Object.fromEntries(
+    Object.entries(fa.detections ?? {}).map(([key, value]) => [key, Array.isArray(value) ? value.length : 0]),
+  );
+  return (
+    <>
+      <Card icon={Fingerprint} title="Forensic engine">
+        <p className="muted">
+          Engine <code className="inline-code">{fa.engine_version ?? "unknown"}</code>. Flattened list:{" "}
+          <strong>{filtered.length}</strong> of <strong>{flat.length}</strong> (search applies here).
+        </p>
+      </Card>
+      <Card icon={Fingerprint} title="Findings">
+        <div className="forensic-findings">
+          {filtered.length === 0 ? (
+            <p className="muted">No findings match the current search.</p>
+          ) : (
+            filtered.slice(0, 150).map((d, index) => (
+              <details className="forensic-finding" key={`${d.file_path ?? d.reason}-${index}`}>
+                <summary className="forensic-finding-summary">
+                  <span className={forensicSeverityClass(d.severity)}>{d.severity ?? "?"}</span>
+                  <span className="forensic-risk">risk {d.risk_score ?? 0}</span>
+                  <span className="forensic-reason">{d.reason ?? ""}</span>
+                </summary>
+                <div className="forensic-finding-body">
+                  <p>
+                    <strong>Source:</strong> {d.artifact_source ?? "—"}
+                  </p>
+                  <p>
+                    <strong>Path:</strong> {d.file_path || "—"}
+                  </p>
+                  <p>
+                    <strong>Confidence:</strong> {d.confidence ?? "—"}
+                  </p>
+                  <p>
+                    <strong>SHA256:</strong>{" "}
+                    <code className="inline-code">{d.sha256 || "—"}</code>
+                  </p>
+                  <p>
+                    <strong>Signature:</strong> {d.signature_status ?? "—"}
+                  </p>
+                  <p>
+                    <strong>Entropy:</strong>{" "}
+                    {d.entropy_score != null && typeof d.entropy_score === "number" ? d.entropy_score.toFixed(2) : "—"}
+                  </p>
+                  <p>
+                    <strong>YARA:</strong> {(d.yara_matches ?? []).join(", ") || "—"}
+                  </p>
+                  <pre className="terminal terminal--compact">
+                    {asJson({ timestamps: d.timestamps, correlated_evidence: d.correlated_evidence })}
+                  </pre>
+                </div>
+              </details>
+            ))
+          )}
+        </div>
+      </Card>
+      <Card icon={Fingerprint} title="Counts by category">
+        <TerminalBlock query={query}>{asJson(counts)}</TerminalBlock>
+      </Card>
+    </>
+  );
+}
+
+function ForensicCorrelationSection({ report, query }) {
+  const fa = report.security_integrity_signals?.forensic_analysis;
+  const uc = fa?.unified_correlation ?? {};
+  if (!fa || fa.available === false) {
+    return (
+      <Card icon={GitBranch} title="Correlation">
+        <p className="muted">No unified correlation data for this report.</p>
+      </Card>
+    );
+  }
+  return (
+    <>
+      <Card icon={GitBranch} title="Cross-artifact summary">
+        <TerminalBlock query={query}>{asJson(uc.cross_artifact_summary)}</TerminalBlock>
+      </Card>
+      <Card icon={GitBranch} title="Execution chains">
+        <TerminalBlock query={query}>{asJson(uc.execution_chains ?? [])}</TerminalBlock>
+      </Card>
+      <Card icon={Clock3} title="Unified timeline (sample)">
+        <TerminalBlock query={query}>{asJson((uc.timeline ?? []).slice(0, 200))}</TerminalBlock>
+      </Card>
+    </>
+  );
+}
+
+function ForensicArtifactsSection({ report, query }) {
+  const fa = report.security_integrity_signals?.forensic_analysis;
+  if (!fa || fa.available === false) {
+    return (
+      <Card icon={Boxes} title="Artifact detail">
+        <p className="muted">No structured forensic artifacts for this report.</p>
+      </Card>
+    );
+  }
+  const usnRows = (fa.usn_file_lifecycle_rows ?? []).slice(0, 100);
+  return (
+    <>
+      <Card icon={Boxes} title="Structured BAM">
+        <TerminalBlock query={query}>{asJson(fa.bam_structured)}</TerminalBlock>
+      </Card>
+      <Card icon={Boxes} title="PCA executed (store)">
+        <TerminalBlock query={query}>{asJson(fa.pca_executed)}</TerminalBlock>
+      </Card>
+      <Card icon={Boxes} title="Browser SQLite probe">
+        <TerminalBlock query={query}>{asJson(fa.sqlite)}</TerminalBlock>
+      </Card>
+      <Card icon={Boxes} title="USN lifecycle rows (parsed sample)">
+        <TerminalBlock query={query}>{asJson(usnRows)}</TerminalBlock>
+      </Card>
+      <Card icon={Boxes} title="USN enriched sample meta">
+        <TerminalBlock query={query}>{asJson(fa.usn_enriched_sample)}</TerminalBlock>
+      </Card>
+    </>
+  );
+}
+
 const resultSections = [
   { id: "starter", label: "Suspicion Score", icon: Gauge, component: StarterSection },
   { id: "roblox", label: "Roblox", icon: Gamepad2, component: RobloxSection },
@@ -706,10 +857,12 @@ const resultSections = [
   { id: "bypass", label: "Bypass Detection", icon: Shield, component: BypassSection },
   { id: "registry", label: "Registry", icon: Database, component: RegistrySection },
   { id: "file-analysis", label: "File Analysis", icon: ScanSearch, component: FileAnalysisSection },
-  { id: "custom", label: "Custom", icon: ScanSearch, component: FileAnalysisSection },
   { id: "suspicious", label: "Suspicious Files", icon: ScanSearch, component: SuspiciousFilesSection },
   { id: "crash", label: "Crash Logs", icon: Terminal, component: CrashLogsSection },
   { id: "deletions", label: "Deletions", icon: Trash2, component: DeletionsSection },
+  { id: "forensic-findings", label: "Forensics", icon: Fingerprint, component: ForensicFindingsSection },
+  { id: "forensic-corr", label: "Correlation", icon: GitBranch, component: ForensicCorrelationSection },
+  { id: "forensic-artifacts", label: "Artifacts", icon: Boxes, component: ForensicArtifactsSection },
   { id: "memory", label: "Memory", icon: MemoryStick, component: MemorySection },
 ];
 
