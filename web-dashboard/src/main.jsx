@@ -852,6 +852,9 @@ function ForensicArtifactsSection({ report, query }) {
 
 const resultSections = [
   { id: "starter", label: "Suspicion Score", icon: Gauge, component: StarterSection },
+  { id: "forensic-findings", label: "Forensics", icon: Fingerprint, component: ForensicFindingsSection },
+  { id: "forensic-corr", label: "Correlation", icon: GitBranch, component: ForensicCorrelationSection },
+  { id: "forensic-artifacts", label: "Artifacts", icon: Boxes, component: ForensicArtifactsSection },
   { id: "roblox", label: "Roblox", icon: Gamepad2, component: RobloxSection },
   { id: "system", label: "System", icon: Cpu, component: SystemSection },
   { id: "bypass", label: "Bypass Detection", icon: Shield, component: BypassSection },
@@ -860,9 +863,6 @@ const resultSections = [
   { id: "suspicious", label: "Suspicious Files", icon: ScanSearch, component: SuspiciousFilesSection },
   { id: "crash", label: "Crash Logs", icon: Terminal, component: CrashLogsSection },
   { id: "deletions", label: "Deletions", icon: Trash2, component: DeletionsSection },
-  { id: "forensic-findings", label: "Forensics", icon: Fingerprint, component: ForensicFindingsSection },
-  { id: "forensic-corr", label: "Correlation", icon: GitBranch, component: ForensicCorrelationSection },
-  { id: "forensic-artifacts", label: "Artifacts", icon: Boxes, component: ForensicArtifactsSection },
   { id: "memory", label: "Memory", icon: MemoryStick, component: MemorySection },
 ];
 
