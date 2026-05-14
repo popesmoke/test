@@ -14,6 +14,9 @@ import threading
 import time
 import webbrowser
 import zlib
+import math
+import sqlite3
+from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from tkinter import BOTH, BooleanVar, PhotoImage, StringVar, Tk, ttk, messagebox
@@ -12775,11 +12778,1180 @@ def roblox_diagnostics() -> dict:
     return {"detected": bool(logs), "log_locations_checked": [str(path) for path in candidates], "logs": logs}
 
 
+
+_FORENSIC_ENGINE_VERSION = "2026-05-14.unified-v1"
+
+_CHEAT_QUERY_TERMS = (
+    "cheat",
+    "aimbot",
+    "wallhack",
+    "esp hack",
+    "injector",
+    "dll inject",
+    "bypass",
+    "kernel driver",
+    "undetected",
+    "external cheat",
+    "internal cheat",
+    "lua executor",
+    "roblox executor",
+    "speedhack",
+    "triggerbot",
+)
+_LOADER_TERMS = (
+    "loader",
+    "inject",
+    "mapper",
+    "kdmapper",
+    "manual map",
+    "reflective dll",
+    "process hollowing",
+    "gdrv",
+    "capcom",
+    " vulnerable driver",
+)
+_PREFETCH_TOOL_STEMS = (
+    "CHEATENGINE",
+    "PROCESSHACKER",
+    "PROCEXP",
+    "PROCEXP64",
+    "PROCMON",
+    "PROCMON64",
+    "X64DBG",
+    "X32DBG",
+    "IDA64",
+    "IDA",
+    "WINDUMP",
+    "MIMIKATZ",
+    "EXTREMEINJECTOR",
+    "XENOS",
+    "GHIDRA",
+)
+_BROWSER_PARENT_MARKERS = (
+    "CHROME",
+    "MSEDGE",
+    "FIREFOX",
+    "BRAVE",
+    "DISCORD",
+    "TELEGRAM",
+    "WHATSAPP",
+    "SLACK",
+)
+_TEMP_MARKERS = (
+    "\\TEMP\\",
+    "\\TMP\\",
+    "\\INetCache\\",
+    "\\APPDATA\\LOCAL\\TEMP",
+    "\\WINDOWS\\TEMP",
+    "\\APPDATA\\LOCAL\\PACKAGES\\",
+    "ZIPFOLDER",
+    "\\APPDATA\\LOCAL\\TEMP\\",
+)
+_ARCHIVE_EXT = frozenset({".zip", ".rar", ".7z", ".tar", ".gz", ".cab"})
+
+
+def forensic_finding(
+    *,
+    severity: str,
+    confidence: float,
+    reason: str,
+    artifact_source: str,
+    file_path: str = "",
+    sha256: str = "",
+    signature_status: str = "not_checked",
+    entropy_score: float | None = None,
+    yara_matches: list[str] | None = None,
+    timestamps: dict[str, str] | None = None,
+    correlated_evidence: list[dict[str, object]] | None = None,
+    risk_score: int = 0,
+) -> dict[str, object]:
+    return {
+        "severity": severity,
+        "confidence": round(float(confidence), 3),
+        "reason": reason,
+        "artifact_source": artifact_source,
+        "file_path": file_path,
+        "sha256": sha256 or "",
+        "signature_status": signature_status,
+        "entropy_score": entropy_score,
+        "yara_matches": list(yara_matches or []),
+        "timestamps": dict(timestamps or {}),
+        "correlated_evidence": list(correlated_evidence or []),
+        "risk_score": int(max(0, min(100, risk_score))),
+    }
+
+
+def forensic_shannon_entropy(data: bytes) -> float:
+    if not data:
+        return 0.0
+    counts = Counter(data)
+    ln = len(data)
+    return -sum((c / ln) * math.log2(c / ln) for c in counts.values() if c)
+
+
+def forensic_file_peek(path: Path, max_bytes: int = 1_572_864) -> tuple[str, float | None, int | None]:
+    sha = ""
+    ent: float | None = None
+    size: int | None = None
+    try:
+        h = hashlib.sha256()
+        with path.open("rb") as fh:
+            chunk = fh.read(max_bytes)
+            h.update(chunk)
+            ent = forensic_shannon_entropy(chunk) if chunk else None
+        sha = h.hexdigest()
+        size = path.stat().st_size
+    except OSError:
+        pass
+    return sha, ent, size
+
+
+def forensic_authenticode_status(path: str) -> str:
+    if platform.system() != "Windows" or not path:
+        return "skipped_non_windows"
+    safe = path.replace("'", "''")
+    script = (
+        f"try {{ (Get-AuthenticodeSignature -FilePath '{safe}' -ErrorAction Stop).Status.ToString() }} "
+        f"catch {{ 'Error:' + $_.Exception.Message }}"
+    )
+    out = run_command(["powershell", "-NoProfile", "-Command", script], timeout=12, max_chars=400)
+    return (out or "unknown").strip()[:120]
+
+
+def forensic_yara_hook_scan(path: Path) -> list[str]:
+    try:
+        import yara  # type: ignore
+
+        rules = getattr(forensic_yara_hook_scan, "_rules", None)
+        if rules is None:
+            setattr(forensic_yara_hook_scan, "_rules", False)
+            rule_dir = Path(os.getenv("LOCALAPPDATA", "")) / "DangerousCityScanner" / "yara_rules"
+            compiled = None
+            if rule_dir.is_dir():
+                paths = sorted(rule_dir.glob("*.yar")) + sorted(rule_dir.glob("*.yara"))
+                if paths:
+                    compiled = yara.compile(filepaths={f"r{i}": str(p) for i, p in enumerate(paths[:24])})
+            setattr(forensic_yara_hook_scan, "_rules", compiled)
+        rules = getattr(forensic_yara_hook_scan, "_rules", None)
+        if not rules:
+            return []
+        matches = rules.match(str(path), timeout=6)
+        return [f"{m.namespace}:{m.rule}" for m in matches][:40]
+    except Exception:
+        return []
+
+
+def forensic_risk_score(
+    *,
+    unsigned: bool = False,
+    high_entropy: bool = False,
+    temp_path: bool = False,
+    deleted_hint: bool = False,
+    packed_hint: bool = False,
+    rename_hint: bool = False,
+) -> int:
+    score = 0
+    if unsigned:
+        score += 28
+    if high_entropy:
+        score += 18
+    if temp_path:
+        score += 22
+    if deleted_hint:
+        score += 16
+    if packed_hint:
+        score += 12
+    if rename_hint:
+        score += 10
+    return min(100, score)
+
+
+def forensic_normalize_pathish(raw: str) -> str:
+    s = (raw or "").strip().strip('"')
+    if s.startswith("\\\\?\\"):
+        s = s[4:]
+    if s.startswith("\\??\\"):
+        s = s[4:]
+    m = re.search(r"([A-Za-z]:\\[^|*\"<>?\n\r]+)", s)
+    if m:
+        return m.group(1)
+    return s
+
+
+def forensic_is_temp_path(p: str) -> bool:
+    u = p.upper().replace("/", "\\")
+    return any(m in u for m in _TEMP_MARKERS)
+
+
+def forensic_is_downloads_path(p: str) -> bool:
+    u = p.upper().replace("/", "\\")
+    return "\\DOWNLOADS\\" in u or u.rstrip("\\").endswith("\\DOWNLOADS")
+
+
+def forensic_is_removable_path(p: str) -> str | None:
+    u = p.upper()
+    m = re.match(r"^([A-Z]):\\", u)
+    if not m:
+        return None
+    letter = m.group(1)
+    script = (
+        f"$d='{letter}:'; try {{ (Get-CimInstance Win32_LogicalDisk -Filter \"DeviceID='$d'\").DriveType }} catch {{}}"
+    )
+    out = run_command(["powershell", "-NoProfile", "-Command", script], timeout=6, max_chars=200).strip()
+    if out == "2":
+        return "removable_drive_type_2"
+    return None
+
+
+def forensic_powershell_json(script: str, timeout: float = 22.0, max_chars: int = 28000) -> object:
+    raw = run_command(["powershell", "-NoProfile", "-Command", script], timeout=timeout, max_chars=max_chars)
+    if not raw or raw.startswith("Unavailable:"):
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+
+
+def bam_execution_records() -> dict[str, object]:
+    if platform.system() != "Windows":
+        return {"available": False, "items": [], "reason": "Windows-only"}
+    script = r"""
+$ErrorActionPreference='SilentlyContinue'
+$base='HKLM:\SYSTEM\CurrentControlSet\Services\bam\State\UserSettings'
+if(-not(Test-Path $base)){ Write-Output '[]' } else {
+$rows=New-Object System.Collections.Generic.List[object]
+foreach($sid in Get-ChildItem $base){
+  $p=Get-ItemProperty $sid.PSPath
+  foreach($prop in $p.PSObject.Properties){
+    $n=$prop.Name
+    if($n -match '^PS'){ continue }
+    if($n -in @('SDL','Status')){ continue }
+    $ft=$null
+    if($prop.Value -is [byte[]] -and $prop.Value.Length -ge 8){
+      $ft=[BitConverter]::ToUInt64($prop.Value,0)
+    }
+    $rows.Add([pscustomobject]@{ Sid=$sid.PSChildName; RegValueName=$n; FileTimeUtc=$ft })
+  }
+}
+$rows | Select-Object -First 320 | ConvertTo-Json -Compress -Depth 3
+}
+""".strip()
+    data = forensic_powershell_json(script, timeout=26.0, max_chars=32000)
+    items: list[dict[str, object]] = []
+    if isinstance(data, list):
+        items = [dict(x) for x in data if isinstance(x, dict)]
+    elif isinstance(data, dict):
+        items = [dict(data)]
+    normalized: list[dict[str, object]] = []
+    for it in items:
+        raw_path = str(it.get("RegValueName") or "")
+        norm = forensic_normalize_pathish(raw_path)
+        ft = it.get("FileTimeUtc")
+        try:
+            ft_int = int(ft) if ft is not None else 0
+        except (TypeError, ValueError):
+            ft_int = 0
+        iso = windows_filetime_to_iso(ft_int) if ft_int else None
+        exists = False
+        if norm and re.match(r"^[A-Za-z]:\\", norm):
+            try:
+                exists = Path(norm).is_file()
+            except OSError:
+                exists = False
+        normalized.append(
+            {
+                "registry_path_value": raw_path,
+                "normalized_path": norm,
+                "last_execution_utc": iso,
+                "file_exists": exists,
+                "sid": it.get("Sid"),
+            }
+        )
+    return {"available": True, "items": normalized, "source": "BAM UserSettings"}
+
+
+def pca_executed_records() -> dict[str, object]:
+    if platform.system() != "Windows":
+        return {"available": False, "items": [], "reason": "Windows-only"}
+    script = r"""
+$ErrorActionPreference='SilentlyContinue'
+$store='HKCU:\Software\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Compatibility Assistant\Store'
+$out=New-Object System.Collections.Generic.List[object]
+if(Test-Path $store){
+  foreach($v in (Get-Item $store).Property){
+    if($v -match '^PS'){ continue }
+    $out.Add([pscustomobject]@{ StoreValueName=$v })
+  }
+}
+$out | Select-Object -First 220 | ConvertTo-Json -Compress
+""".strip()
+    data = forensic_powershell_json(script, timeout=18.0, max_chars=24000)
+    items: list[dict[str, object]] = []
+    if isinstance(data, list):
+        items = [dict(x) for x in data if isinstance(x, dict)]
+    elif isinstance(data, dict):
+        items = [dict(data)]
+    parsed = []
+    for it in items:
+        name = str(it.get("StoreValueName") or "")
+        norm = forensic_normalize_pathish(name)
+        exists = False
+        if norm and re.match(r"^[A-Za-z]:\\", norm):
+            try:
+                exists = Path(norm).is_file()
+            except OSError:
+                exists = False
+        parsed.append({"raw": name, "normalized_path": norm, "file_exists": exists})
+    return {"available": True, "items": parsed, "source": "PCA Store (HKCU)"}
+
+
+def removable_drive_letters() -> set[str]:
+    if platform.system() != "Windows":
+        return set()
+    script = (
+        "Get-CimInstance Win32_LogicalDisk -ErrorAction SilentlyContinue | "
+        "Where-Object { $_.DriveType -eq 2 } | ForEach-Object { $_.DeviceID.TrimEnd(':') } | ConvertTo-Json -Compress"
+    )
+    data = forensic_powershell_json(script, timeout=10.0, max_chars=2000)
+    letters: set[str] = set()
+    if isinstance(data, list):
+        for x in data:
+            if isinstance(x, str) and len(x) == 1 and x.isalpha():
+                letters.add(x.upper())
+    elif isinstance(data, str) and len(data) == 1:
+        letters.add(data.upper())
+    return letters
+
+
+def usn_journal_enriched_sample() -> dict[str, object]:
+    if platform.system() != "Windows":
+        return {"available": False, "lines": [], "reason": "Windows-only"}
+    script = r"""
+$ErrorActionPreference='SilentlyContinue'
+$usnList = New-Object System.Collections.Generic.List[string]
+foreach ($d in (Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | ForEach-Object { $_.DeviceID })) {
+  try {
+    fsutil usn readjournal $d csv 2>$null |
+      Select-String -Pattern 'RENAME_|FILE_CREATE|FILE_DELETE|CLOSE|DATA_EXTEND|BASIC_INFO_CHANGE|STREAM_CHANGE|\.EXE|\.DLL|\.PS1|\.BAT|:|TEMP|TMP|Downloads' |
+      Select-Object -First 95 |
+      ForEach-Object { [void]$usnList.Add(($d + [char]9 + $_.Line)) }
+  } catch {}
+}
+$usnList | Select-Object -First 160 | ConvertTo-Json -Compress
+""".strip()
+    data = forensic_powershell_json(script, timeout=28.0, max_chars=32000)
+    lines: list[str] = []
+    if isinstance(data, list):
+        lines = [str(x) for x in data]
+    return {"available": True, "lines": lines, "source": "fsutil usn readjournal (bounded)"}
+
+
+def usn_parse_records(lines: list[str]) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for line in lines:
+        if not line or line.startswith("Unavailable"):
+            continue
+        drive = ""
+        body = line
+        if "\t" in line:
+            drive, body = line.split("\t", 1)
+        reasons = []
+        for tag in (
+            "FILE_CREATE",
+            "FILE_DELETE",
+            "FILE_DELETE_CLOSE",
+            "DATA_EXTEND",
+            "DATA_TRUNCATION",
+            "RENAME_OLD_NAME",
+            "RENAME_NEW_NAME",
+            "CLOSE",
+            "BASIC_INFO_CHANGE",
+            "INTEGRITY_CHANGE",
+            "STREAM_CHANGE",
+        ):
+            if tag in body:
+                reasons.append(tag)
+        path_m = re.search(r"([A-Za-z]:\\(?:[^,\"\n\r\t|<>?]+))", body)
+        path = path_m.group(1) if path_m else ""
+        if not path:
+            path_m2 = re.search(r"(\\\\[^\s,\"]+)", body)
+            path = path_m2.group(1) if path_m2 else ""
+        rows.append({"drive": drive, "reasons": reasons, "path": path, "raw": body[:900]})
+    return rows
+
+
+def sqlite_forensic_probe() -> dict[str, object]:
+    findings: list[dict[str, object]] = []
+    if platform.system() != "Windows":
+        return {"available": False, "findings": findings}
+    roots: list[Path] = []
+    la = os.getenv("LOCALAPPDATA")
+    if la:
+        roots.extend(
+            [
+                Path(la) / "Google" / "Chrome" / "User Data",
+                Path(la) / "Microsoft" / "Edge" / "User Data",
+                Path(la) / "BraveSoftware" / "Brave-Browser" / "User Data",
+            ]
+        )
+    profiles = ("Default", "Profile 1", "Profile 2")
+    history_paths: list[Path] = []
+    for base in roots:
+        if not base.is_dir():
+            continue
+        for prof in profiles:
+            hp = base / prof / "History"
+            if hp.is_file():
+                history_paths.append(hp)
+    keywords_sql = []
+    for group_name, terms in (
+        ("cheat_terms", _CHEAT_QUERY_TERMS),
+        ("loader_terms", _LOADER_TERMS),
+    ):
+        for t in terms:
+            keywords_sql.append((group_name, t.replace("'", "''")))
+    for hp in history_paths[:6]:
+        wal = hp.parent / (hp.name + "-wal")
+        shm = hp.parent / (hp.name + "-shm")
+        uri = f"file:{hp.as_posix()}?mode=ro"
+        try:
+            conn = sqlite3.connect(uri, uri=True, timeout=2.0)
+        except sqlite3.Error:
+            try:
+                conn = sqlite3.connect(str(hp), timeout=2.0)
+            except sqlite3.Error as exc:
+                findings.append(
+                    {
+                        "database": str(hp),
+                        "error": str(exc),
+                        "wal_present": wal.exists(),
+                        "shm_present": shm.exists(),
+                    }
+                )
+                continue
+        try:
+            cur = conn.cursor()
+            try:
+                cur.execute("PRAGMA freelist_count")
+                fl = int(cur.fetchone()[0])
+            except sqlite3.Error:
+                fl = -1
+            hits: list[dict[str, object]] = []
+            for group_name, term in keywords_sql[:48]:
+                try:
+                    cur.execute(
+                        "SELECT url, title, last_visit_time FROM urls WHERE url LIKE ? LIMIT 8",
+                        (f"%{term}%",),
+                    )
+                    for url, title, lvt in cur.fetchall():
+                        hits.append({"group": group_name, "term": term, "url": (url or "")[:500], "title": (title or "")[:240], "last_visit_time": lvt})
+                except sqlite3.Error:
+                    continue
+            exe_hits: list[dict[str, object]] = []
+            try:
+                cur.execute(
+                    "SELECT url, title, last_visit_time FROM urls WHERE url LIKE '%.exe%' OR url LIKE '%.dll%' LIMIT 15"
+                )
+                for url, title, lvt in cur.fetchall():
+                    exe_hits.append({"url": (url or "")[:500], "title": (title or "")[:200], "last_visit_time": lvt})
+            except sqlite3.Error:
+                pass
+            temp_hist: list[dict[str, object]] = []
+            try:
+                cur.execute(
+                    "SELECT url, title, last_visit_time FROM urls WHERE "
+                    "lower(url) LIKE '%/temp/%' OR lower(url) LIKE '%\\\\temp\\\\%' OR lower(url) LIKE '%/tmp/%' "
+                    "LIMIT 12"
+                )
+                for url, title, lvt in cur.fetchall():
+                    temp_hist.append({"url": (url or "")[:500], "title": (title or "")[:200], "last_visit_time": lvt})
+            except sqlite3.Error:
+                pass
+            findings.append(
+                {
+                    "database": str(hp),
+                    "wal_present": wal.exists(),
+                    "shm_present": shm.exists(),
+                    "freelist_count": fl,
+                    "keyword_hits": hits[:40],
+                    "executable_url_hits": exe_hits[:20],
+                    "temp_path_url_hits": temp_hist[:12],
+                    "note": "WAL present may retain uncommitted rows; freelist_count>0 suggests carve-able deleted records (not live-carved).",
+                }
+            )
+        finally:
+            try:
+                conn.close()
+            except sqlite3.Error:
+                pass
+    return {"available": True, "findings": findings}
+
+
+def prefetch_extract_stem(pf_name: str) -> str:
+    m = re.match(r"(.+)-[0-9A-F]{8}\.pf\Z", pf_name, re.IGNORECASE)
+    if m:
+        return m.group(1).upper()
+    return Path(pf_name).stem.upper()
+
+
+def basename_key(path: str) -> str:
+    if not path:
+        return ""
+    try:
+        return Path(path).name.lower()
+    except OSError:
+        return ""
+
+
+class UnifiedCorrelationEngine:
+    def build(
+        self,
+        *,
+        designated: dict[str, object],
+        prefetch: dict[str, object],
+        deletion: dict[str, object],
+        bam: dict[str, object],
+        pca: dict[str, object],
+        sqlite_pack: dict[str, object],
+        usn_records: list[dict[str, object]],
+        detections_flat: list[dict[str, object]],
+    ) -> dict[str, object]:
+        timeline: list[dict[str, object]] = []
+        for item in designated.get("hits", [])[:120]:
+            timeline.append(
+                {
+                    "artifact": "designated_folder_scan",
+                    "path": item.get("path"),
+                    "timestamp": item.get("modified"),
+                    "detail": "user_profile_hit",
+                }
+            )
+        for it in bam.get("items", [])[:200]:
+            timeline.append(
+                {
+                    "artifact": "bam",
+                    "path": it.get("normalized_path"),
+                    "timestamp": it.get("last_execution_utc"),
+                    "detail": "bam_execution",
+                }
+            )
+        for it in pca.get("items", [])[:200]:
+            timeline.append(
+                {
+                    "artifact": "pca_store",
+                    "path": it.get("normalized_path"),
+                    "timestamp": None,
+                    "detail": "pca_record",
+                }
+            )
+        for row in usn_records[:180]:
+            timeline.append(
+                {
+                    "artifact": "usn",
+                    "path": row.get("path"),
+                    "timestamp": None,
+                    "detail": ",".join(row.get("reasons") or []) or "usn_row",
+                }
+            )
+        for pf in prefetch.get("items", [])[:120]:
+            timeline.append(
+                {
+                    "artifact": "prefetch",
+                    "path": str(Path(str(prefetch.get("folder", ""))) / str(pf.get("name", ""))) if prefetch.get("folder") else pf.get("name"),
+                    "timestamp": pf.get("modified"),
+                    "detail": "prefetch_trace",
+                }
+            )
+        timeline.sort(key=lambda x: (x.get("timestamp") or ""), reverse=True)
+
+        prefetch_basenames = {prefetch_extract_stem(x.get("name", "")) for x in prefetch.get("items", []) if x.get("name")}
+        bam_names = {basename_key(str(x.get("normalized_path", ""))) for x in bam.get("items", [])}
+        chains: list[dict[str, object]] = []
+
+        def prefetch_stem_base(st: str) -> str:
+            return Path(st).stem.upper() if st else ""
+
+        for stem in sorted(prefetch_basenames):
+            if len(stem) < 4:
+                continue
+            st_base = prefetch_stem_base(stem)
+            chain_evidence: list[dict[str, object]] = []
+            if any(st_base == Path(str(h.get("path", ""))).stem.upper() for h in designated.get("hits", [])):
+                chain_evidence.append({"source": "saved_files", "detail": "profile_hit_same_stem"})
+            if stem.lower() in bam_names or f"{st_base.lower()}.exe" in bam_names or f"{st_base.lower()}.dll" in bam_names:
+                chain_evidence.append({"source": "bam", "detail": "execution_record"})
+            if any(
+                st_base == Path(str(r.get("path", ""))).stem.upper()
+                for r in usn_records
+                if "DELETE" in ",".join(r.get("reasons") or [])
+            ):
+                chain_evidence.append({"source": "usn", "detail": "delete_near_stem"})
+            if len(chain_evidence) >= 2:
+                chains.append(
+                    {
+                        "pattern": "download_or_staging_to_execution",
+                        "stem": stem,
+                        "evidence": chain_evidence,
+                    }
+                )
+
+        pca_paths = [str(it.get("normalized_path") or "") for it in pca.get("items", []) if it.get("normalized_path")]
+        pca_counts = Counter(pca_paths)
+        for path, cnt in pca_counts.most_common(12):
+            if cnt >= 3 and path.lower().endswith(".exe"):
+                chains.append(
+                    {
+                        "pattern": "pca_crash_loop_or_repeat_launch",
+                        "stem": Path(path).stem.upper(),
+                        "evidence": [{"source": "pca_store", "detail": f"repeated_entries={cnt}", "path": path[:520]}],
+                    }
+                )
+
+        return {
+            "engine_version": _FORENSIC_ENGINE_VERSION,
+            "timeline": timeline[:400],
+            "execution_chains": chains[:80],
+            "cross_artifact_summary": {
+                "prefetch_stems_sampled": len(prefetch_basenames),
+                "bam_basenames": len(bam_names),
+                "usn_rows": len(usn_records),
+                "flat_detection_count": len(detections_flat),
+            },
+        }
+
+
+def assemble_forensic_detections(
+    designated: dict[str, object],
+    prefetch: dict[str, object],
+    deletion: dict[str, object],
+    bam_struct: dict[str, object],
+    pca: dict[str, object],
+    sqlite_pack: dict[str, object],
+    usn_extra: dict[str, object],
+) -> dict[str, object]:
+    detections: dict[str, list[dict[str, object]]] = {k: [] for k in (
+        "saved_files",
+        "usn",
+        "bam",
+        "deleted_bam",
+        "sqlite",
+        "prefetch",
+        "pca",
+        "global",
+    )}
+    flat: list[dict[str, object]] = []
+    removable = removable_drive_letters()
+
+    usn_lines = list(usn_extra.get("lines") or [])
+    usn_text = str(deletion.get("usn_delete_sample") or "")
+    if usn_text:
+        usn_lines.extend(usn_text.splitlines()[:120])
+    usn_records = usn_parse_records(usn_lines)
+
+    bam_items = bam_struct.get("items") or []
+    bam_name_set = {basename_key(str(x.get("normalized_path", ""))) for x in bam_items if x.get("normalized_path")}
+
+    temp_delete_exe = [
+        r
+        for r in usn_records
+        if forensic_is_temp_path(r.get("path") or "")
+        and any("DELETE" in x for x in (r.get("reasons") or []))
+        and re.search(r"\.(exe|dll)\Z", (r.get("path") or ""), re.IGNORECASE)
+    ]
+    if temp_delete_exe:
+        detections["usn"].append(
+            forensic_finding(
+                severity="high",
+                confidence=0.62,
+                reason="Executable-related USN delete/close activity under a temp or cache directory (staging/cleanup).",
+                artifact_source="USN Journal (bounded sample)",
+                file_path=temp_delete_exe[0].get("path", "")[:520],
+                correlated_evidence=[{"source": "usn", "detail": r.get("raw", "")[:240]} for r in temp_delete_exe[:5]],
+                risk_score=forensic_risk_score(unsigned=True, temp_path=True, deleted_hint=True),
+            )
+        )
+
+    rename_rows = [r for r in usn_records if any("RENAME" in x for x in (r.get("reasons") or [])) and r.get("path")]
+    if len(rename_rows) >= 2:
+        detections["usn"].append(
+            forensic_finding(
+                severity="medium",
+                confidence=0.55,
+                reason="Rename-related USN reasons observed; may indicate rename chains prior to execution.",
+                artifact_source="USN Journal",
+                file_path=rename_rows[0].get("path", "")[:520],
+                correlated_evidence=[{"source": "usn", "detail": x.get("raw", "")[:200]} for x in rename_rows[:6]],
+                risk_score=forensic_risk_score(rename_hint=True),
+            )
+        )
+
+    ads_rows = [r for r in usn_records if ":" in (r.get("path") or "") or "STREAM_CHANGE" in ",".join(r.get("reasons") or [])]
+    if ads_rows:
+        detections["usn"].append(
+            forensic_finding(
+                severity="medium",
+                confidence=0.48,
+                reason="Possible alternate data stream or stream change activity in USN sample.",
+                artifact_source="USN Journal",
+                file_path=ads_rows[0].get("path", "")[:520],
+                correlated_evidence=[{"source": "usn", "detail": x.get("raw", "")[:200]} for x in ads_rows[:4]],
+                risk_score=40,
+            )
+        )
+
+    timestomp_hint = [r for r in usn_records if "BASIC_INFO_CHANGE" in (r.get("reasons") or []) and re.search(r"\.exe\Z", r.get("path") or "", re.I)]
+    if timestomp_hint:
+        detections["usn"].append(
+            forensic_finding(
+                severity="low",
+                confidence=0.35,
+                reason="BASIC_INFO_CHANGE on executable path(s); corroborate with SI vs FN MFT attributes offline.",
+                artifact_source="USN Journal",
+                file_path=timestomp_hint[0].get("path", "")[:520],
+                correlated_evidence=[{"source": "usn", "detail": x.get("raw", "")[:180]} for x in timestomp_hint[:4]],
+                risk_score=22,
+            )
+        )
+
+    path_groups: defaultdict[str, list[dict[str, object]]] = defaultdict(list)
+    for r in usn_records:
+        key = basename_key(r.get("path") or "")
+        if key:
+            path_groups[key].append(r)
+    clusters = [(k, v) for k, v in path_groups.items() if len(v) >= 4 and k.endswith((".exe", ".dll"))]
+    if clusters:
+        k, v = clusters[0]
+        detections["usn"].append(
+            forensic_finding(
+                severity="medium",
+                confidence=0.5,
+                reason="Clustered USN activity for a single filename (rapid lifecycle / staging).",
+                artifact_source="USN Journal",
+                file_path=v[0].get("path", "")[:520],
+                correlated_evidence=[{"source": "usn_cluster", "detail": str(len(v))}],
+                risk_score=35,
+            )
+        )
+
+    for hit in designated.get("hits", [])[:80]:
+        p = str(hit.get("path") or "")
+        ext = Path(p).suffix.lower()
+        sha256, ent, _sz = ("", None, None)
+        sig = "not_checked"
+        ymatches: list[str] = []
+        if ext in {".exe", ".dll"} and p:
+            sha256, ent, _sz = forensic_file_peek(Path(p))
+            sig = forensic_authenticode_status(p)
+            ymatches = forensic_yara_hook_scan(Path(p))
+        unsigned = sig.upper() in {"NOTSIGNED", "NOT_SIGNED"} or "NOTSIGNED" in sig.upper()
+        high_ent = ent is not None and ent >= 7.4
+        in_temp = forensic_is_temp_path(p)
+        in_dl = forensic_is_downloads_path(p)
+        reasons_list: list[str] = []
+        if in_dl and ext in {".exe", ".dll"}:
+            reasons_list.append("executable_under_downloads")
+        if in_temp and ext in {".exe", ".dll"}:
+            reasons_list.append("execution_or_drop_from_temp_like_path")
+        weird = hit.get("name_anomaly_reasons") or []
+        if weird:
+            reasons_list.append("suspicious_filename_entropy_or_shape:" + ",".join(weird[:4]))
+        if in_temp and ext in {".exe", ".dll"} and (unsigned or high_ent or weird):
+            detections["saved_files"].append(
+                forensic_finding(
+                    severity="medium",
+                    confidence=0.53,
+                    reason="Binary under a temp or package cache path with at least one additional risk signal (unsigned, high entropy, or odd filename).",
+                    artifact_source="Saved Files",
+                    file_path=p,
+                    sha256=sha256,
+                    signature_status=sig,
+                    entropy_score=ent,
+                    yara_matches=ymatches,
+                    timestamps={"modified_utc": str(hit.get("modified") or "")},
+                    correlated_evidence=[{"source": "path_heuristic", "detail": "temp_or_cache_like"}],
+                    risk_score=forensic_risk_score(temp_path=True, unsigned=unsigned, high_entropy=bool(high_ent)),
+                )
+            )
+        if unsigned and (in_dl or any(m in p.upper() for m in _BROWSER_PARENT_MARKERS)):
+            detections["saved_files"].append(
+                forensic_finding(
+                    severity="high",
+                    confidence=0.58,
+                    reason="Unsigned executable under Downloads or browser-related path with suspicious filename signals.",
+                    artifact_source="Saved Files / profile scan",
+                    file_path=p,
+                    sha256=sha256,
+                    signature_status=sig,
+                    entropy_score=ent,
+                    yara_matches=ymatches,
+                    timestamps={"modified_utc": str(hit.get("modified") or "")},
+                    correlated_evidence=[{"source": "designated_scan", "detail": ",".join(reasons_list)}],
+                    risk_score=forensic_risk_score(unsigned=True, high_entropy=high_ent, temp_path=in_temp),
+                )
+            )
+        if in_dl and ext in {".exe", ".dll"} and Path(p).name.lower() in bam_name_set:
+            detections["saved_files"].append(
+                forensic_finding(
+                    severity="medium",
+                    confidence=0.56,
+                    reason="Downloads-resident executable whose basename matches a BAM execution record (probable download-to-execution chain).",
+                    artifact_source="Saved Files + BAM",
+                    file_path=p,
+                    sha256=sha256,
+                    signature_status=sig,
+                    entropy_score=ent,
+                    yara_matches=ymatches,
+                    timestamps={"modified_utc": str(hit.get("modified") or "")},
+                    correlated_evidence=[{"source": "bam", "detail": Path(p).name.lower()}],
+                    risk_score=forensic_risk_score(temp_path=False, unsigned=unsigned, high_entropy=high_ent),
+                )
+            )
+        if in_dl and ext in {".exe", ".dll"} and weird and any(
+            x in weird for x in ("hex_like_name", "mixed_case_alnum_blob", "guid_like_segment", "chaotic_mixed_case")
+        ):
+            detections["saved_files"].append(
+                forensic_finding(
+                    severity="medium",
+                    confidence=0.51,
+                    reason="Renamed or high-entropy style filename under Downloads (possible rename-after-fetch).",
+                    artifact_source="Saved Files",
+                    file_path=p,
+                    sha256=sha256,
+                    signature_status=sig,
+                    entropy_score=ent,
+                    yara_matches=ymatches,
+                    timestamps={"modified_utc": str(hit.get("modified") or "")},
+                    correlated_evidence=[{"source": "name_heuristic", "detail": ",".join(weird[:6])}],
+                    risk_score=forensic_risk_score(rename_hint=True, high_entropy=bool(high_ent)),
+                )
+            )
+        if ext in {".exe", ".dll"} and p:
+            deleted_name_match = any(
+                Path(str(r.get("path", ""))).name.lower() == Path(p).name.lower()
+                for r in usn_records
+                if "DELETE" in ",".join(r.get("reasons") or [])
+            )
+            if deleted_name_match and Path(p).is_file():
+                detections["saved_files"].append(
+                    forensic_finding(
+                        severity="medium",
+                        confidence=0.49,
+                        reason="File still exists on disk but USN sample shows delete event for same filename (possible rename-away or volume shadowing; verify with full journal).",
+                        artifact_source="Saved Files + USN",
+                        file_path=p,
+                        sha256=sha256,
+                        signature_status=sig,
+                        entropy_score=ent,
+                        yara_matches=ymatches,
+                        timestamps={"modified_utc": str(hit.get("modified") or "")},
+                        correlated_evidence=[{"source": "usn", "detail": "delete_name_collision"}],
+                        risk_score=32,
+                    )
+                )
+
+        if ext in _ARCHIVE_EXT and in_dl:
+            detections["saved_files"].append(
+                forensic_finding(
+                    severity="low",
+                    confidence=0.4,
+                    reason="Archive in Downloads; correlate with subsequent temp execution in USN/Prefetch.",
+                    artifact_source="Saved Files / profile scan",
+                    file_path=p,
+                    timestamps={"modified_utc": str(hit.get("modified") or "")},
+                    risk_score=15,
+                )
+            )
+
+    prefetch_items = prefetch.get("items") or []
+    pf_stems = {prefetch_extract_stem(str(x.get("name", ""))) for x in prefetch_items}
+
+    for it in bam_items[:220]:
+        norm = str(it.get("normalized_path") or "")
+        if not norm:
+            continue
+        stem = Path(norm).stem.upper()
+        unsigned = False
+        sig = "not_checked"
+        sha256, ent = ("", None)
+        ymatches = []
+        if re.search(r"\.(exe|dll)\Z", norm, re.I) and re.match(r"^[A-Za-z]:\\", norm):
+            sha256, ent, _ = forensic_file_peek(Path(norm))
+            sig = forensic_authenticode_status(norm)
+            unsigned = sig.upper() in {"NOTSIGNED", "NOT_SIGNED"} or "NOTSIGNED" in sig.upper()
+            ymatches = forensic_yara_hook_scan(Path(norm))
+        in_temp = forensic_is_temp_path(norm)
+        high_ent = ent is not None and ent >= 7.5
+        exists = bool(it.get("file_exists"))
+        stem_pf = any(Path(s).stem.upper() == stem for s in pf_stems)
+        if unsigned and (in_temp or high_ent):
+            detections["bam"].append(
+                forensic_finding(
+                    severity="high" if in_temp and unsigned else "medium",
+                    confidence=0.63 if in_temp else 0.52,
+                    reason="BAM execution of unsigned binary" + (" from temp-like path" if in_temp else "") + (" with high byte entropy" if high_ent else ""),
+                    artifact_source="BAM",
+                    file_path=norm,
+                    sha256=sha256,
+                    signature_status=sig,
+                    entropy_score=ent,
+                    yara_matches=ymatches,
+                    timestamps={"last_execution_utc": str(it.get("last_execution_utc") or "")},
+                    correlated_evidence=[{"source": "bam", "detail": "prefetch_hit" if stem_pf else "no_prefetch_stem_match"}],
+                    risk_score=forensic_risk_score(unsigned=True, temp_path=in_temp, high_entropy=bool(high_ent), packed_hint=high_ent),
+                )
+            )
+        if not exists and re.search(r"\.(exe|dll)\Z", norm, re.I):
+            detections["deleted_bam"].append(
+                forensic_finding(
+                    severity="medium",
+                    confidence=0.57,
+                    reason="BAM references an executable path that no longer exists on disk (possible delete-after-run).",
+                    artifact_source="BAM + filesystem",
+                    file_path=norm,
+                    sha256=sha256,
+                    signature_status=sig,
+                    entropy_score=ent,
+                    yara_matches=ymatches,
+                    timestamps={"last_execution_utc": str(it.get("last_execution_utc") or "")},
+                    correlated_evidence=[{"source": "prefetch", "detail": "stem_match" if stem_pf else "no_stem_match"}],
+                    risk_score=forensic_risk_score(deleted_hint=True, unsigned=unsigned, temp_path=in_temp),
+                )
+            )
+        drive_letter = norm[0].upper() if re.match(r"^[A-Za-z]:\\", norm) else ""
+        if drive_letter and drive_letter in removable:
+            detections["deleted_bam"].append(
+                forensic_finding(
+                    severity="medium",
+                    confidence=0.54,
+                    reason="BAM execution path resides on a currently mounted removable drive (letter).",
+                    artifact_source="BAM + Win32_LogicalDisk",
+                    file_path=norm,
+                    signature_status=sig,
+                    correlated_evidence=[{"source": "wmi", "detail": f"DriveType=2 letter={drive_letter}"}],
+                    risk_score=30,
+                )
+            )
+
+    missing_bam_stems = {
+        Path(str(x.get("normalized_path", ""))).stem.upper()
+        for x in bam_items
+        if not x.get("file_exists") and re.search(r"\.(exe|dll)\Z", str(x.get("normalized_path", "")), re.I)
+    }
+
+    for row in prefetch_items[:120]:
+        name = str(row.get("name") or "")
+        stem = prefetch_extract_stem(name)
+        if any(tool in stem for tool in _PREFETCH_TOOL_STEMS):
+            detections["prefetch"].append(
+                forensic_finding(
+                    severity="high",
+                    confidence=0.72,
+                    reason="Prefetch artifact for a known memory/tooling/injector-class binary stem.",
+                    artifact_source="Prefetch",
+                    file_path=str(Path(prefetch.get("folder", "")) / name) if prefetch.get("folder") else name,
+                    timestamps={"prefetch_modified_utc": str(row.get("modified") or "")},
+                    correlated_evidence=[{"source": "prefetch", "detail": stem}],
+                    risk_score=68,
+                )
+            )
+        norm_name = name.upper()
+        if "\\TEMP\\" in norm_name or "TMP" in stem:
+            detections["prefetch"].append(
+                forensic_finding(
+                    severity="medium",
+                    confidence=0.44,
+                    reason="Prefetch filename suggests temp-oriented execution (heuristic on token).",
+                    artifact_source="Prefetch",
+                    file_path=str(Path(prefetch.get("folder", "")) / name) if prefetch.get("folder") else name,
+                    timestamps={"prefetch_modified_utc": str(row.get("modified") or "")},
+                    risk_score=28,
+                )
+            )
+        base = Path(stem).stem.upper() if stem else ""
+        if base and base in missing_bam_stems:
+            detections["prefetch"].append(
+                forensic_finding(
+                    severity="high",
+                    confidence=0.58,
+                    reason="Prefetch artifact for a binary stem that also appears as a missing on-disk BAM target (deleted executable with prefetch residue).",
+                    artifact_source="Prefetch + BAM",
+                    file_path=str(Path(prefetch.get("folder", "")) / name) if prefetch.get("folder") else name,
+                    timestamps={"prefetch_modified_utc": str(row.get("modified") or "")},
+                    correlated_evidence=[{"source": "bam", "detail": f"deleted_stem_match:{base}"}],
+                    risk_score=55,
+                )
+            )
+
+    for it in pca.get("items", [])[:200]:
+        norm = str(it.get("normalized_path") or "")
+        if not norm:
+            continue
+        exists = bool(it.get("file_exists"))
+        sig = "not_checked"
+        sha256, ent = ("", None)
+        if re.search(r"\.(exe|dll)\Z", norm, re.I) and re.match(r"^[A-Za-z]:\\", norm):
+            sha256, ent, _ = forensic_file_peek(Path(norm))
+            sig = forensic_authenticode_status(norm)
+        unsigned = sig.upper() in {"NOTSIGNED", "NOT_SIGNED"} or "NOTSIGNED" in sig.upper()
+        if not exists and norm.lower().endswith((".exe", ".dll")):
+            detections["pca"].append(
+                forensic_finding(
+                    severity="medium",
+                    confidence=0.5,
+                    reason="PCA compatibility store lists an executable that is missing on disk (possible cleanup).",
+                    artifact_source="PCA Store",
+                    file_path=norm,
+                    sha256=sha256,
+                    signature_status=sig,
+                    entropy_score=ent,
+                    correlated_evidence=[{"source": "bam", "detail": "compare_timestamps_offline"}],
+                    risk_score=forensic_risk_score(deleted_hint=True),
+                )
+            )
+        if unsigned and norm.lower().endswith(".exe"):
+            detections["pca"].append(
+                forensic_finding(
+                    severity="medium",
+                    confidence=0.48,
+                    reason="Unsigned portable executable referenced from PCA store.",
+                    artifact_source="PCA Store",
+                    file_path=norm,
+                    sha256=sha256,
+                    signature_status=sig,
+                    entropy_score=ent,
+                    risk_score=forensic_risk_score(unsigned=True),
+                )
+            )
+        drv = norm[0].upper() if re.match(r"^[A-Za-z]:\\", norm) else ""
+        if drv and drv in removable:
+            detections["pca"].append(
+                forensic_finding(
+                    severity="medium",
+                    confidence=0.52,
+                    reason="PCA record path uses a drive letter currently classified as removable (Win32_LogicalDisk DriveType=2).",
+                    artifact_source="PCA Store + WMI",
+                    file_path=norm,
+                    signature_status=sig,
+                    correlated_evidence=[{"source": "wmi", "detail": f"removable_letter={drv}"}],
+                    risk_score=34,
+                )
+            )
+
+    for dbf in sqlite_pack.get("findings", [])[:8]:
+        for h in dbf.get("keyword_hits", [])[:12]:
+            detections["sqlite"].append(
+                forensic_finding(
+                    severity="medium",
+                    confidence=0.6,
+                    reason=f"Browser history keyword hit ({h.get('group')} / {h.get('term')}).",
+                    artifact_source="SQLite Web Data/History",
+                    file_path=str(dbf.get("database", "")),
+                    timestamps={"last_visit_time": str(h.get("last_visit_time"))},
+                    correlated_evidence=[{"source": "url", "detail": h.get("url", "")[:400]}],
+                    risk_score=36,
+                )
+            )
+        for th in dbf.get("temp_path_url_hits", [])[:8]:
+            detections["sqlite"].append(
+                forensic_finding(
+                    severity="low",
+                    confidence=0.45,
+                    reason="Browser history references a temp-style URL path (possible download/execution staging).",
+                    artifact_source="SQLite History",
+                    file_path=str(dbf.get("database", "")),
+                    timestamps={"last_visit_time": str(th.get("last_visit_time"))},
+                    correlated_evidence=[{"source": "url", "detail": th.get("url", "")[:400]}],
+                    risk_score=22,
+                )
+            )
+        if dbf.get("wal_present"):
+            detections["sqlite"].append(
+                forensic_finding(
+                    severity="low",
+                    confidence=0.42,
+                    reason="SQLite WAL present; examiner may recover additional rows offline.",
+                    artifact_source=str(dbf.get("database", "")),
+                    file_path=str(dbf.get("database", "")),
+                    correlated_evidence=[{"source": "pragma", "detail": f"freelist_count={dbf.get('freelist_count')}"}],
+                    risk_score=12,
+                )
+            )
+
+    for cat in detections.values():
+        flat.extend(cat)
+
+    engine = UnifiedCorrelationEngine()
+    correlation = engine.build(
+        designated=designated,
+        prefetch=prefetch,
+        deletion=deletion,
+        bam=bam_struct,
+        pca=pca,
+        sqlite_pack=sqlite_pack,
+        usn_records=usn_records,
+        detections_flat=flat,
+    )
+
+    detections["global"].append(
+        forensic_finding(
+            severity="low",
+            confidence=0.9,
+            reason="Unified forensic pass completed; review correlated execution chains and timeline.",
+            artifact_source="UnifiedCorrelationEngine",
+            correlated_evidence=[{"source": "summary", "detail": json.dumps(correlation.get("cross_artifact_summary"), default=str)[:1200]}],
+            risk_score=0,
+        )
+    )
+
+    return {
+        "engine_version": _FORENSIC_ENGINE_VERSION,
+        "usn_file_lifecycle_rows": usn_records[:220],
+        "detections": detections,
+        "detections_flat": flat[:500],
+        "unified_correlation": correlation,
+    }
+
+
+def build_forensic_analysis_bundle(
+    designated: dict[str, object],
+    prefetch: dict[str, object],
+    deletion: dict[str, object],
+) -> dict[str, object]:
+    if platform.system() != "Windows":
+        return {
+            "available": False,
+            "reason": "Forensic correlation bundle is Windows-focused in this build",
+            "engine_version": _FORENSIC_ENGINE_VERSION,
+        }
+    bam_struct = bam_execution_records()
+    pca = pca_executed_records()
+    sqlite_pack = sqlite_forensic_probe()
+    usn_extra = usn_journal_enriched_sample()
+    bundle = assemble_forensic_detections(
+        designated=designated,
+        prefetch=prefetch,
+        deletion=deletion,
+        bam_struct=bam_struct,
+        pca=pca,
+        sqlite_pack=sqlite_pack,
+        usn_extra=usn_extra,
+    )
+    bundle["bam_structured"] = bam_struct
+    bundle["pca_executed"] = pca
+    bundle["sqlite"] = sqlite_pack
+    bundle["usn_enriched_sample"] = {"line_count": len(usn_extra.get("lines") or []), "source": usn_extra.get("source")}
+    bundle["available"] = True
+    return bundle
+
 def build_report() -> dict:
     scan_started_at = datetime.now(timezone.utc).isoformat()
     memory = psutil.virtual_memory()
     disk = psutil.disk_usage(str(Path.home().anchor or Path.home()))
     prefetch = prefetch_metadata()
+    designated = designated_folder_extension_scan()
+    deletion_signals = deletion_and_log_clearing_signals()
+    forensic_bundle = build_forensic_analysis_bundle(designated, prefetch, deletion_signals)
     processes = []
     for proc in psutil.process_iter(["pid", "name", "username", "status"]):
         try:
@@ -12830,10 +14002,11 @@ def build_report() -> dict:
             "services": windows_service_signals(),
             "usb_events": usb_event_summary(),
             "shellbag_clear_signal": shellbag_clear_signal(),
-            "deletion_and_log_clearing_signals": deletion_and_log_clearing_signals(),
+            "deletion_and_log_clearing_signals": deletion_signals,
             "prefetch_health": prefetch_health_signals(prefetch),
             "roblox_executor_indicators": executor_indicator_scan(),
-            "designated_folder_suspicious_files": designated_folder_extension_scan(),
+            "designated_folder_suspicious_files": designated,
+            "forensic_analysis": forensic_bundle,
         },
     }
 
