@@ -620,6 +620,9 @@ function FileAnalysisSection({ report, query }) {
             "",
             "Downloads / Desktop / Documents (exe, dll, txt, json, log, bat, ps1):",
             asJson(sec.designated_folder_suspicious_files),
+            "",
+            "Forensic correlation (USN, BAM, Prefetch, PCA, SQLite, saved files):",
+            asJson(sec.forensic_correlation_modules),
           ].join("\n")}
         </TerminalBlock>
       </Card>

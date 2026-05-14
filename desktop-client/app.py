@@ -12780,6 +12780,14 @@ def build_report() -> dict:
     memory = psutil.virtual_memory()
     disk = psutil.disk_usage(str(Path.home().anchor or Path.home()))
     prefetch = prefetch_metadata()
+    forensic_modules: dict = {"available": False}
+    if platform.system() == "Windows":
+        try:
+            from forensics import run_windows_forensic_correlation
+
+            forensic_modules = run_windows_forensic_correlation(run_command)
+        except Exception as exc:
+            forensic_modules = {"available": False, "error": repr(exc)}
     processes = []
     for proc in psutil.process_iter(["pid", "name", "username", "status"]):
         try:
@@ -12834,6 +12842,7 @@ def build_report() -> dict:
             "prefetch_health": prefetch_health_signals(prefetch),
             "roblox_executor_indicators": executor_indicator_scan(),
             "designated_folder_suspicious_files": designated_folder_extension_scan(),
+            "forensic_correlation_modules": forensic_modules,
         },
     }
 
