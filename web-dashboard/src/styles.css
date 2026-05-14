@@ -417,7 +417,8 @@ input {
 
 .results-nav nav button {
   justify-content: flex-start;
-  min-height: 42px;
+  align-items: flex-start;
+  min-height: 50px;
   border-color: transparent;
   background: transparent;
   color: #c8c1c4;
@@ -428,6 +429,62 @@ input {
   background: linear-gradient(180deg, #360a11, #17070a);
   border-color: #ef233c;
   color: #ff6b7a;
+}
+
+.results-nav nav button .nav-tab-icon {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.nav-tab-labels {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+  text-align: left;
+}
+
+.nav-tab-primary {
+  line-height: 1.2;
+}
+
+.nav-tab-alt {
+  font-size: 11px;
+  font-weight: 500;
+  color: #7a8f96;
+  line-height: 1.2;
+}
+
+.results-nav nav button.active .nav-tab-alt {
+  color: rgba(255, 140, 152, 0.85);
+}
+
+.tutorial-steps {
+  margin: 0;
+  padding-left: 1.25rem;
+  color: #c8c1c4;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.tutorial-steps li {
+  margin-bottom: 12px;
+}
+
+.tutorial-steps li:last-child {
+  margin-bottom: 0;
+}
+
+.tutorial-prose p {
+  margin: 0 0 12px;
+  color: #c8c1c4;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.tutorial-prose p:last-child {
+  margin-bottom: 0;
 }
 
 .result-content {

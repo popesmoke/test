@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createRoot } from "react-dom/client";
 import {
   AlertTriangle,
+  BookOpen,
   Boxes,
   ChevronUp,
   Clock3,
@@ -850,11 +851,96 @@ function ForensicArtifactsSection({ report, query }) {
   );
 }
 
+function TutorialSection() {
+  return (
+    <>
+      <Card icon={BookOpen} title="Reading a session (quick path)">
+        <ol className="tutorial-steps">
+          <li>
+            Start on <strong>Suspicion Score</strong> for the rolled-up number and the reasons list. That view tells you
+            which indicator families fired (executors, Prefetch, recent files, logs, Defender, clearing signals, and
+            others).
+          </li>
+          <li>
+            Open <strong>Forensics</strong> (also labeled <em>Evidence review</em>) for individual findings: severity,
+            risk score, file path, signature, entropy, and correlated evidence. High severity with recent timestamps is
+            worth prioritizing.
+          </li>
+          <li>
+            Use <strong>Correlation</strong> (<em>Cross-source timeline</em>) to see whether separate artifacts line up in
+            time—for example the same binary name appearing under BAM, Prefetch, and profile folders around the same
+            window.
+          </li>
+          <li>
+            Use <strong>Artifacts</strong> (<em>Structured OS traces</em>) for raw structured tables (BAM, PCA store, USN
+            samples). This is where you confirm <em>whether</em> something ran or touched disk, not just that a string
+            matched.
+          </li>
+          <li>
+            Cross-check <strong>Roblox</strong>, <strong>Bypass Detection</strong>, <strong>Deletions</strong>, and{" "}
+            <strong>Crash Logs</strong> for client-side narratives (errors, injectors named in traces, log clearing, or
+            tampering hints).
+          </li>
+        </ol>
+      </Card>
+      <Card icon={BookOpen} title="Spotting recent cheating (practical signs)">
+        <div className="tutorial-prose">
+          <p>
+            This dashboard does not prove intent; it surfaces <strong>technical indicators</strong> that often appear
+            when third-party tooling interacted with the game or the OS. Treat every item as a lead to verify with your
+            own policy and context.
+          </p>
+          <p>
+            <strong>Recency without relying on a single field:</strong> compare timestamps on forensic findings, USN
+            rows, Prefetch hits, and &quot;recent opened&quot; style lists against the scan window. Activity that clusters
+            <em>just before</em> the player joined your review, or during the session window, is more interesting than
+            old installer residue.
+          </p>
+          <p>
+            <strong>Executor-style footprints:</strong> look for matching names across layers—disk path, BAM execution
+            residue, Prefetch for the same stem, crash logs mentioning inject or executor frameworks, and downloads or
+            desktop drops with suspicious filenames. One weak match can be noise; the same story repeated across
+            artifacts is stronger.
+          </p>
+          <p>
+            <strong>Evasion or cleanup:</strong> spikes on deletion or log-clearing signals, Defender exclusions, or
+            &quot;missing file but Prefetch still present&quot; patterns deserve a closer read in Correlation and
+            Artifacts before you close the case as clean.
+          </p>
+          <p className="muted">
+            Always combine automated signals with gameplay evidence, eyewitness reports, and your organization&apos;s
+            standards. When in doubt, run a fresh PIN session after a clean reboot and compare to a baseline.
+          </p>
+        </div>
+      </Card>
+    </>
+  );
+}
+
 const resultSections = [
   { id: "starter", label: "Suspicion Score", icon: Gauge, component: StarterSection },
-  { id: "forensic-findings", label: "Forensics", icon: Fingerprint, component: ForensicFindingsSection },
-  { id: "forensic-corr", label: "Correlation", icon: GitBranch, component: ForensicCorrelationSection },
-  { id: "forensic-artifacts", label: "Artifacts", icon: Boxes, component: ForensicArtifactsSection },
+  { id: "tutorial", label: "Tutorial", icon: BookOpen, component: TutorialSection },
+  {
+    id: "forensic-findings",
+    label: "Forensics",
+    altLabel: "Evidence review",
+    icon: Fingerprint,
+    component: ForensicFindingsSection,
+  },
+  {
+    id: "forensic-corr",
+    label: "Correlation",
+    altLabel: "Cross-source timeline",
+    icon: GitBranch,
+    component: ForensicCorrelationSection,
+  },
+  {
+    id: "forensic-artifacts",
+    label: "Artifacts",
+    altLabel: "Structured OS traces",
+    icon: Boxes,
+    component: ForensicArtifactsSection,
+  },
   { id: "roblox", label: "Roblox", icon: Gamepad2, component: RobloxSection },
   { id: "system", label: "System", icon: Cpu, component: SystemSection },
   { id: "bypass", label: "Bypass Detection", icon: Shield, component: BypassSection },
@@ -882,6 +968,7 @@ function Results({ detail }) {
   const summary = buildSuspicionSummary(report);
   const activeSection = resultSections.find((section) => section.id === sectionId) ?? resultSections[0];
   const ActiveComponent = activeSection.component;
+  const showSectionContent = detail.status === "completed" || sectionId === "tutorial";
 
   if (!detail) {
     return <section className="empty-state">Select or generate a PIN session.</section>;
@@ -908,8 +995,15 @@ function Results({ detail }) {
                 key={section.id}
                 className={sectionId === section.id ? "active" : ""}
                 onClick={() => setSectionId(section.id)}
+                type="button"
               >
-                <Icon size={18} /> {section.label}
+                <Icon size={18} className="nav-tab-icon" />
+                <span className="nav-tab-labels">
+                  <span className="nav-tab-primary">{section.label}</span>
+                  {"altLabel" in section && section.altLabel ? (
+                    <span className="nav-tab-alt">{section.altLabel}</span>
+                  ) : null}
+                </span>
               </button>
             );
           })}
@@ -926,16 +1020,18 @@ function Results({ detail }) {
           <span className={`status large ${detail.status}`}>{detail.status}</span>
         </div>
         </div>
-        {detail.status !== "completed" ? (
+        {!showSectionContent ? (
           <div className="empty-state">Waiting for the desktop client to submit results.</div>
         ) : (
           <>
-            <input
-              className="section-search"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder={`Search ${activeSection.label} keywords...`}
-            />
+            {sectionId !== "tutorial" ? (
+              <input
+                className="section-search"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder={`Search ${activeSection.label} keywords...`}
+              />
+            ) : null}
             <ActiveComponent report={report} query={query} />
           </>
         )}
