@@ -862,19 +862,19 @@ function TutorialSection() {
             others).
           </li>
           <li>
-            Open <strong>Forensics</strong> (also labeled <em>Evidence review</em>) for individual findings: severity,
-            risk score, file path, signature, entropy, and correlated evidence. High severity with recent timestamps is
-            worth prioritizing.
+            Open <strong>Forensics</strong> (also <em>Evidence review</em>, <em>Signal deep-dive</em>) for individual
+            findings: severity, risk score, file path, signature, entropy, and correlated evidence. High severity with
+            recent timestamps is worth prioritizing.
           </li>
           <li>
-            Use <strong>Correlation</strong> (<em>Cross-source timeline</em>) to see whether separate artifacts line up in
-            time—for example the same binary name appearing under BAM, Prefetch, and profile folders around the same
-            window.
+            Use <strong>Correlation</strong> (<em>Cross-source timeline</em>, <em>Multi-artifact timing</em>) to see
+            whether separate artifacts line up in time—for example the same binary name appearing under BAM, Prefetch,
+            and profile folders around the same window.
           </li>
           <li>
-            Use <strong>Artifacts</strong> (<em>Structured OS traces</em>) for raw structured tables (BAM, PCA store, USN
-            samples). This is where you confirm <em>whether</em> something ran or touched disk, not just that a string
-            matched.
+            Use <strong>Artifacts</strong> (<em>Structured OS traces</em>, <em>Raw host tables</em>) for raw structured
+            tables (BAM, PCA store, USN samples). This is where you confirm <em>whether</em> something ran or touched
+            disk, not just that a string matched.
           </li>
           <li>
             Cross-check <strong>Roblox</strong>, <strong>Bypass Detection</strong>, <strong>Deletions</strong>, and{" "}
@@ -885,6 +885,14 @@ function TutorialSection() {
       </Card>
       <Card icon={BookOpen} title="Spotting recent cheating (practical signs)">
         <div className="tutorial-prose">
+          <p>
+            <strong>Fast “did they cheat recently?” pass:</strong> open <strong>Suspicion Score</strong> first. If the
+            score is elevated, jump to <strong>Forensics</strong> and sort mentally by time: anything tied to the last
+            few hours or to the Roblox session window matters more than months-old clutter. Then read{" "}
+            <strong>Correlation</strong> to see whether the same program name shows up across Prefetch, BAM, and
+            downloads, and finish in <strong>Artifacts</strong> if you still need proof the binary actually executed or
+            touched disk.
+          </p>
           <p>
             This dashboard does not prove intent; it surfaces <strong>technical indicators</strong> that often appear
             when third-party tooling interacted with the game or the OS. Treat every item as a lead to verify with your
@@ -924,6 +932,7 @@ const resultSections = [
     id: "forensic-findings",
     label: "Forensics",
     altLabel: "Evidence review",
+    altLabel2: "Signal deep-dive",
     icon: Fingerprint,
     component: ForensicFindingsSection,
   },
@@ -931,6 +940,7 @@ const resultSections = [
     id: "forensic-corr",
     label: "Correlation",
     altLabel: "Cross-source timeline",
+    altLabel2: "Multi-artifact timing",
     icon: GitBranch,
     component: ForensicCorrelationSection,
   },
@@ -938,6 +948,7 @@ const resultSections = [
     id: "forensic-artifacts",
     label: "Artifacts",
     altLabel: "Structured OS traces",
+    altLabel2: "Raw host tables",
     icon: Boxes,
     component: ForensicArtifactsSection,
   },
@@ -1002,6 +1013,9 @@ function Results({ detail }) {
                   <span className="nav-tab-primary">{section.label}</span>
                   {"altLabel" in section && section.altLabel ? (
                     <span className="nav-tab-alt">{section.altLabel}</span>
+                  ) : null}
+                  {"altLabel2" in section && section.altLabel2 ? (
+                    <span className="nav-tab-alt2">{section.altLabel2}</span>
                   ) : null}
                 </span>
               </button>
