@@ -449,33 +449,6 @@ input {
   line-height: 1.2;
 }
 
-.tutorial-steps {
-  margin: 0;
-  padding-left: 1.25rem;
-  color: #c8c1c4;
-  font-size: 14px;
-  line-height: 1.55;
-}
-
-.tutorial-steps li {
-  margin-bottom: 12px;
-}
-
-.tutorial-steps li:last-child {
-  margin-bottom: 0;
-}
-
-.tutorial-prose p {
-  margin: 0 0 12px;
-  color: #c8c1c4;
-  font-size: 14px;
-  line-height: 1.55;
-}
-
-.tutorial-prose p:last-child {
-  margin-bottom: 0;
-}
-
 .result-content {
   min-width: 0;
   display: grid;
@@ -623,13 +596,13 @@ input {
   font-size: 20px;
 }
 
-.reason-list,
-.opened-files-intro {
-  margin-bottom: 12px;
-}
-
+.reason-list {
   display: grid;
   gap: 10px;
+}
+
+.opened-files-intro {
+  margin-bottom: 12px;
 }
 
 .reason-row {

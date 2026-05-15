@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createRoot } from "react-dom/client";
 import {
   AlertTriangle,
-  BookOpen,
   Boxes,
   ChevronUp,
   Clock3,
@@ -901,82 +900,8 @@ function ForensicArtifactsSection({ report, query }) {
   );
 }
 
-function TutorialSection() {
-  return (
-    <>
-      <Card icon={BookOpen} title="Πώς διαβάζετε μία συνεδρία (γρήγορη διαδρομή)">
-        <ol className="tutorial-steps">
-          <li>
-            Ξεκινήστε από το <strong>Suspicion Score</strong> για τον συνολικό βαθμό και τη λίστα με τους λόγους. Εκεί
-            φαίνεται ποιες οικογένειες δεικτών ενεργοποιήθηκαν (executors, Prefetch, πρόσφατα αρχεία, logs, Defender,
-            σήματα καθαρισμού κ.ά.).
-          </li>
-          <li>
-            Ανοίξτε <strong>Evidence review</strong> για μεμονωμένα ευρήματα: σοβαρότητα, risk score, διαδρομή αρχείου,
-            υπογραφή, εντροπία και συσχετισμένα τεκμήρια. Υψηλή σοβαρότητα με πρόσφατες χρονοσφραγίδες έχει προτεραιότητα.
-          </li>
-          <li>
-            Χρησιμοποιήστε <strong>Cross-source timeline</strong> για να δείτε αν ξεχωριστά ίχνη ευθυγραμμίζονται στον
-            χρόνο — π.χ. το ίδιο όνομα δυαδικού να εμφανίζεται σε BAM, Prefetch και φακέλους προφίλ περίπου στο ίδιο
-            παράθυρο.
-          </li>
-          <li>
-            Στο <strong>Structured OS traces</strong> βρίσκονται οι δομημένοι πίνακες (BAM, PCA store, δείγματα USN).
-            Εκεί επιβεβαιώνετε αν κάτι <em>έτρεξε</em> ή <em>άγγιξε</em> το δίσκο, όχι μόνο αν ταιριάζει μια συμβολοσειρά.
-          </li>
-          <li>
-            Συσχετίστε με <strong>Roblox</strong>, <strong>Bypass Detection</strong>, <strong>Deletions</strong> και{" "}
-            <strong>Crash Logs</strong> για αφήγηση από την πλευρά του πελάτη (σφάλματα, injectors στα traces, καθαρισμό
-            logs, ενδείξεις παρέμβασης).
-          </li>
-        </ol>
-      </Card>
-      <Card icon={BookOpen} title="Πρόσφατη απάτη / cheat — πρακτικά σημεία">
-        <div className="tutorial-prose">
-          <p>
-            <strong>Γρήγορο πέρασμα «μήπως έκανε cheat πρόσφατα;»:</strong> πρώτα το <strong>Suspicion Score</strong>.
-            Αν ο βαθμός είναι ψηλός, πηγαίνετε στο <strong>Evidence review</strong> και ταξινομείτε νοητά με βάση τον
-            χρόνο: ό,τι δένει με τις τελευταίες ώρες ή με το παράθυρο της συνεδρίας Roblox μετράει περισσότερο από
-            παλιά υπολείμματα εγκαταστάσεων. Μετά <strong>Cross-source timeline</strong> για να δείτε αν το ίδιο
-            πρόγραμμα εμφανίζεται σε Prefetch, BAM και λήψεις, και τέλος <strong>Structured OS traces</strong> αν
-            χρειάζεστε απόδειξη ότι το δυαδικό όντως εκτελέστηκε ή άγγιξε δίσκο.
-          </p>
-          <p>
-            Το dashboard <strong>δεν αποδεικνύει πρόθεση</strong>· αναδεικνύει <strong>τεχνικούς δείκτες</strong> που
-            συχνά εμφανίζονται όταν τρίτο εργαλείο αλληλεπιδρά με το παιχνίδι ή το λειτουργικό. Κάθε στοιχείο είναι
-            ιχνηλάτηση προς επαλήθευση με την πολιτική και το πλαίσιό σας.
-          </p>
-          <p>
-            <strong>Πρόσφατη δραστηριότητα χωρίς εξάρτηση από ένα μόνο πεδίο:</strong> συγκρίνετε χρονοσφραγίδες σε
-            ευρήματα forensics, γραμμές USN, χτυπήματα Prefetch και λίστες «πρόσφατα ανοιγμένα» με το παράθυρο σάρωσης.
-            Δραστηριότητα που <em>συγκεντρώνεται λίγο πριν</em> μπει ο παίκτης στην ανασκόπησή σας ή κατά τη συνεδρία
-            ενδιαφέρει περισσότερο από παλιά installer noise.
-          </p>
-          <p>
-            <strong>Ίχνη executor-style:</strong> ψάξτε για ταιριάζοντα ονόματα σε επίπεδα — διαδρομή δίσκου, υπόλοιπο
-            εκτέλεσης BAM, Prefetch για το ίδιο stem, crash logs με inject ή frameworks executors, λήψεις ή αρχεία
-            στην επιφάνεια εργασίας με ύποπτα ονόματα. Ένα αδύναμο ταιρίσμα μπορεί να είναι θόρυβος· η ίδια ιστορία σε
-            πολλά ίχνη είναι πιο ισχυρή.
-          </p>
-          <p>
-            <strong>Αποφυγή ή καθαρισμός:</strong> αυξήσεις σε σήματα διαγραφής ή καθαρισμού logs, εξαιρέσεις Defender ή
-            μοτίβα «λείπει αρχείο αλλά υπάρχει ακόμα Prefetch» αξίζουν προσεκτική ανάγνωση σε{" "}
-            <strong>Cross-source timeline</strong> και <strong>Structured OS traces</strong> πριν κλείσετε την υπόθεση
-            ως καθαρή.
-          </p>
-          <p className="muted">
-            Συνδυάστε πάντα τα αυτόματα σήματα με στοιχεία gameplay, μαρτυρίες και τα πρότυπα του οργανισμού σας. Σε
-            αμφιβολία, τρέξτε νέα συνεδρία PIN μετά από καθαρή επανεκκίνηση και συγκρίνετε με baseline.
-          </p>
-        </div>
-      </Card>
-    </>
-  );
-}
-
 const resultSections = [
   { id: "starter", label: "Suspicion Score", icon: Gauge, component: StarterSection },
-  { id: "tutorial", label: "Οδηγός", icon: BookOpen, component: TutorialSection },
   {
     id: "forensic-findings",
     label: "Evidence review",
@@ -1026,7 +951,7 @@ function Results({ detail }) {
   const summary = buildSuspicionSummary(report);
   const activeSection = resultSections.find((section) => section.id === sectionId) ?? resultSections[0];
   const ActiveComponent = activeSection.component;
-  const showSectionContent = detail.status === "completed" || sectionId === "tutorial";
+  const showSectionContent = detail.status === "completed";
 
   return (
     <section className="scan-results">
@@ -1075,14 +1000,12 @@ function Results({ detail }) {
           <div className="empty-state">Waiting for the desktop client to submit results.</div>
         ) : (
           <>
-            {sectionId !== "tutorial" ? (
-              <input
-                className="section-search"
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder={`Search ${activeSection.label} keywords...`}
-              />
-            ) : null}
+            <input
+              className="section-search"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder={`Search ${activeSection.label} keywords...`}
+            />
             <ActiveComponent report={report} query={query} />
           </>
         )}
