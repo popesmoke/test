@@ -17,7 +17,7 @@ import zlib
 import math
 import sqlite3
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tkinter import BOTH, BooleanVar, PhotoImage, StringVar, Tk, ttk, messagebox
 
@@ -11932,6 +11932,41 @@ EXECUTOR_NAMES = [
     "Codex",
 ]
 
+# Verified sample SHA256 (lowercase hex) -> label. Extend as you confirm binaries in the field.
+EXECUTOR_SHA256_BLOCKLIST: dict[str, str] = {}
+
+ROBLOX_PROCESS_NAMES = frozenset({"robloxplayerbeta.exe", "robloxplayer.exe", "roblox.exe"})
+ROBLOX_MODULE_TRUSTED_FRAGMENTS = (
+    "\\windows\\",
+    "\\program files\\",
+    "\\program files (x86)\\",
+    "\\roblox\\",
+    "\\nvidia\\",
+    "\\amd\\",
+    "\\intel\\",
+    "\\microsoft\\",
+)
+
+PATH_ALLOWLIST_FRAGMENTS = (
+    "\\windows\\",
+    "\\program files\\",
+    "\\program files (x86)\\",
+    "\\roblox\\versions\\",
+    "\\roblox\\content\\",
+    "\\microsoft\\",
+    "\\dotnet\\",
+    "\\nvidia corporation\\",
+    "\\steam\\",
+    "\\discord\\",
+    "\\epic games\\",
+    "\\node_modules\\",
+    "\\cursor\\",
+    "\\google\\chrome\\",
+    "\\mozilla firefox\\",
+    "\\spotify\\",
+    "\\visual studio\\",
+)
+
 # File-name-only cheat / hack hints (matched on basename, not full path).
 CHEAT_FILENAME_HINT_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("roblox_hack", re.compile(r"roblox[\s._-]*hack", re.IGNORECASE)),
@@ -11988,6 +12023,458 @@ def executor_scan_path_excluded(path_str: str) -> bool:
         "\\node_modules\\",
     )
     return any(fragment in low for fragment in excluded)
+
+
+def path_is_allowlisted(path_str: str) -> bool:
+    low = path_str.lower().replace("/", "\\")
+    return any(fragment in low for fragment in PATH_ALLOWLIST_FRAGMENTS)
+
+
+def path_stem_key(path_str: str) -> str:
+    try:
+        return Path(path_str).stem.lower()
+    except Exception:
+        return ""
+
+
+def executor_sha256_blocklist_scan(max_hashes: int = 80) -> dict:
+    """Hash profile-folder executables and match against known executor samples."""
+    if not EXECUTOR_SHA256_BLOCKLIST:
+        return {
+            "available": True,
+            "blocklist_size": 0,
+            "files_hashed": 0,
+            "hits": [],
+            "note": "Blocklist empty; add verified SHA256 values to EXECUTOR_SHA256_BLOCKLIST.",
+        }
+
+    hits: list[dict] = []
+    hashed = 0
+    for root in designated_user_folder_roots():
+        try:
+            for path in walk_files_depth_limited(root, 3):
+                if path.suffix.lower() not in {".exe", ".dll"}:
+                    continue
+                if path_is_allowlisted(str(path)):
+                    continue
+                sha, ent, size = forensic_file_peek(path)
+                hashed += 1
+                label = EXECUTOR_SHA256_BLOCKLIST.get(sha.lower())
+                if label:
+                    hits.append(
+                        {
+                            "label": label,
+                            "sha256": sha,
+                            "path": str(path),
+                            "size_bytes": size,
+                            "entropy": ent,
+                        }
+                    )
+                if hashed >= max_hashes or len(hits) >= 25:
+                    break
+        except (PermissionError, OSError):
+            continue
+        if hashed >= max_hashes or len(hits) >= 25:
+            break
+
+    return {
+        "available": True,
+        "blocklist_size": len(EXECUTOR_SHA256_BLOCKLIST),
+        "files_hashed": hashed,
+        "hits": hits,
+    }
+
+
+def persistence_signals() -> dict:
+    """Startup, Run keys, scheduled tasks, and recent shortcuts — common executor persistence."""
+    if platform.system() != "Windows":
+        return {"available": False, "reason": "Persistence scan is Windows-focused in this build"}
+
+    patterns = executor_name_patterns()
+    entries: list[dict] = []
+    suspicious: list[dict] = []
+
+    def classify_entry(source: str, name: str, target: str) -> None:
+        target_text = target.strip()
+        if not target_text:
+            return
+        executor_labels = sorted(set(match_executor_labels(f"{name} {target_text}", patterns)))
+        cheat_hints = cheat_filename_hint_labels(Path(target_text).name)
+        weird = weird_filename_reasons(Path(target_text).stem, Path(target_text).name)
+        entry = {
+            "source": source,
+            "name": name,
+            "target": target_text[:500],
+            "executor_name_hits": executor_labels,
+            "cheat_filename_hints": cheat_hints,
+            "name_anomaly_reasons": weird,
+            "path_allowlisted": path_is_allowlisted(target_text),
+        }
+        entries.append(entry)
+        if entry["path_allowlisted"]:
+            return
+        if executor_labels or cheat_hints or weird:
+            suspicious.append(entry)
+
+    run_keys = [
+        (r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run", "registry_run_hkcu"),
+        (r"HKCU\Software\Microsoft\Windows\CurrentVersion\RunOnce", "registry_runonce_hkcu"),
+        (r"HKLM\Software\Microsoft\Windows\CurrentVersion\Run", "registry_run_hklm"),
+        (r"HKLM\Software\Microsoft\Windows\CurrentVersion\RunOnce", "registry_runonce_hklm"),
+    ]
+    for hive, source in run_keys:
+        out = run_command(["reg", "query", hive], timeout=10, max_chars=6000)
+        if not out or out.startswith("Unavailable"):
+            continue
+        for line in out.splitlines():
+            match = re.match(r"\s+(\S+)\s+REG_(?:EXPAND_)?SZ\s+(.*)", line)
+            if match:
+                classify_entry(source, match.group(1), match.group(2).strip().strip('"'))
+
+    startup_dirs: list[Path] = []
+    appdata = os.getenv("APPDATA")
+    programdata = os.getenv("PROGRAMDATA")
+    if appdata:
+        startup_dirs.append(Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup")
+    if programdata:
+        startup_dirs.append(
+            Path(programdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+        )
+    for folder in startup_dirs:
+        if not folder.is_dir():
+            continue
+        for path in folder.iterdir():
+            if not path.is_file():
+                continue
+            classify_entry("startup_folder", path.name, str(path))
+
+    tasks_out = run_command(["schtasks", "/Query", "/FO", "LIST", "/V"], timeout=18, max_chars=14000)
+    if tasks_out and not tasks_out.startswith("Unavailable"):
+        task_name = ""
+        task_run = ""
+        for line in tasks_out.splitlines():
+            if line.startswith("TaskName:"):
+                if task_name and task_run:
+                    classify_entry("scheduled_task", task_name, task_run)
+                task_name = line.split(":", 1)[1].strip()
+                task_run = ""
+            elif line.startswith("Task To Run:"):
+                task_run = line.split(":", 1)[1].strip()
+        if task_name and task_run:
+            classify_entry("scheduled_task", task_name, task_run)
+
+    cutoff = datetime.now(timezone.utc).timestamp() - 14 * 86400
+    for root in designated_user_folder_roots():
+        if root.name.lower() not in ("desktop", "downloads"):
+            continue
+        try:
+            for lnk in root.glob("*.lnk"):
+                try:
+                    if lnk.stat().st_mtime < cutoff:
+                        continue
+                except OSError:
+                    continue
+                classify_entry("recent_shortcut", lnk.name, str(lnk))
+        except OSError:
+            continue
+
+    return {
+        "available": True,
+        "entry_count": len(entries),
+        "suspicious_count": len(suspicious),
+        "entries": entries[:120],
+        "suspicious_entries": suspicious[:60],
+    }
+
+
+def _roblox_integrity_module_entry(
+    *,
+    scan_mode: str,
+    module_path: str,
+    reasons: list[str],
+    executor_labels: list[str],
+    cheat_hints: list[str],
+    sha_label: str = "",
+    offline_source: str = "",
+    pid: int | None = None,
+    process_name: str | None = None,
+    extra: dict | None = None,
+) -> dict:
+    entry = {
+        "scan_mode": scan_mode,
+        "pid": pid,
+        "process_name": process_name,
+        "module_path": module_path,
+        "reasons": reasons,
+        "executor_name_hits": executor_labels,
+        "cheat_filename_hints": cheat_hints,
+        "sha256_blocklist_label": sha_label or None,
+    }
+    if offline_source:
+        entry["offline_source"] = offline_source
+    if extra:
+        entry.update(extra)
+    return entry
+
+
+def _roblox_module_reasons(path_norm: str, patterns: dict[str, re.Pattern[str]]) -> tuple[list[str], list[str], list[str], str]:
+    path_lower = path_norm.lower().replace("/", "\\")
+    reasons: list[str] = []
+    trusted = any(frag in path_lower for frag in ROBLOX_MODULE_TRUSTED_FRAGMENTS)
+    if not trusted:
+        if any(frag in path_lower for frag in ("\\temp\\", "\\downloads\\", "\\desktop\\")):
+            reasons.append("module_from_high_risk_folder")
+        elif "\\users\\" in path_lower and "\\appdata\\" in path_lower and "\\roblox\\" not in path_lower:
+            reasons.append("module_from_user_appdata_outside_game")
+    executor_labels = sorted(set(match_executor_labels(path_norm, patterns)))
+    cheat_hints = cheat_filename_hint_labels(Path(path_norm).name)
+    if executor_labels:
+        reasons.append("executor_name_in_module")
+    if cheat_hints:
+        reasons.append("cheat_hint_in_module")
+    sha_label = ""
+    if path_lower.endswith((".exe", ".dll")) and Path(path_norm).is_file():
+        sha, _, _ = forensic_file_peek(Path(path_norm))
+        sha_label = EXECUTOR_SHA256_BLOCKLIST.get(sha.lower(), "")
+        if sha_label:
+            reasons.append(f"sha256_blocklist:{sha_label}")
+    return reasons, executor_labels, cheat_hints, sha_label
+
+
+def roblox_offline_integrity_signals(prefetch: dict) -> list[dict]:
+    """Injection-related signals from logs and disk when Roblox is not running."""
+    patterns = executor_name_patterns()
+    signals: list[dict] = []
+    cutoff = datetime.now(timezone.utc) - timedelta(days=14)
+    log_inject_re = re.compile(
+        r"(inject(?:or|ion)?|dll\s*hook|execute\s*script|script\s*ware|memory\s*scan|"
+        r"cheat\s*engine|aimbot|wallhack|bypass\s*anticheat|external\s*cheat)",
+        re.IGNORECASE,
+    )
+
+    for log in roblox_diagnostics().get("logs", []):
+        tail = log.get("tail") or ""
+        if not tail:
+            continue
+        matched_lines: list[str] = []
+        for line in tail.splitlines():
+            line_l = line.lower()
+            if log_inject_re.search(line) or any(p.search(line) for p in patterns.values()):
+                matched_lines.append(line.strip()[:500])
+            if len(matched_lines) >= 10:
+                break
+        if not matched_lines:
+            continue
+        signals.append(
+            _roblox_integrity_module_entry(
+                scan_mode="offline",
+                offline_source="roblox_log",
+                module_path=f"roblox-log:{log.get('name', 'unknown')}",
+                reasons=["roblox_log_injection_or_executor_language"],
+                executor_labels=[],
+                cheat_hints=[],
+                extra={"matched_log_lines": matched_lines, "log_modified": log.get("modified")},
+            )
+        )
+
+    bam_struct = bam_execution_records()
+    if bam_struct.get("available"):
+        for item in bam_struct.get("items", [])[:320]:
+            path = str(item.get("normalized_path") or "")
+            if not path or not path.lower().endswith(".dll"):
+                continue
+            if path_is_allowlisted(path):
+                continue
+            iso = item.get("last_execution_utc")
+            if iso:
+                try:
+                    exec_at = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+                    if exec_at.tzinfo is None:
+                        exec_at = exec_at.replace(tzinfo=timezone.utc)
+                    if exec_at < cutoff:
+                        continue
+                except ValueError:
+                    pass
+            reasons, executor_labels, cheat_hints, sha_label = _roblox_module_reasons(path, patterns)
+            path_lower = path.lower()
+            if not reasons and not any(
+                frag in path_lower for frag in ("\\temp\\", "\\downloads\\", "\\desktop\\", "\\appdata\\")
+            ):
+                continue
+            if not reasons:
+                reasons.append("dll_executed_from_staging_folder")
+            signals.append(
+                _roblox_integrity_module_entry(
+                    scan_mode="offline",
+                    offline_source="bam_dll_execution",
+                    module_path=path,
+                    reasons=reasons,
+                    executor_labels=executor_labels,
+                    cheat_hints=cheat_hints,
+                    sha_label=sha_label,
+                    extra={"last_execution_utc": iso, "file_exists": item.get("file_exists")},
+                )
+            )
+
+    local_app = os.getenv("LOCALAPPDATA")
+    if local_app:
+        roblox_root = Path(local_app) / "Roblox"
+        if roblox_root.is_dir():
+            for dll in roblox_root.rglob("*.dll"):
+                path_str = str(dll)
+                if "\\versions\\" in path_str.lower():
+                    continue
+                reasons, executor_labels, cheat_hints, sha_label = _roblox_module_reasons(path_str, patterns)
+                if not reasons:
+                    continue
+                try:
+                    modified = datetime.fromtimestamp(dll.stat().st_mtime, timezone.utc).isoformat()
+                except OSError:
+                    modified = None
+                signals.append(
+                    _roblox_integrity_module_entry(
+                        scan_mode="offline",
+                        offline_source="roblox_folder_dll",
+                        module_path=path_str,
+                        reasons=reasons + ["dll_outside_roblox_versions_tree"],
+                        executor_labels=executor_labels,
+                        cheat_hints=cheat_hints,
+                        sha_label=sha_label,
+                        extra={"modified": modified},
+                    )
+                )
+                if len([s for s in signals if s.get("offline_source") == "roblox_folder_dll"]) >= 25:
+                    break
+
+    temp_roots: list[Path] = []
+    for env_name in ("TEMP", "TMP", "LOCALAPPDATA"):
+        value = os.getenv(env_name)
+        if value:
+            temp_roots.append(Path(value))
+    for root in temp_roots:
+        if not root.is_dir():
+            continue
+        try:
+            for dll in walk_files_depth_limited(root, 3):
+                if dll.suffix.lower() != ".dll":
+                    continue
+                try:
+                    stat = dll.stat()
+                except OSError:
+                    continue
+                if datetime.fromtimestamp(stat.st_mtime, timezone.utc) < cutoff:
+                    continue
+                path_str = str(dll)
+                if path_is_allowlisted(path_str):
+                    continue
+                reasons, executor_labels, cheat_hints, sha_label = _roblox_module_reasons(path_str, patterns)
+                if not reasons:
+                    continue
+                signals.append(
+                    _roblox_integrity_module_entry(
+                        scan_mode="offline",
+                        offline_source="recent_temp_dll",
+                        module_path=path_str,
+                        reasons=reasons,
+                        executor_labels=executor_labels,
+                        cheat_hints=cheat_hints,
+                        sha_label=sha_label,
+                        extra={"modified": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()},
+                    )
+                )
+                if len([s for s in signals if s.get("offline_source") == "recent_temp_dll"]) >= 30:
+                    break
+        except (PermissionError, OSError):
+            continue
+
+    return signals[:100]
+
+
+def roblox_integrity_scan(prefetch: dict | None = None) -> dict:
+    """Live DLL inspection when Roblox runs, plus offline log/BAM/folder signals always."""
+    if platform.system() != "Windows":
+        return {"available": False, "reason": "Roblox integrity scan is Windows-focused in this build"}
+
+    patterns = executor_name_patterns()
+    processes_found: list[dict] = []
+    live_modules: list[dict] = []
+    modules_sampled = 0
+
+    for proc in psutil.process_iter(["pid", "name", "exe"]):
+        try:
+            info = proc.info
+            name = (info.get("name") or "").lower()
+            if name not in ROBLOX_PROCESS_NAMES:
+                continue
+            pid = int(info["pid"])
+            processes_found.append({"pid": pid, "name": info.get("name"), "exe": info.get("exe")})
+            module_paths: list[str] = []
+            try:
+                p = psutil.Process(pid)
+                try:
+                    for mmap in p.memory_maps(grouped=False):
+                        module_paths.append(getattr(mmap, "path", "") or "")
+                except (psutil.AccessDenied, psutil.ZombieProcess):
+                    module_paths = []
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                module_paths = []
+
+            if not module_paths:
+                ps_script = (
+                    f"$p = Get-Process -Id {pid} -ErrorAction SilentlyContinue; "
+                    "if ($p) { $p.Modules | ForEach-Object { $_.FileName } }"
+                )
+                out = run_command(
+                    ["powershell", "-NoProfile", "-Command", ps_script],
+                    timeout=14,
+                    max_chars=12000,
+                )
+                module_paths = [line.strip() for line in (out or "").splitlines() if line.strip()]
+
+            for raw_path in module_paths:
+                path = (raw_path or "").strip()
+                if not path or path.startswith("["):
+                    continue
+                modules_sampled += 1
+                path_norm = path.replace("/", "\\")
+                reasons, executor_labels, cheat_hints, sha_label = _roblox_module_reasons(path_norm, patterns)
+                if not reasons:
+                    continue
+                live_modules.append(
+                    _roblox_integrity_module_entry(
+                        scan_mode="live",
+                        pid=pid,
+                        process_name=info.get("name") or name,
+                        module_path=path_norm,
+                        reasons=reasons,
+                        executor_labels=executor_labels,
+                        cheat_hints=cheat_hints,
+                        sha_label=sha_label,
+                    )
+                )
+        except (psutil.NoSuchProcess, psutil.AccessDenied, TypeError, ValueError):
+            continue
+
+    offline_signals = roblox_offline_integrity_signals(prefetch or {})
+    combined = (live_modules + offline_signals)[:120]
+
+    return {
+        "available": True,
+        "live_process_detected": bool(processes_found),
+        "processes_found": processes_found,
+        "live_suspicious_modules": live_modules[:80],
+        "offline_signals": offline_signals,
+        "suspicious_modules": combined,
+        "modules_sampled": modules_sampled,
+        "note": (
+            "Offline checks (Roblox logs, BAM DLL executions, Prefetch, Roblox folder, recent temp DLLs) "
+            "run even when the game is closed. Live module enumeration runs when Roblox is open."
+        ),
+    }
+
+
+def roblox_runtime_module_scan(prefetch: dict | None = None) -> dict:
+    return roblox_integrity_scan(prefetch=prefetch)
 
 
 def designated_user_folder_roots() -> list[Path]:
@@ -12111,6 +12598,7 @@ def designated_folder_extension_scan() -> dict:
                     "executor_name_hits": executor_labels,
                     "name_anomaly_reasons": weird,
                     "cheat_filename_hints": cheat_hints,
+                    "path_allowlisted": path_is_allowlisted(str(path)),
                 }
                 hits.append(entry)
                 if len(hits) >= USER_FOLDER_SCAN_MAX_HITS:
@@ -12788,6 +13276,7 @@ def executor_indicator_scan() -> dict:
                                 "accessed": datetime.fromtimestamp(stat.st_atime, timezone.utc).isoformat(),
                                 "is_file": path.is_file(),
                                 "size_bytes": stat.st_size if path.is_file() else None,
+                                "path_allowlisted": path_is_allowlisted(str(path)),
                             }
                         )
 
@@ -13943,31 +14432,31 @@ def assemble_forensic_detections(
 
     for dbf in sqlite_pack.get("findings", [])[:8]:
         for h in dbf.get("keyword_hits", [])[:12]:
-            detections["sqlite"].append(
-                forensic_finding(
-                    severity="medium",
-                    confidence=0.6,
-                    reason=f"Browser history keyword hit ({h.get('group')} / {h.get('term')}).",
-                    artifact_source="SQLite Web Data/History",
-                    file_path=str(dbf.get("database", "")),
-                    timestamps={"last_visit_time": str(h.get("last_visit_time"))},
-                    correlated_evidence=[{"source": "url", "detail": h.get("url", "")[:400]}],
-                    risk_score=36,
-                )
+            browser_hit = forensic_finding(
+                severity="low",
+                confidence=0.35,
+                reason=f"Browser history keyword hit ({h.get('group')} / {h.get('term')}).",
+                artifact_source="SQLite Web Data/History",
+                file_path=str(dbf.get("database", "")),
+                timestamps={"last_visit_time": str(h.get("last_visit_time"))},
+                correlated_evidence=[{"source": "url", "detail": h.get("url", "")[:400]}],
+                risk_score=12,
             )
+            browser_hit["browser_only"] = True
+            detections["sqlite"].append(browser_hit)
         for th in dbf.get("temp_path_url_hits", [])[:8]:
-            detections["sqlite"].append(
-                forensic_finding(
-                    severity="low",
-                    confidence=0.45,
-                    reason="Browser history references a temp-style URL path (possible download/execution staging).",
-                    artifact_source="SQLite History",
-                    file_path=str(dbf.get("database", "")),
-                    timestamps={"last_visit_time": str(th.get("last_visit_time"))},
-                    correlated_evidence=[{"source": "url", "detail": th.get("url", "")[:400]}],
-                    risk_score=22,
-                )
+            temp_hit = forensic_finding(
+                severity="low",
+                confidence=0.35,
+                reason="Browser history references a temp-style URL path (possible download/execution staging).",
+                artifact_source="SQLite History",
+                file_path=str(dbf.get("database", "")),
+                timestamps={"last_visit_time": str(th.get("last_visit_time"))},
+                correlated_evidence=[{"source": "url", "detail": th.get("url", "")[:400]}],
+                risk_score=10,
             )
+            temp_hit["browser_only"] = True
+            detections["sqlite"].append(temp_hit)
         if dbf.get("wal_present"):
             detections["sqlite"].append(
                 forensic_finding(
@@ -14109,6 +14598,9 @@ def build_report() -> dict:
             "prefetch_health": prefetch_health_signals(prefetch),
             "roblox_executor_indicators": executor_indicator_scan(),
             "designated_folder_suspicious_files": designated,
+            "executor_sha256_blocklist": executor_sha256_blocklist_scan(),
+            "persistence_signals": persistence_signals(),
+            "roblox_runtime_integrity": roblox_integrity_scan(prefetch=prefetch),
             "forensic_analysis": forensic_bundle,
         },
     }

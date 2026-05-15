@@ -235,13 +235,75 @@ function openedEntry(report, item) {
   };
 }
 
+function pathStemKey(pathValue) {
+  if (!pathValue) return "";
+  const base = String(pathValue).split(/[\\/]/).pop() ?? "";
+  const dot = base.lastIndexOf(".");
+  return (dot > 0 ? base.slice(0, dot) : base).toLowerCase();
+}
+
+function recencyFactor(timestamp, report) {
+  const eventMs = dateMs(timestamp);
+  const endMs = dateMs(report.generated_at) ?? dateMs(report.scan_started_at);
+  if (eventMs === null || endMs === null) return 1;
+  const hours = (endMs - eventMs) / 3_600_000;
+  if (hours <= 24) return 1;
+  if (hours <= 72) return 0.75;
+  if (hours <= 168) return 0.5;
+  return 0.35;
+}
+
+function isScoredPath(item) {
+  return item?.path_allowlisted !== true;
+}
+
+function registerStem(stemMap, stem, source) {
+  if (!stem || stem.length < 2) return;
+  if (!stemMap.has(stem)) stemMap.set(stem, new Set());
+  stemMap.get(stem).add(source);
+}
+
+function multiArtifactBonus(stemMap) {
+  let bonus = 0;
+  for (const sources of stemMap.values()) {
+    if (sources.size >= 2) bonus += Math.min(10, sources.size * 3);
+  }
+  return Math.min(18, bonus);
+}
+
+function forensicScoreContribution(fa) {
+  if (!fa || fa.available === false) return { points: 0, browserOnly: 0, diskBacked: 0 };
+  const flat = fa.detections_flat ?? [];
+  let browserOnly = 0;
+  let diskBacked = 0;
+  for (const finding of flat) {
+    if ((finding.reason ?? "").includes("Unified forensic pass completed")) continue;
+    const risk = Number(finding.risk_score) || 0;
+    if (risk <= 0) continue;
+    const slice = Math.min(6, Math.ceil(risk / 18));
+    if (finding.browser_only) {
+      browserOnly += slice;
+    } else {
+      diskBacked += slice;
+    }
+  }
+  return {
+    points: Math.min(22, diskBacked) + Math.min(5, browserOnly),
+    browserOnly,
+    diskBacked,
+  };
+}
+
 function buildSuspicionSummary(report) {
   const sec = report.security_integrity_signals ?? {};
   const executor = sec.roblox_executor_indicators ?? {};
-  const fileHits = executor.file_hits ?? [];
+  const fileHits = (executor.file_hits ?? []).filter(isScoredPath);
   const logHits = executor.traceback_or_log_hits ?? [];
   const prefetchHits = sec.prefetch_health?.indicator_hits ?? [];
-  const designatedHits = sec.designated_folder_suspicious_files?.hits ?? [];
+  const designatedHits = (sec.designated_folder_suspicious_files?.hits ?? []).filter(isScoredPath);
+  const shaHits = sec.executor_sha256_blocklist?.hits ?? [];
+  const persistenceSuspicious = (sec.persistence_signals?.suspicious_entries ?? []).filter(isScoredPath);
+  const runtimeModules = sec.roblox_runtime_integrity?.suspicious_modules ?? [];
   const designatedExecutorHits = designatedHits.filter((item) => (item.executor_name_hits ?? []).length);
   const designatedCheatOnlyHits = designatedHits.filter(
     (item) =>
@@ -261,35 +323,83 @@ function buildSuspicionSummary(report) {
   const userAssistText = sec.userassist?.raw_sample ?? "";
   const bamText = sec.bam?.raw_sample ?? "";
 
+  const stemMap = new Map();
+  for (const item of fileHits) registerStem(stemMap, pathStemKey(item.path), "file");
+  for (const item of prefetchHits) registerStem(stemMap, pathStemKey(item.name ?? item.path), "prefetch");
+  for (const item of designatedExecutorHits) registerStem(stemMap, pathStemKey(item.path), "profile");
+  for (const item of runtimeModules) registerStem(stemMap, pathStemKey(item.module_path), "runtime");
+
   const reasons = [];
   let score = 0;
 
-  if (fileHits.length) {
-    const points = Math.min(35, fileHits.length * 7);
+  if (shaHits.length) {
+    const points = Math.min(40, shaHits.length * 20);
     score += points;
     reasons.push({
-      label: "Executor / cheat path matches",
+      label: "Known executor binary hash",
       points,
-      detail: `${fileHits.length} path(s) matched a known executor token or a cheat-like filename hint.`,
+      detail: `${shaHits.length} file(s) matched a verified SHA256 blocklist entry.`,
     });
+  }
+
+  if (runtimeModules.length) {
+    const liveCount = runtimeModules.filter((item) => item.scan_mode === "live").length;
+    const offlineCount = runtimeModules.length - liveCount;
+    const points = Math.min(35, runtimeModules.length * 10);
+    score += points;
+    reasons.push({
+      label: "Roblox integrity signals",
+      points,
+      detail:
+        liveCount && offlineCount
+          ? `${liveCount} live module hit(s) with Roblox open and ${offlineCount} offline artifact hit(s) from logs, BAM, Prefetch, or folders.`
+          : liveCount
+            ? `${liveCount} suspicious module(s) in a live Roblox process.`
+            : `${offlineCount} offline Roblox-related signal(s) from logs or disk (game did not need to be running).`,
+    });
+  }
+
+  if (fileHits.length) {
+    const weighted = fileHits.reduce((sum, item) => sum + 7 * recencyFactor(item.modified, report), 0);
+    const points = Math.min(35, Math.round(weighted));
+    if (points > 0) {
+      score += points;
+      reasons.push({
+        label: "Executor / cheat path matches",
+        points,
+        detail: `${fileHits.length} non-allowlisted path(s); points weighted by recency of file modified time.`,
+      });
+    }
   }
   if (recentMatched.length) {
-    const points = Math.min(20, recentMatched.length * 6);
-    score += points;
-    reasons.push({
-      label: "Executor / cheat-tagged recent files",
-      points,
-      detail: `${recentMatched.length} item(s) in Recent/Downloads/Desktop matched an executor brand or cheat-like filename hint.`,
-    });
+    const weighted = recentMatched.reduce(
+      (sum, item) => sum + 6 * recencyFactor(item.modified ?? item.accessed, report),
+      0,
+    );
+    const points = Math.min(20, Math.round(weighted));
+    if (points > 0) {
+      score += points;
+      reasons.push({
+        label: "Executor / cheat-tagged recent files",
+        points,
+        detail: `${recentMatched.length} recent item(s); points weighted toward activity in the last 72 hours.`,
+      });
+    }
   }
   if (prefetchHits.length) {
-    const points = Math.min(20, prefetchHits.length * 8);
-    score += points;
-    reasons.push({
-      label: "Prefetch execution traces",
-      points,
-      detail: `${prefetchHits.length} Prefetch artifact matched a checked executor name.`,
-    });
+    const weighted = prefetchHits.reduce(
+      (sum, item) => sum + 8 * recencyFactor(item.modified, report),
+      0,
+    );
+    const points = Math.min(20, Math.round(weighted));
+    if (points > 0) {
+      score += points;
+      reasons.push({
+        label: "Prefetch execution traces",
+        points,
+        detail: `${prefetchHits.length} Prefetch artifact(s) matched a checked executor name.`,
+      });
+    }
   }
   if (logHits.length) {
     const points = Math.min(15, logHits.length * 5);
@@ -301,32 +411,70 @@ function buildSuspicionSummary(report) {
     });
   }
   if (designatedExecutorHits.length) {
-    const points = Math.min(28, designatedExecutorHits.length * 7);
-    score += points;
-    reasons.push({
-      label: "Profile folder executor filenames",
-      points,
-      detail: `${designatedExecutorHits.length} file(s) in Downloads/Desktop/Documents matched a checked executor name (selected extensions).`,
-    });
+    const weighted = designatedExecutorHits.reduce(
+      (sum, item) => sum + 7 * recencyFactor(item.modified, report),
+      0,
+    );
+    const points = Math.min(28, Math.round(weighted));
+    if (points > 0) {
+      score += points;
+      reasons.push({
+        label: "Profile folder executor filenames",
+        points,
+        detail: `${designatedExecutorHits.length} file(s) in Downloads/Desktop/Documents matched a checked executor name.`,
+      });
+    }
   }
   if (designatedCheatOnlyHits.length) {
-    const points = Math.min(18, designatedCheatOnlyHits.length * 6);
+    const points = Math.min(12, designatedCheatOnlyHits.length * 4);
     score += points;
     reasons.push({
       label: "Profile folder cheat-like filenames",
       points,
-      detail: `${designatedCheatOnlyHits.length} file(s) in Downloads/Desktop/Documents had cheat/hack-style filename hints.`,
+      detail: `${designatedCheatOnlyHits.length} file(s) had cheat/hack-style filename hints (lower weight than executor-name hits).`,
     });
   }
   if (designatedWeirdHits.length) {
-    const points = Math.min(14, designatedWeirdHits.length * 2);
+    const points = Math.min(6, designatedWeirdHits.length);
+    if (points > 0) {
+      score += points;
+      reasons.push({
+        label: "Profile folder odd filenames",
+        points,
+        detail: `${designatedWeirdHits.length} file(s) had unusual name patterns (low weight; verify manually).`,
+      });
+    }
+  }
+  if (persistenceSuspicious.length) {
+    const points = Math.min(22, persistenceSuspicious.length * 6);
     score += points;
     reasons.push({
-      label: "Profile folder odd filenames",
+      label: "Persistence mechanisms",
       points,
-      detail: `${designatedWeirdHits.length} file(s) had unusual name patterns under Downloads/Desktop/Documents (selected extensions).`,
+      detail: `${persistenceSuspicious.length} Run key, startup, task, or shortcut entry matched executor/cheat patterns.`,
     });
   }
+
+  const forensic = forensicScoreContribution(sec.forensic_analysis);
+  if (forensic.points > 0) {
+    score += forensic.points;
+    reasons.push({
+      label: "Forensic engine findings",
+      points: forensic.points,
+      detail: `Disk-backed forensic signals contributed up to ${forensic.diskBacked} pts; browser-only history hits capped at ${Math.min(5, forensic.browserOnly)} pts.`,
+    });
+  }
+
+  const artifactBonus = multiArtifactBonus(stemMap);
+  if (artifactBonus > 0) {
+    score += artifactBonus;
+    reasons.push({
+      label: "Cross-artifact agreement",
+      points: artifactBonus,
+      detail: "The same program stem appeared in multiple independent sources (disk, Prefetch, profile, or runtime).",
+    });
+  }
+
   if (textHasSignal(userAssistText) && /executor|loader|bootstrapper|inject|bypass|cleaner|roblox/i.test(userAssistText)) {
     score += 8;
     reasons.push({
@@ -405,6 +553,9 @@ function buildSuspicionSummary(report) {
       recentMatched: countItems(recentMatched),
       prefetchHits: countItems(prefetchHits),
       logHits: countItems(logHits),
+      shaBlocklistHits: countItems(shaHits),
+      persistenceHits: countItems(persistenceSuspicious),
+      runtimeModules: countItems(runtimeModules),
       defenderEntries: countItems(parseMaybeJson(sec.defender?.protection_history)),
     },
   };
@@ -444,7 +595,7 @@ function StarterSection({ report }) {
           <span>File hits <strong>{summary.counts.fileHits}</strong></span>
           <span>Recent matches <strong>{summary.counts.recentMatched}</strong></span>
           <span>Prefetch hits <strong>{summary.counts.prefetchHits}</strong></span>
-          <span>Log hits <strong>{summary.counts.logHits}</strong></span>
+          <span>Runtime modules <strong>{summary.counts.runtimeModules}</strong></span>
         </div>
       </Card>
       <Card icon={AlertTriangle} title="Why It Scored This Way">
@@ -741,8 +892,30 @@ function DeletionsSection({ report, query }) {
 function MemorySection({ report, query }) {
   const processes = report.process_overview?.items ?? [];
   const robloxProcesses = processes.filter((proc) => (proc.name ?? "").toLowerCase().includes("roblox"));
+  const runtime = report.security_integrity_signals?.roblox_runtime_integrity ?? {};
+  const persistence = report.security_integrity_signals?.persistence_signals ?? {};
+  const shaBlocklist = report.security_integrity_signals?.executor_sha256_blocklist ?? {};
   return (
     <>
+      <Card icon={MemoryStick} title="Roblox integrity (live + offline)">
+        <TerminalBlock query={query}>
+          {runtime.available === false
+            ? runtime.reason ?? "Roblox integrity scan not available on this host."
+            : runtime.suspicious_modules?.length
+              ? asJson(runtime)
+              : "[OK] No suspicious Roblox integrity signals in live modules or offline artifacts (logs, BAM, Prefetch, folders)."}
+        </TerminalBlock>
+      </Card>
+      <Card icon={MemoryStick} title="Persistence signals">
+        <TerminalBlock query={query}>
+          {persistence.available === false
+            ? persistence.reason ?? "Persistence scan not available."
+            : asJson(persistence)}
+        </TerminalBlock>
+      </Card>
+      <Card icon={MemoryStick} title="SHA256 blocklist">
+        <TerminalBlock query={query}>{asJson(shaBlocklist)}</TerminalBlock>
+      </Card>
       <Card icon={MemoryStick} title="Process Snapshot">
         <TerminalBlock query={query}>
           {robloxProcesses.length ? asJson(robloxProcesses) : "[OK] Roblox Memory: No running Roblox process found"}
