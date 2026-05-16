@@ -20,6 +20,7 @@ from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Iterable
 from tkinter import BOTH, BooleanVar, PhotoImage, StringVar, Tk, ttk, messagebox
 
 import psutil
@@ -11945,8 +11946,11 @@ EXECUTOR_NAMES = [
     "Codex",
 ]
 
-# Verified sample SHA256 (lowercase hex) -> label. Extend as you confirm binaries in the field.
+# Verified sample SHA256 (lowercase hex) -> label. Extend in code or assets/executor_sha256_blocklist.json.
 EXECUTOR_SHA256_BLOCKLIST: dict[str, str] = {}
+EXECUTOR_HASH_SCAN_MAX_FILES = 400
+EXECUTOR_HASH_MAX_FILE_BYTES = 120_000_000
+EXECUTOR_ACTIVITY_RECENT_HOURS = 72
 
 ROBLOX_PROCESS_NAMES = frozenset({"robloxplayerbeta.exe", "robloxplayer.exe", "roblox.exe"})
 ROBLOX_MODULE_TRUSTED_FRAGMENTS = (
@@ -12006,6 +12010,70 @@ USER_FOLDER_SCAN_MAX_HITS = 350
 SCAN_WORKERS = min(10, (os.cpu_count() or 4) + 2)
 
 
+def load_executor_sha256_blocklist() -> dict[str, str]:
+    """Merge in-code blocklist with bundled JSON (hash matches survive renames and folder moves)."""
+    merged = {k.lower(): v for k, v in EXECUTOR_SHA256_BLOCKLIST.items() if len(k) == 64}
+    candidates = [
+        resource_path("assets/executor_sha256_blocklist.json"),
+        Path(__file__).resolve().parent / "assets" / "executor_sha256_blocklist.json",
+    ]
+    for path in candidates:
+        try:
+            if not path.exists():
+                continue
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(data, dict):
+            for key, value in data.items():
+                if key in ("version", "description", "entries") or not isinstance(value, str):
+                    continue
+                if len(key) == 64:
+                    merged[key.lower()] = value
+            entries = data.get("entries")
+            if isinstance(entries, list):
+                for entry in entries:
+                    if not isinstance(entry, dict):
+                        continue
+                    digest = str(entry.get("sha256") or entry.get("hash") or "").strip().lower()
+                    label = str(entry.get("label") or entry.get("name") or "known_executor").strip()
+                    if len(digest) == 64:
+                        merged[digest] = label or "known_executor"
+        break
+    return merged
+
+
+def file_sha256_full(path: Path, max_bytes: int = EXECUTOR_HASH_MAX_FILE_BYTES) -> str:
+    try:
+        size = path.stat().st_size
+        if size <= 0 or size > max_bytes:
+            return ""
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            while True:
+                chunk = handle.read(1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return ""
+
+
+def executor_user_hash_scan_roots() -> list[tuple[Path, int]]:
+    roots: list[tuple[Path, int]] = []
+    for folder in designated_user_folder_roots():
+        roots.append((folder, USER_FOLDER_SCAN_MAX_DEPTH))
+    if platform.system() == "Windows":
+        for env_name, depth in (("LOCALAPPDATA", 7), ("APPDATA", 6), ("TEMP", 5)):
+            env_val = os.getenv(env_name)
+            if env_val:
+                candidate = Path(env_val)
+                if candidate.is_dir():
+                    roots.append((candidate, depth))
+    return roots
+
+
 def executor_name_patterns() -> dict[str, re.Pattern[str]]:
     """Match executor brands as standalone tokens in paths (avoid 'Wave' inside 'shockwave', etc.)."""
     patterns: dict[str, re.Pattern[str]] = {}
@@ -12051,7 +12119,122 @@ def path_stem_key(path_str: str) -> str:
         return ""
 
 
-def executor_sha256_blocklist_scan(max_hashes: int = 80) -> dict:
+def executor_blocklist_hash_known_paths(
+    blocklist: dict[str, str],
+    paths: Iterable[str],
+    *,
+    source: str,
+) -> list[dict]:
+    hits: list[dict] = []
+    seen: set[str] = set()
+    for path_str in paths:
+        if not path_str:
+            continue
+        norm = forensic_normalize_pathish(path_str)
+        if not norm or not re.match(r"^[A-Za-z]:\\", norm):
+            continue
+        key = norm.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        path = Path(norm)
+        if path.suffix.lower() not in {".exe", ".dll"}:
+            continue
+        try:
+            if not path.is_file():
+                continue
+        except OSError:
+            continue
+        sha = file_sha256_full(path)
+        if not sha:
+            continue
+        label = blocklist.get(sha.lower())
+        if not label:
+            continue
+        try:
+            stat = path.stat()
+            modified = datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()
+        except OSError:
+            modified = None
+        hits.append(
+            {
+                "label": label,
+                "sha256": sha,
+                "path": norm,
+                "size_bytes": path.stat().st_size if path.exists() else None,
+                "modified": modified,
+                "detection_source": source,
+                "renamed_disguise": path.name.lower() not in {
+                    f"{label.lower()}.exe",
+                    f"{label.lower()}.dll",
+                    f"{label.lower().replace(' ', '')}.exe",
+                },
+            }
+        )
+    return hits
+
+
+def executor_blocklist_path_scan(
+    blocklist: dict[str, str],
+    max_hashes: int = EXECUTOR_HASH_SCAN_MAX_FILES,
+) -> tuple[list[dict], int]:
+    """Hash user-profile executables; ignores path allowlists so disguised paths still match."""
+    if not blocklist:
+        return [], 0
+    hits: list[dict] = []
+    hashed = 0
+    seen_paths: set[str] = set()
+    for root, max_depth in executor_user_hash_scan_roots():
+        try:
+            for path in walk_files_depth_limited(root, max_depth):
+                if hashed >= max_hashes:
+                    break
+                try:
+                    if not path.is_file() or path.suffix.lower() not in {".exe", ".dll"}:
+                        continue
+                except OSError:
+                    continue
+                key = str(path).lower()
+                if key in seen_paths:
+                    continue
+                seen_paths.add(key)
+                sha = file_sha256_full(path)
+                hashed += 1
+                if not sha:
+                    continue
+                label = blocklist.get(sha.lower())
+                if not label:
+                    continue
+                try:
+                    stat = path.stat()
+                    modified = datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()
+                    size_bytes = stat.st_size
+                except OSError:
+                    modified = None
+                    size_bytes = None
+                hits.append(
+                    {
+                        "label": label,
+                        "sha256": sha,
+                        "path": str(path),
+                        "size_bytes": size_bytes,
+                        "modified": modified,
+                        "detection_source": "filesystem_hash_scan",
+                        "renamed_disguise": not any(
+                            pat.search(path.name) for pat in executor_name_patterns().values()
+                        ),
+                    }
+                )
+                if len(hits) >= 40:
+                    break
+        except (PermissionError, OSError):
+            continue
+        if hashed >= max_hashes or len(hits) >= 40:
+            break
+    return hits, hashed
+
+
+def executor_sha256_blocklist_scan(max_hashes: int = EXECUTOR_HASH_SCAN_MAX_FILES) -> dict:
     """Hash profile-folder executables and match against known executor samples."""
     return combined_user_folder_security_scans(max_hashes=max_hashes)[1]
 
@@ -12206,7 +12389,7 @@ def _roblox_module_reasons(path_norm: str, patterns: dict[str, re.Pattern[str]])
     sha_label = ""
     if path_lower.endswith((".exe", ".dll")) and Path(path_norm).is_file():
         sha, _, _ = forensic_file_peek(Path(path_norm))
-        sha_label = EXECUTOR_SHA256_BLOCKLIST.get(sha.lower(), "")
+        sha_label = load_executor_sha256_blocklist().get(sha.lower(), "")
         if sha_label:
             reasons.append(f"sha256_blocklist:{sha_label}")
     return reasons, executor_labels, cheat_hints, sha_label
@@ -12526,17 +12709,16 @@ def match_executor_labels(text: str, patterns: dict[str, re.Pattern[str]]) -> li
     return [name for name, pattern in patterns.items() if pattern.search(text)]
 
 
-def combined_user_folder_security_scans(max_hashes: int = 80) -> tuple[dict, dict]:
-    """One filesystem walk for designated-folder hits and SHA256 blocklist (avoids duplicate I/O)."""
+def combined_user_folder_security_scans(max_hashes: int = EXECUTOR_HASH_SCAN_MAX_FILES) -> tuple[dict, dict]:
+    """Designated-folder name hits plus full-file SHA256 blocklist scan (renames / disguised folders)."""
     patterns = executor_name_patterns()
     roots = designated_user_folder_roots()
     hits: list[dict] = []
-    sha_hits: list[dict] = []
     enumerated = 0
-    hashed = 0
     enumeration_reached_cap = False
     skipped_permission = 0
-    blocklist = EXECUTOR_SHA256_BLOCKLIST
+    blocklist = load_executor_sha256_blocklist()
+    sha_hits, hashed = executor_blocklist_path_scan(blocklist, max_hashes=max_hashes)
 
     for root in roots:
         try:
@@ -12551,30 +12733,7 @@ def combined_user_folder_security_scans(max_hashes: int = 80) -> tuple[dict, dic
                 except OSError:
                     continue
 
-                try:
-                    rel_depth = len(path.relative_to(root).parts) - 1
-                except ValueError:
-                    rel_depth = USER_FOLDER_SCAN_MAX_DEPTH
-
                 ext = path.suffix.lower()
-                if ext in {".exe", ".dll"} and rel_depth < USER_FOLDER_SCAN_MAX_DEPTH and blocklist:
-                    if not path_is_allowlisted(str(path)) and hashed < max_hashes:
-                        sha, ent, size = forensic_file_peek(path)
-                        hashed += 1
-                        label = blocklist.get(sha.lower())
-                        if label:
-                            sha_hits.append(
-                                {
-                                    "label": label,
-                                    "sha256": sha,
-                                    "path": str(path),
-                                    "size_bytes": size,
-                                    "entropy": ent,
-                                }
-                            )
-                        if len(sha_hits) >= 25:
-                            break
-
                 if ext not in USER_FOLDER_SCAN_EXTENSIONS:
                     continue
                 stem = path.stem
@@ -12638,7 +12797,7 @@ def combined_user_folder_security_scans(max_hashes: int = 80) -> tuple[dict, dic
             "blocklist_size": 0,
             "files_hashed": 0,
             "hits": [],
-            "note": "Blocklist empty; add verified SHA256 values to EXECUTOR_SHA256_BLOCKLIST.",
+            "note": "Blocklist empty; add SHA256 entries to EXECUTOR_SHA256_BLOCKLIST or assets/executor_sha256_blocklist.json.",
         }
     else:
         sha_blocklist = {
@@ -12646,6 +12805,7 @@ def combined_user_folder_security_scans(max_hashes: int = 80) -> tuple[dict, dic
             "blocklist_size": len(blocklist),
             "files_hashed": hashed,
             "hits": sha_hits,
+            "note": "Full-file SHA256 match; path/name allowlists are ignored for hash detection.",
         }
     return designated, sha_blocklist
 
@@ -14602,6 +14762,209 @@ def build_forensic_analysis_bundle(
     bundle["available"] = True
     return bundle
 
+def _executor_activity_recency_bucket(timestamp: str | None, report_end: str | None) -> str:
+    event_ms = None
+    end_ms = None
+    if timestamp:
+        try:
+            event_ms = datetime.fromisoformat(timestamp.replace("Z", "+00:00")).timestamp() * 1000
+        except ValueError:
+            event_ms = None
+    if report_end:
+        try:
+            end_ms = datetime.fromisoformat(report_end.replace("Z", "+00:00")).timestamp() * 1000
+        except ValueError:
+            end_ms = None
+    if event_ms is None or end_ms is None:
+        return "unknown"
+    hours = (end_ms - event_ms) / 3_600_000
+    if hours <= 24:
+        return "last_24h"
+    if hours <= EXECUTOR_ACTIVITY_RECENT_HOURS:
+        return "last_72h"
+    if hours <= 168:
+        return "last_7d"
+    return "older"
+
+
+def build_executor_activity_summary(
+    *,
+    generated_at: str,
+    recent_items: dict,
+    sha_blocklist: dict,
+    prefetch_health: dict,
+    designated: dict,
+    executor_indicators: dict,
+    bam: dict,
+    persistence: dict,
+) -> dict:
+    events: list[dict] = []
+    patterns = executor_name_patterns()
+
+    def append_event(
+        *,
+        kind: str,
+        label: str,
+        path: str,
+        occurred_at: str | None,
+        detail: str,
+        extra: dict | None = None,
+    ) -> None:
+        payload = {
+            "kind": kind,
+            "label": label,
+            "path": path,
+            "occurred_at": occurred_at,
+            "recency": _executor_activity_recency_bucket(occurred_at, generated_at),
+            "detail": detail,
+        }
+        if extra:
+            payload.update(extra)
+        events.append(payload)
+
+    for item in sha_blocklist.get("hits") or []:
+        path = str(item.get("path") or "")
+        append_event(
+            kind="sha256_blocklist",
+            label=str(item.get("label") or "known_executor"),
+            path=path,
+            occurred_at=item.get("modified"),
+            detail="Known executor binary hash (survives rename / disguised folder).",
+            extra={
+                "sha256": item.get("sha256"),
+                "renamed_disguise": item.get("renamed_disguise"),
+                "detection_source": item.get("detection_source"),
+            },
+        )
+
+    for item in (recent_items.get("items") or [])[:80]:
+        names = list(item.get("matched_indicator_names") or [])
+        cheats = list(item.get("matched_cheat_filename_hints") or [])
+        if not names and not cheats:
+            continue
+        label = ", ".join(names) if names else ", ".join(cheats)
+        folder = str(item.get("folder") or "")
+        path = f"{folder}\\{item.get('name')}" if folder and item.get("name") else str(item.get("name") or folder)
+        append_event(
+            kind="recent_file",
+            label=label,
+            path=path,
+            occurred_at=item.get("modified"),
+            detail="Recent Downloads/Desktop file name matched a checked executor or cheat hint.",
+        )
+
+    for item in (prefetch_health.get("indicator_hits") or [])[:40]:
+        matched = [name for name, pattern in patterns.items() if pattern.search(str(item.get("name") or ""))]
+        if not matched:
+            continue
+        append_event(
+            kind="prefetch_execution",
+            label=", ".join(matched),
+            path=str(item.get("name") or ""),
+            occurred_at=item.get("modified"),
+            detail="Windows Prefetch shows this executable ran recently.",
+        )
+
+    for item in (designated.get("hits") or [])[:60]:
+        if item.get("path_allowlisted"):
+            continue
+        names = list(item.get("executor_name_hits") or [])
+        cheats = list(item.get("cheat_filename_hints") or [])
+        if not names and not cheats:
+            continue
+        label = ", ".join(names) if names else ", ".join(cheats)
+        append_event(
+            kind="profile_folder",
+            label=label,
+            path=str(item.get("path") or ""),
+            occurred_at=item.get("modified"),
+            detail="File in Downloads/Desktop/Documents matched executor or cheat filename rules.",
+        )
+
+    for item in (executor_indicators.get("file_hits") or [])[:40]:
+        if item.get("path_allowlisted"):
+            continue
+        names = list(item.get("matched_names") or [])
+        cheats = list(item.get("cheat_filename_hints") or [])
+        if not names and not cheats:
+            continue
+        label = ", ".join(names) if names else ", ".join(cheats)
+        append_event(
+            kind="filesystem_indicator",
+            label=label,
+            path=str(item.get("path") or ""),
+            occurred_at=item.get("modified"),
+            detail="Deep scan path matched executor or cheat filename rules.",
+        )
+
+    for item in (bam.get("items") or [])[:40]:
+        path = str(item.get("normalized_path") or item.get("path") or "")
+        if not path:
+            continue
+        matched = match_executor_labels(path, patterns)
+        if not matched:
+            continue
+        append_event(
+            kind="bam_execution",
+            label=", ".join(matched),
+            path=path,
+            occurred_at=item.get("last_execution_utc") or item.get("last_execution"),
+            detail="Background Activity Moderator recorded execution of this path.",
+        )
+
+    for item in (persistence.get("suspicious_entries") or [])[:25]:
+        if item.get("path_allowlisted"):
+            continue
+        names = list(item.get("executor_name_hits") or [])
+        if not names:
+            continue
+        append_event(
+            kind="persistence",
+            label=", ".join(names),
+            path=str(item.get("target") or item.get("name") or ""),
+            occurred_at=None,
+            detail="Startup / Run key / scheduled task references a checked executor name.",
+        )
+
+    def _event_sort_key(row: dict) -> tuple[int, float]:
+        recency_rank = {
+            "last_24h": 0,
+            "last_72h": 1,
+            "last_7d": 2,
+            "older": 3,
+        }.get(str(row.get("recency") or ""), 4)
+        occurred = row.get("occurred_at")
+        if not occurred:
+            return recency_rank, 0.0
+        try:
+            ts = datetime.fromisoformat(str(occurred).replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            ts = 0.0
+        return recency_rank, -ts
+
+    events.sort(key=_event_sort_key)
+
+    recent_count = sum(1 for row in events if row.get("recency") in ("last_24h", "last_72h"))
+    hash_hits = sum(1 for row in events if row.get("kind") == "sha256_blocklist")
+    if hash_hits or recent_count >= 2:
+        verdict = "likely_recent_executor_activity"
+    elif events:
+        verdict = "possible_executor_activity"
+    else:
+        verdict = "no_matched_executor_activity"
+
+    return {
+        "available": True,
+        "recent_window_hours": EXECUTOR_ACTIVITY_RECENT_HOURS,
+        "verdict": verdict,
+        "event_count": len(events),
+        "recent_event_count": recent_count,
+        "hash_hit_count": hash_hits,
+        "events": events[:80],
+        "note": "Pre-aggregated timeline for reviewers; check SHA256 hits first when the file was renamed or moved.",
+    }
+
+
 def build_report() -> dict:
     scan_started_at = datetime.now(timezone.utc).isoformat()
     memory = psutil.virtual_memory()
@@ -14640,6 +15003,39 @@ def build_report() -> dict:
         bam_structured = forensic_bundle.get("bam_structured")
         bam_registry = bam_registry_entries(
             bam_structured if isinstance(bam_structured, dict) else None
+        )
+        blocklist = load_executor_sha256_blocklist()
+        if blocklist:
+            bam_paths = [
+                str(item.get("normalized_path") or "")
+                for item in (bam_registry.get("items") or [])
+                if item.get("file_exists")
+            ]
+            artifact_hits = executor_blocklist_hash_known_paths(
+                blocklist, bam_paths, source="bam_execution_path"
+            )
+            if artifact_hits:
+                merged_paths = {str(h.get("path") or "").lower() for h in sha_blocklist.get("hits") or []}
+                for hit in artifact_hits:
+                    if str(hit.get("path") or "").lower() in merged_paths:
+                        continue
+                    sha_blocklist.setdefault("hits", []).append(hit)
+                    merged_paths.add(str(hit.get("path") or "").lower())
+
+        prefetch_health = fut_pref_health.result()
+        executor_indicators = fut_exec_ind.result()
+        persistence = fut_persist.result()
+        recent_items = fut_recent.result()
+        generated_at = datetime.now(timezone.utc).isoformat()
+        executor_activity = build_executor_activity_summary(
+            generated_at=generated_at,
+            recent_items=recent_items,
+            sha_blocklist=sha_blocklist,
+            prefetch_health=prefetch_health,
+            designated=designated,
+            executor_indicators=executor_indicators,
+            bam=bam_registry,
+            persistence=persistence,
         )
 
     processes = []
@@ -14693,11 +15089,12 @@ def build_report() -> dict:
             "usb_events": fut_usb.result(),
             "shellbag_clear_signal": fut_shellbag.result(),
             "deletion_and_log_clearing_signals": deletion_signals,
-            "prefetch_health": fut_pref_health.result(),
-            "roblox_executor_indicators": fut_exec_ind.result(),
+            "prefetch_health": prefetch_health,
+            "roblox_executor_indicators": executor_indicators,
             "designated_folder_suspicious_files": designated,
             "executor_sha256_blocklist": sha_blocklist,
-            "persistence_signals": fut_persist.result(),
+            "executor_activity_summary": executor_activity,
+            "persistence_signals": persistence,
             "roblox_runtime_integrity": fut_roblox_int.result(),
             "forensic_analysis": forensic_bundle,
         },

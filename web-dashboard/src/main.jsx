@@ -574,12 +574,117 @@ function Card({ icon: Icon, title, children }) {
   );
 }
 
+const EXECUTOR_VERDICT_LABELS = {
+  likely_recent_executor_activity: "Likely recent executor use or download",
+  possible_executor_activity: "Possible executor-related activity",
+  no_matched_executor_activity: "No matched executor activity",
+};
+
+const EXECUTOR_KIND_LABELS = {
+  sha256_blocklist: "Known binary hash",
+  recent_file: "Recent file name match",
+  prefetch_execution: "Prefetch execution",
+  profile_folder: "Profile folder file",
+  filesystem_indicator: "Filesystem scan",
+  bam_execution: "BAM execution record",
+  persistence: "Startup / persistence",
+};
+
+function executorActivityFromReport(report) {
+  const sec = report.security_integrity_signals ?? {};
+  const bundled = sec.executor_activity_summary;
+  if (bundled?.available) {
+    return bundled;
+  }
+  return buildClientSideExecutorActivity(report);
+}
+
+function buildClientSideExecutorActivity(report) {
+  const summary = buildSuspicionSummary(report);
+  const events = summary.openedFiles.slice(0, 40).map((item) => ({
+    kind: "filesystem_indicator",
+    label: (item.matched ?? []).join(", ") || "matched",
+    path: item.path,
+    occurred_at: item.displayAt,
+    recency: recencyBucket(item.displayAt, report),
+    detail: "Derived from legacy report fields (re-scan with latest scanner for full timeline).",
+  }));
+  return {
+    available: true,
+    verdict: events.length ? "possible_executor_activity" : "no_matched_executor_activity",
+    event_count: events.length,
+    recent_event_count: events.filter((e) => e.recency === "last_24h" || e.recency === "last_72h").length,
+    hash_hit_count: 0,
+    events,
+    note: "Legacy report; install the latest scanner build for hash and BAM correlation.",
+  };
+}
+
+function recencyBucket(timestamp, report) {
+  const factor = recencyFactor(timestamp, report);
+  if (factor >= 1) return "last_24h";
+  if (factor >= 0.75) return "last_72h";
+  if (factor >= 0.5) return "last_7d";
+  return "older";
+}
+
+function ExecutorActivityCard({ report }) {
+  const activity = executorActivityFromReport(report);
+  const verdictLabel = EXECUTOR_VERDICT_LABELS[activity.verdict] ?? activity.verdict ?? "Unknown";
+  const verdictClass =
+    activity.verdict === "likely_recent_executor_activity"
+      ? "high"
+      : activity.verdict === "possible_executor_activity"
+        ? "medium"
+        : "low";
+
+  return (
+    <Card icon={ScanSearch} title="Executor activity (recent first)">
+      <div className="executor-activity-panel">
+        <div className={`executor-verdict ${verdictClass}`}>
+          <strong>{verdictLabel}</strong>
+          <span>
+            {activity.recent_event_count ?? 0} event(s) in the last {activity.recent_window_hours ?? 72}h
+            {(activity.hash_hit_count ?? 0) > 0 ? ` · ${activity.hash_hit_count} hash match(es)` : ""}
+          </span>
+        </div>
+        <p className="muted executor-activity-note">
+          One place for downloads, execution traces, renamed binaries (SHA256), Prefetch, and BAM — no need to search
+          other tabs for executor signals.
+        </p>
+        {activity.events?.length ? (
+          <div className="executor-event-list">
+            {activity.events.slice(0, 25).map((event, index) => (
+              <div className="executor-event-row" key={`${event.path}-${event.kind}-${index}`}>
+                <div>
+                  <span className={`recency-pill ${event.recency ?? "unknown"}`}>
+                    {(event.recency ?? "unknown").replace(/_/g, " ")}
+                  </span>
+                  <strong>{EXECUTOR_KIND_LABELS[event.kind] ?? event.kind}</strong>
+                  <p className="executor-event-label">{event.label}</p>
+                  <p className="executor-event-path">{event.path}</p>
+                  <small>{event.detail}</small>
+                </div>
+                <time>{event.occurred_at ? formatGmtPlus3(event.occurred_at) : "—"}</time>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="muted">No executor, cheat-hint, or known-hash activity was aggregated for this session.</p>
+        )}
+        {activity.note ? <p className="muted small-note">{activity.note}</p> : null}
+      </div>
+    </Card>
+  );
+}
+
 function StarterSection({ report }) {
   const summary = buildSuspicionSummary(report);
   const band = summary.score >= 70 ? "High" : summary.score >= 35 ? "Medium" : "Low";
 
   return (
     <>
+      <ExecutorActivityCard report={report} />
       <Card icon={Gauge} title="Suspicion Score">
         <div className="score-panel">
           <div className="score-ring" aria-label={`Suspicion score ${summary.score} out of 100`}>

@@ -48,6 +48,7 @@ if exist "%ROOT%assets\scanner-icon.ico" set "ICON_ARG=--windows-icon-from-ico=.
 
 set "DATA_ARG="
 if exist "%ROOT%assets\scanner-icon.png" set "DATA_ARG=--include-data-files=..\assets\scanner-icon.png=assets\scanner-icon.png --include-data-files=..\assets\scanner-icon.ico=assets\scanner-icon.ico"
+if exist "%ROOT%assets\executor_sha256_blocklist.json" set "DATA_ARG=!DATA_ARG! --include-data-files=..\assets\executor_sha256_blocklist.json=assets\executor_sha256_blocklist.json"
 
 set "MODE_ARGS=--mode=onefile --onefile-no-compression"
 set "DIST_FILE=%ROOT%dist-secure\dngscanner.exe"

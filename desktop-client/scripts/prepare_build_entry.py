@@ -15,6 +15,13 @@ def main() -> int:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     shutil.copy2(ROOT / "app.py", OUT_DIR / "app.py")
     shutil.copy2(ROOT / "runtime_config.py", OUT_DIR / "runtime_config.py")
+    assets_src = ROOT / "assets"
+    if assets_src.is_dir():
+        assets_dst = OUT_DIR / "assets"
+        assets_dst.mkdir(parents=True, exist_ok=True)
+        for asset in assets_src.iterdir():
+            if asset.is_file():
+                shutil.copy2(asset, assets_dst / asset.name)
     print(f"Build entry: {OUT_DIR / 'app.py'}")
     return 0
 

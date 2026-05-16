@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "description": "SHA256 (lowercase hex) of verified executor binaries. Renamed copies (e.g. discord.exe) match by hash, not filename. Add entries after confirming samples in your environment.",
+  "entries": []
+}
