@@ -1,0 +1,3 @@
+# Copy to embedded_build_config.py for local testing, or let build-secure-*.bat generate it.
+API_URL = "https://your-api.example.com"
+BUILD_PROTECTED = True

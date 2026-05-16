@@ -17,6 +17,7 @@ import zlib
 import math
 import sqlite3
 from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tkinter import BOTH, BooleanVar, PhotoImage, StringVar, Tk, ttk, messagebox
@@ -24,7 +25,9 @@ from tkinter import BOTH, BooleanVar, PhotoImage, StringVar, Tk, ttk, messagebox
 import psutil
 import requests
 
-API_URL = "https://test-v7a8.onrender.com"
+from runtime_config import get_api_url
+
+API_URL = get_api_url()
 CONSENT_VERSION = "2026-05-11.dngscanner"
 
 SCAN_STAGES = [
@@ -11902,7 +11905,11 @@ def embedded_logo_data() -> str:
 
 
 def resource_path(relative_path: str) -> Path:
-    base_path = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        base_path = Path(meipass)
+    else:
+        base_path = Path(__file__).resolve().parent
     return base_path / relative_path
 
 EXECUTOR_NAMES = [
@@ -11990,6 +11997,7 @@ USER_FOLDER_SCAN_SUBDIRS = ("Downloads", "Desktop", "Documents")
 USER_FOLDER_SCAN_MAX_DEPTH = 4
 USER_FOLDER_SCAN_MAX_ENUMERATED = 50_000
 USER_FOLDER_SCAN_MAX_HITS = 350
+SCAN_WORKERS = min(10, (os.cpu_count() or 4) + 2)
 
 
 def executor_name_patterns() -> dict[str, re.Pattern[str]]:
@@ -12039,50 +12047,7 @@ def path_stem_key(path_str: str) -> str:
 
 def executor_sha256_blocklist_scan(max_hashes: int = 80) -> dict:
     """Hash profile-folder executables and match against known executor samples."""
-    if not EXECUTOR_SHA256_BLOCKLIST:
-        return {
-            "available": True,
-            "blocklist_size": 0,
-            "files_hashed": 0,
-            "hits": [],
-            "note": "Blocklist empty; add verified SHA256 values to EXECUTOR_SHA256_BLOCKLIST.",
-        }
-
-    hits: list[dict] = []
-    hashed = 0
-    for root in designated_user_folder_roots():
-        try:
-            for path in walk_files_depth_limited(root, 3):
-                if path.suffix.lower() not in {".exe", ".dll"}:
-                    continue
-                if path_is_allowlisted(str(path)):
-                    continue
-                sha, ent, size = forensic_file_peek(path)
-                hashed += 1
-                label = EXECUTOR_SHA256_BLOCKLIST.get(sha.lower())
-                if label:
-                    hits.append(
-                        {
-                            "label": label,
-                            "sha256": sha,
-                            "path": str(path),
-                            "size_bytes": size,
-                            "entropy": ent,
-                        }
-                    )
-                if hashed >= max_hashes or len(hits) >= 25:
-                    break
-        except (PermissionError, OSError):
-            continue
-        if hashed >= max_hashes or len(hits) >= 25:
-            break
-
-    return {
-        "available": True,
-        "blocklist_size": len(EXECUTOR_SHA256_BLOCKLIST),
-        "files_hashed": hashed,
-        "hits": hits,
-    }
+    return combined_user_folder_security_scans(max_hashes=max_hashes)[1]
 
 
 def persistence_signals() -> dict:
@@ -12555,13 +12520,17 @@ def match_executor_labels(text: str, patterns: dict[str, re.Pattern[str]]) -> li
     return [name for name, pattern in patterns.items() if pattern.search(text)]
 
 
-def designated_folder_extension_scan() -> dict:
+def combined_user_folder_security_scans(max_hashes: int = 80) -> tuple[dict, dict]:
+    """One filesystem walk for designated-folder hits and SHA256 blocklist (avoids duplicate I/O)."""
     patterns = executor_name_patterns()
     roots = designated_user_folder_roots()
     hits: list[dict] = []
+    sha_hits: list[dict] = []
     enumerated = 0
+    hashed = 0
     enumeration_reached_cap = False
     skipped_permission = 0
+    blocklist = EXECUTOR_SHA256_BLOCKLIST
 
     for root in roots:
         try:
@@ -12575,7 +12544,31 @@ def designated_folder_extension_scan() -> dict:
                         continue
                 except OSError:
                     continue
+
+                try:
+                    rel_depth = len(path.relative_to(root).parts) - 1
+                except ValueError:
+                    rel_depth = USER_FOLDER_SCAN_MAX_DEPTH
+
                 ext = path.suffix.lower()
+                if ext in {".exe", ".dll"} and rel_depth < USER_FOLDER_SCAN_MAX_DEPTH and blocklist:
+                    if not path_is_allowlisted(str(path)) and hashed < max_hashes:
+                        sha, ent, size = forensic_file_peek(path)
+                        hashed += 1
+                        label = blocklist.get(sha.lower())
+                        if label:
+                            sha_hits.append(
+                                {
+                                    "label": label,
+                                    "sha256": sha,
+                                    "path": str(path),
+                                    "size_bytes": size,
+                                    "entropy": ent,
+                                }
+                            )
+                        if len(sha_hits) >= 25:
+                            break
+
                 if ext not in USER_FOLDER_SCAN_EXTENSIONS:
                     continue
                 stem = path.stem
@@ -12620,7 +12613,7 @@ def designated_folder_extension_scan() -> dict:
     )
     weird_only = sum(1 for item in hits if not item["executor_name_hits"] and item["name_anomaly_reasons"])
 
-    return {
+    designated = {
         "extensions_scanned": sorted(USER_FOLDER_SCAN_EXTENSIONS),
         "folders_scanned": [str(p) for p in roots],
         "max_depth": USER_FOLDER_SCAN_MAX_DEPTH,
@@ -12633,15 +12626,54 @@ def designated_folder_extension_scan() -> dict:
         "skipped_roots_permission_errors": skipped_permission,
         "hits": hits,
     }
+    if not blocklist:
+        sha_blocklist = {
+            "available": True,
+            "blocklist_size": 0,
+            "files_hashed": 0,
+            "hits": [],
+            "note": "Blocklist empty; add verified SHA256 values to EXECUTOR_SHA256_BLOCKLIST.",
+        }
+    else:
+        sha_blocklist = {
+            "available": True,
+            "blocklist_size": len(blocklist),
+            "files_hashed": hashed,
+            "hits": sha_hits,
+        }
+    return designated, sha_blocklist
+
+
+def designated_folder_extension_scan() -> dict:
+    return combined_user_folder_security_scans()[0]
 
 
 def hashed_identifier(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def _hidden_subprocess_kwargs() -> dict:
+    """Prevent PowerShell/cmd windows from flashing during scans on Windows."""
+    if platform.system() != "Windows":
+        return {}
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = getattr(subprocess, "SW_HIDE", 0)
+    return {
+        "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
+        "startupinfo": startupinfo,
+    }
+
+
 def run_command(command: list[str], timeout: float = 8, max_chars: int = 8000) -> str:
     try:
-        result = subprocess.run(command, capture_output=True, timeout=timeout, check=False)
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+            **_hidden_subprocess_kwargs(),
+        )
         output = result.stdout or result.stderr or b""
         return output.decode("utf-8", errors="replace").strip()[:max_chars]
     except Exception as exc:
@@ -12826,9 +12858,18 @@ def amcache_metadata() -> dict:
         return {"available": False, "path": str(path), "reason": str(exc)}
 
 
-def bam_registry_entries() -> dict:
+def bam_registry_entries(bam_structured: dict | None = None) -> dict:
     if platform.system() != "Windows":
         return {"available": False, "reason": "BAM is a Windows registry artifact"}
+
+    if bam_structured and bam_structured.get("available"):
+        items = bam_structured.get("items") or []
+        return {
+            "available": True,
+            "source": "HKLM SYSTEM CurrentControlSet Services bam State UserSettings",
+            "raw_sample": json.dumps(items[:120], default=str)[:12000],
+            "note": "Structured BAM parse (same data as forensic_analysis.bam_structured).",
+        }
 
     script = (
         "$base='HKLM:\\SYSTEM\\CurrentControlSet\\Services\\bam\\State\\UserSettings';"
@@ -12967,10 +13008,19 @@ def windows_defender_signals() -> dict:
         "-ErrorAction SilentlyContinue | "
         "Select-Object -First 80 TimeCreated,Id,LevelDisplayName,Message | ConvertTo-Json -Depth 3"
     )
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        settings_future = pool.submit(
+            run_command, ["powershell", "-NoProfile", "-Command", preference_script], 12, 12000
+        )
+        history_future = pool.submit(
+            run_command, ["powershell", "-NoProfile", "-Command", history_script], 18, 20000
+        )
+        settings = settings_future.result()
+        history = history_future.result()
     return {
         "available": True,
-        "settings": run_command(["powershell", "-NoProfile", "-Command", preference_script])[:12000],
-        "protection_history": run_command(["powershell", "-NoProfile", "-Command", history_script])[:20000],
+        "settings": settings[:12000],
+        "protection_history": history[:20000],
     }
 
 
@@ -13147,7 +13197,12 @@ def deletion_and_log_clearing_signals() -> dict:
         " sysmon_file_delete_events = @($sm)"
         "} | ConvertTo-Json -Depth 5 -Compress"
     )
-    extended_raw = run_command(["powershell", "-NoProfile", "-Command", extended_script], timeout=28, max_chars=32000)
+    ps = ["powershell", "-NoProfile", "-Command"]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        event_future = pool.submit(run_command, ps + [event_script], 20, 20000)
+        extended_future = pool.submit(run_command, ps + [extended_script], 28, 32000)
+        event_sample = event_future.result()
+        extended_raw = extended_future.result()
     extended_parsed: dict | str
     try:
         extended_parsed = json.loads(extended_raw) if extended_raw and not extended_raw.startswith("Unavailable:") else {"raw": extended_raw}
@@ -13176,7 +13231,7 @@ def deletion_and_log_clearing_signals() -> dict:
     return {
         "available": True,
         "window": "last 30 days (general events); last 14 days (USN / Security / Sysmon file delete)",
-        "raw_sample": run_command(["powershell", "-NoProfile", "-Command", event_script], max_chars=20000),
+        "raw_sample": event_sample,
         "deleted_file_evidence": extended_parsed,
         "usn_delete_sample": usn_text[:20000],
         "note": "Recycle Bin $I metadata (in trash report) shows files still in the bin. After emptying or Shift+Delete, "
@@ -14516,10 +14571,15 @@ def build_forensic_analysis_bundle(
             "reason": "Forensic correlation bundle is Windows-focused in this build",
             "engine_version": _FORENSIC_ENGINE_VERSION,
         }
-    bam_struct = bam_execution_records()
-    pca = pca_executed_records()
-    sqlite_pack = sqlite_forensic_probe()
-    usn_extra = usn_journal_enriched_sample()
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        bam_future = pool.submit(bam_execution_records)
+        pca_future = pool.submit(pca_executed_records)
+        sqlite_future = pool.submit(sqlite_forensic_probe)
+        usn_future = pool.submit(usn_journal_enriched_sample)
+        bam_struct = bam_future.result()
+        pca = pca_future.result()
+        sqlite_pack = sqlite_future.result()
+        usn_extra = usn_future.result()
     bundle = assemble_forensic_detections(
         designated=designated,
         prefetch=prefetch,
@@ -14540,10 +14600,42 @@ def build_report() -> dict:
     scan_started_at = datetime.now(timezone.utc).isoformat()
     memory = psutil.virtual_memory()
     disk = psutil.disk_usage(str(Path.home().anchor or Path.home()))
-    prefetch = prefetch_metadata()
-    designated = designated_folder_extension_scan()
-    deletion_signals = deletion_and_log_clearing_signals()
-    forensic_bundle = build_forensic_analysis_bundle(designated, prefetch, deletion_signals)
+
+    with ThreadPoolExecutor(max_workers=SCAN_WORKERS) as pool:
+        fut_prefetch = pool.submit(prefetch_metadata)
+        fut_deletion = pool.submit(deletion_and_log_clearing_signals)
+        fut_folders = pool.submit(combined_user_folder_security_scans)
+
+        prefetch = fut_prefetch.result()
+        deletion_signals = fut_deletion.result()
+        designated, sha_blocklist = fut_folders.result()
+
+        fut_forensic = pool.submit(build_forensic_analysis_bundle, designated, prefetch, deletion_signals)
+        fut_hardware = pool.submit(hardware_identifiers)
+        fut_apps = pool.submit(installed_apps_summary)
+        fut_trash = pool.submit(recycle_bin_metadata)
+        fut_roblox = pool.submit(roblox_diagnostics)
+        fut_amcache = pool.submit(amcache_metadata)
+        fut_userassist = pool.submit(userassist_registry_entries)
+        fut_defender = pool.submit(windows_defender_signals)
+        fut_events = pool.submit(windows_event_log_summary)
+        fut_xml = pool.submit(xml_event_log_files)
+        fut_recent = pool.submit(recent_items_metadata)
+        fut_cmdhist = pool.submit(command_history_keyword_hits)
+        fut_services = pool.submit(windows_service_signals)
+        fut_usb = pool.submit(usb_event_summary)
+        fut_shellbag = pool.submit(shellbag_clear_signal)
+        fut_pref_health = pool.submit(prefetch_health_signals, prefetch)
+        fut_exec_ind = pool.submit(executor_indicator_scan)
+        fut_persist = pool.submit(persistence_signals)
+        fut_roblox_int = pool.submit(roblox_integrity_scan, prefetch)
+
+        forensic_bundle = fut_forensic.result()
+        bam_structured = forensic_bundle.get("bam_structured")
+        bam_registry = bam_registry_entries(
+            bam_structured if isinstance(bam_structured, dict) else None
+        )
+
     processes = []
     for proc in psutil.process_iter(["pid", "name", "username", "status"]):
         try:
@@ -14565,7 +14657,7 @@ def build_report() -> dict:
             "cpu_count_logical": psutil.cpu_count(logical=True),
             "cpu_count_physical": psutil.cpu_count(logical=False),
             "hostname_hash": hashed_identifier(socket.gethostname()),
-            "hardware": hardware_identifiers(),
+            "hardware": fut_hardware.result(),
         },
         "performance_environment": {
             "memory_total_gb": round(memory.total / (1024**3), 2),
@@ -14573,34 +14665,34 @@ def build_report() -> dict:
             "disk_total_gb": round(disk.total / (1024**3), 2),
             "disk_free_gb": round(disk.free / (1024**3), 2),
             "boot_time": datetime.fromtimestamp(psutil.boot_time(), timezone.utc).isoformat(),
-            "installed_applications": installed_apps_summary(),
-            "trash": recycle_bin_metadata(),
+            "installed_applications": fut_apps.result(),
+            "trash": fut_trash.result(),
             "prefetch": prefetch,
         },
-        "application_diagnostics": {"roblox": roblox_diagnostics()},
+        "application_diagnostics": {"roblox": fut_roblox.result()},
         "process_overview": {
             "count": len(processes),
             "items": sorted(processes, key=lambda item: (item["name"] or "").lower())[:250],
         },
         "security_integrity_signals": {
-            "amcache": amcache_metadata(),
-            "bam": bam_registry_entries(),
-            "userassist": userassist_registry_entries(),
-            "defender": windows_defender_signals(),
-            "windows_event_logs": windows_event_log_summary(),
-            "xml_event_log_files": xml_event_log_files(),
-            "recent_items": recent_items_metadata(),
-            "command_history_keyword_hits": command_history_keyword_hits(),
-            "services": windows_service_signals(),
-            "usb_events": usb_event_summary(),
-            "shellbag_clear_signal": shellbag_clear_signal(),
+            "amcache": fut_amcache.result(),
+            "bam": bam_registry,
+            "userassist": fut_userassist.result(),
+            "defender": fut_defender.result(),
+            "windows_event_logs": fut_events.result(),
+            "xml_event_log_files": fut_xml.result(),
+            "recent_items": fut_recent.result(),
+            "command_history_keyword_hits": fut_cmdhist.result(),
+            "services": fut_services.result(),
+            "usb_events": fut_usb.result(),
+            "shellbag_clear_signal": fut_shellbag.result(),
             "deletion_and_log_clearing_signals": deletion_signals,
-            "prefetch_health": prefetch_health_signals(prefetch),
-            "roblox_executor_indicators": executor_indicator_scan(),
+            "prefetch_health": fut_pref_health.result(),
+            "roblox_executor_indicators": fut_exec_ind.result(),
             "designated_folder_suspicious_files": designated,
-            "executor_sha256_blocklist": executor_sha256_blocklist_scan(),
-            "persistence_signals": persistence_signals(),
-            "roblox_runtime_integrity": roblox_integrity_scan(prefetch=prefetch),
+            "executor_sha256_blocklist": sha_blocklist,
+            "persistence_signals": fut_persist.result(),
+            "roblox_runtime_integrity": fut_roblox_int.result(),
             "forensic_analysis": forensic_bundle,
         },
     }
@@ -14752,26 +14844,25 @@ class DiagnosticApp:
 
     def scan_and_upload(self) -> None:
         try:
-            report = None
-            for index, stage in enumerate(SCAN_STAGES, start=1):
-                self.root.after(0, self.set_stage, stage, "running")
-                if stage == "Uploading Results":
-                    if report is None:
-                        report = build_report()
-                    payload = {
-                        "pin": self.pin.get().strip(),
-                        "consent_version": CONSENT_VERSION,
-                        "collected_categories": COLLECTED_CATEGORIES,
-                        "report": report,
-                    }
-                    response = requests.post(f"{API_URL}/reports", json=payload, timeout=20)
-                    response.raise_for_status()
-                elif report is None and stage == "Finalizing Report":
-                    report = build_report()
-                else:
-                    time.sleep(0.4)
-                self.root.after(0, self.set_stage, stage, "complete")
-                self.root.after(0, self.set_progress, index)
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                report_future = pool.submit(build_report)
+                for index, stage in enumerate(SCAN_STAGES, start=1):
+                    self.root.after(0, self.set_stage, stage, "running")
+                    if stage in ("Finalizing Report", "Uploading Results"):
+                        report = report_future.result(timeout=900)
+                        if stage == "Uploading Results":
+                            payload = {
+                                "pin": self.pin.get().strip(),
+                                "consent_version": CONSENT_VERSION,
+                                "collected_categories": COLLECTED_CATEGORIES,
+                                "report": report,
+                            }
+                            response = requests.post(f"{API_URL}/reports", json=payload, timeout=20)
+                            response.raise_for_status()
+                    else:
+                        time.sleep(0.12)
+                    self.root.after(0, self.set_stage, stage, "complete")
+                    self.root.after(0, self.set_progress, index)
             self.root.after(0, self.complete)
         except Exception as exc:
             self.root.after(0, self.fail, str(exc))

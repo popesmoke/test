@@ -15,7 +15,18 @@ build/
 # Desktop builds
 *.spec
 desktop-client/dist/
+desktop-client/dist-secure/
 desktop-client/build/
+desktop-client/embedded_build_config.py
+desktop-client/pyarmor.bug.log
+desktop-client/_build_obf/
+desktop-client/assets/
+desktop-client/*.build/
+desktop-client/*.dist/
+desktop-client/*.onefile-build/
+py-packager/.venv/
+py-packager/dist/
+py-packager/build/
 
 # Local OS/editor files
 .DS_Store
