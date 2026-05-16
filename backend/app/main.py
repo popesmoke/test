@@ -6,13 +6,20 @@ import json
 import os
 import secrets
 import sqlite3
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
+
+_BACKEND_ROOT = Path(__file__).resolve().parent.parent
+if str(_BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(_BACKEND_ROOT))
+from links import invite_url, scanner_download_url  # noqa: E402
 
 APP_DIR = Path(__file__).resolve().parent
 DB_PATH = APP_DIR.parent / "diagnostics.db"
@@ -47,6 +54,8 @@ class SessionCreateResponse(BaseModel):
     status: str
     expires_at: str
     created_at: str
+    download_url: str
+    invite_url: str
 
 
 class SessionSummary(BaseModel):
@@ -148,6 +157,26 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/download/scanner")
+def download_scanner() -> RedirectResponse | FileResponse:
+    configured = os.getenv("SCANNER_DOWNLOAD_URL", "").strip()
+    if configured:
+        return RedirectResponse(url=configured, status_code=302)
+
+    exe_path = os.getenv("SCANNER_EXE_PATH", "")
+    if exe_path and Path(exe_path).is_file():
+        return FileResponse(
+            exe_path,
+            media_type="application/octet-stream",
+            filename=Path(exe_path).name,
+        )
+
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="Scanner download is not configured. Set SCANNER_DOWNLOAD_URL or SCANNER_EXE_PATH.",
+    )
+
+
 @app.post("/auth/login", response_model=TokenResponse)
 def login(payload: LoginRequest) -> TokenResponse:
     valid_email = hmac.compare_digest(payload.email, CHECKER_EMAIL)
@@ -173,12 +202,15 @@ def create_session(_: str = Depends(require_checker)) -> SessionCreateResponse:
         )
         row = conn.execute("SELECT * FROM sessions WHERE pin = ?", (pin,)).fetchone()
 
+    pin_value = row["pin"]
     return SessionCreateResponse(
         id=row["id"],
-        pin=row["pin"],
+        pin=pin_value,
         status=row["status"],
         created_at=row["created_at"],
         expires_at=row["expires_at"],
+        download_url=scanner_download_url(),
+        invite_url=invite_url(pin_value),
     )
 
 

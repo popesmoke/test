@@ -27,10 +27,151 @@ import {
 import "./styles.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "https://test-v7a8.onrender.com";
+const PUBLIC_APP_URL = (import.meta.env.VITE_PUBLIC_APP_URL || "").replace(/\/$/, "");
+const SCANNER_DOWNLOAD_URL =
+  import.meta.env.VITE_SCANNER_DOWNLOAD_URL ||
+  "https://github.com/popesmoke/test/releases/download/scanner-latest/dngscanner.exe" ||
+  `${API_URL}/download/scanner`;
 const BRAND_LOGO = "/assets/dangerouscity-logo.png";
+
+function inviteUrlForPin(pin) {
+  const base = PUBLIC_APP_URL || window.location.origin;
+  return `${base.replace(/\/$/, "")}/?pin=${encodeURIComponent(pin)}`;
+}
+
+function scannerDownloadUrl() {
+  return SCANNER_DOWNLOAD_URL;
+}
+
+function shareMessage(pin, downloadUrl, inviteUrl) {
+  return [
+    "DangerousCity scan — follow these steps:",
+    "",
+    "1) Download the scanner:",
+    downloadUrl,
+    "",
+    "2) Open the scanner and enter this PIN:",
+    pin,
+    "",
+    "Or open this page for the same instructions:",
+    inviteUrl,
+  ].join("\n");
+}
+
+function readInvitePin() {
+  const params = new URLSearchParams(window.location.search);
+  return params.get("pin") || params.get("invite") || "";
+}
 
 function authHeaders(token) {
   return { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+}
+
+function WorkflowSteps({ activeStep = 1 }) {
+  const steps = [
+    { number: "1", title: "Downloading", body: "Send the suspect the scanner download link and have them install or run it." },
+    { number: "2", title: "Scanning", body: "They enter the session PIN in the scanner. Results upload automatically when the scan finishes." },
+    { number: "3", title: "Data review", body: "Open the completed session here to review detections and reach a verdict." },
+  ];
+  return (
+    <section className="workflow-steps" aria-label="Screenshare workflow">
+      {steps.map((step, index) => (
+        <article
+          key={step.title}
+          className={`workflow-step ${index + 1 === activeStep ? "active" : ""} ${index + 1 < activeStep ? "done" : ""}`}
+        >
+          <span className="workflow-number">{step.number}</span>
+          <div>
+            <h3>{step.title}</h3>
+            <p>{step.body}</p>
+          </div>
+        </article>
+      ))}
+    </section>
+  );
+}
+
+function CopyField({ label, value, onCopy }) {
+  return (
+    <label className="copy-field">
+      <span>{label}</span>
+      <div className="copy-field-row">
+        <input readOnly value={value} onFocus={(event) => event.target.select()} />
+        <button type="button" onClick={() => onCopy(value)}>
+          <Clipboard size={16} /> Copy
+        </button>
+      </div>
+    </label>
+  );
+}
+
+function PinSharePanel({ pin, downloadUrl, inviteUrl, onDismiss }) {
+  const download = downloadUrl || scannerDownloadUrl();
+  const invite = inviteUrl || inviteUrlForPin(pin);
+  const message = shareMessage(pin, download, invite);
+
+  async function copyValue(value) {
+    await navigator.clipboard?.writeText(value).catch(() => {});
+  }
+
+  return (
+    <section className="pin-share-panel">
+      <header className="pin-share-header">
+        <div>
+          <p className="eyebrow">Share with suspect</p>
+          <h2>Session ready</h2>
+          <p className="muted">Send the download link and PIN below. They only need the scanner — no dashboard login.</p>
+        </div>
+        {onDismiss ? (
+          <button type="button" className="pin-share-dismiss" onClick={onDismiss}>
+            Dismiss
+          </button>
+        ) : null}
+      </header>
+      <WorkflowSteps activeStep={1} />
+      <div className="pin-display">{pin}</div>
+      <CopyField label="Scanner download link" value={download} onCopy={copyValue} />
+      <CopyField label="Invite page (PIN + download)" value={invite} onCopy={copyValue} />
+      <div className="pin-share-actions">
+        <a className="primary link-button" href={download}>
+          <Download size={18} /> Open download
+        </a>
+        <button type="button" onClick={() => copyValue(message)}>
+          <Clipboard size={18} /> Copy full message
+        </button>
+        <button type="button" onClick={() => copyValue(invite)}>
+          <Clipboard size={18} /> Copy invite link
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function InvitePage({ pin }) {
+  const download = scannerDownloadUrl();
+  const invite = inviteUrlForPin(pin);
+
+  return (
+    <main className="invite-shell">
+      <section className="invite-panel">
+        <div className="login-logo-wrap">
+          <img src={BRAND_LOGO} alt="DangerousCity" className="login-logo" />
+        </div>
+        <p className="eyebrow">Remote screenshare scan</p>
+        <h1>Complete your scan</h1>
+        <p className="muted">Your reviewer started a session. Download the scanner, enter the PIN, and wait for upload to finish.</p>
+        <WorkflowSteps activeStep={1} />
+        <div className="pin-display">{pin}</div>
+        <a className="primary link-button invite-download" href={download}>
+          <Download size={18} /> Download scanner
+        </a>
+        <CopyField label="Your session PIN" value={pin} onCopy={(value) => navigator.clipboard?.writeText(value)} />
+        <p className="muted invite-footnote">
+          Invite link: <a href={invite}>{invite}</a>
+        </p>
+      </section>
+    </main>
+  );
 }
 
 function Login({ onLogin }) {
@@ -1104,7 +1245,7 @@ const resultSections = [
   { id: "memory", label: "Memory", icon: MemoryStick, component: MemorySection },
 ];
 
-function Results({ detail }) {
+function Results({ detail, shareLinks }) {
   const [sectionId, setSectionId] = useState("starter");
   const [query, setQuery] = useState("");
 
@@ -1117,7 +1258,12 @@ function Results({ detail }) {
   }, [detail?.id]);
 
   if (!detail) {
-    return <section className="empty-state">Select or generate a PIN session.</section>;
+    return (
+      <section className="results empty-state-panel">
+        <WorkflowSteps activeStep={1} />
+        <p className="muted">Select a session or generate a new PIN to get a download link and invite URL.</p>
+      </section>
+    );
   }
 
   const report = detail.report ?? {};
@@ -1125,9 +1271,24 @@ function Results({ detail }) {
   const activeSection = resultSections.find((section) => section.id === sectionId) ?? resultSections[0];
   const ActiveComponent = activeSection.component;
   const showSectionContent = detail.status === "completed";
+  const workflowStep = detail.status === "completed" ? 3 : detail.status === "pending" ? 2 : 1;
+
+  if (detail.status === "pending") {
+    return (
+      <section className="results pending-session">
+        <PinSharePanel
+          pin={detail.pin}
+          downloadUrl={shareLinks?.download_url}
+          inviteUrl={shareLinks?.invite_url}
+        />
+        <p className="muted pending-wait">Waiting for the desktop client to submit results…</p>
+      </section>
+    );
+  }
 
   return (
     <section className="scan-results">
+      <WorkflowSteps activeStep={workflowStep} />
       <aside className="results-nav">
         <button className="back-link">← My Pins</button>
         <h2>Scan results</h2>
@@ -1201,6 +1362,7 @@ function Dashboard({ token, onLogout }) {
   const [sessions, setSessions] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [detail, setDetail] = useState(null);
+  const [shareLinks, setShareLinks] = useState(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const detailFetchSeq = useRef(0);
@@ -1265,9 +1427,12 @@ function Dashboard({ token, onLogout }) {
         throw new Error(`PIN creation failed: ${response.status}`);
       }
       const data = await response.json();
-      setMessage(`Generated PIN ${data.pin}`);
+      const downloadUrl = data.download_url || scannerDownloadUrl();
+      const inviteUrl = data.invite_url || inviteUrlForPin(data.pin);
+      setShareLinks({ download_url: downloadUrl, invite_url: inviteUrl });
+      setMessage(`Generated PIN ${data.pin} — download and invite links are ready to share.`);
       setSelectedId(data.id);
-      await navigator.clipboard?.writeText(data.pin).catch(() => {});
+      await navigator.clipboard?.writeText(shareMessage(data.pin, downloadUrl, inviteUrl)).catch(() => {});
       await loadSessions();
     } catch (caught) {
       setError(caught.message);
@@ -1372,7 +1537,15 @@ function Dashboard({ token, onLogout }) {
           onSelect={setSelectedId}
           onDelete={deleteSession}
         />
-        <Results detail={detail} />
+        <Results
+          detail={detail}
+          shareLinks={
+            shareLinks ??
+            (detail?.pin
+              ? { download_url: scannerDownloadUrl(), invite_url: inviteUrlForPin(detail.pin) }
+              : null)
+          }
+        />
       </div>
     </main>
   );
@@ -1380,6 +1553,8 @@ function Dashboard({ token, onLogout }) {
 
 function App() {
   const [token, setToken] = useState(localStorage.getItem("checkerToken") ?? "");
+  const invitePin = useMemo(() => readInvitePin(), []);
+
   function login(nextToken) {
     localStorage.setItem("checkerToken", nextToken);
     setToken(nextToken);
@@ -1388,6 +1563,11 @@ function App() {
     localStorage.removeItem("checkerToken");
     setToken("");
   }
+
+  if (invitePin && !token) {
+    return <InvitePage pin={invitePin} />;
+  }
+
   return token ? <Dashboard token={token} onLogout={logout} /> : <Login onLogin={login} />;
 }
 

@@ -116,11 +116,11 @@ if /I "%DNG_STANDALONE%"=="1" (
 echo.
 echo Security: native machine code via Nuitka. AV tip: sign with DNG_SIGN_PFX if engines still flag it.
 echo.
-pause
+if not defined CI if not defined GITHUB_ACTIONS pause
 exit /b 0
 
 :fail
 echo.
 echo Build failed.
-pause
+if not defined CI if not defined GITHUB_ACTIONS pause
 exit /b 1

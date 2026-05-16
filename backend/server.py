@@ -12,7 +12,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
+from links import invite_url, scanner_download_url
+
 DB_PATH = Path(__file__).resolve().parent / "diagnostics.db"
+SCANNER_EXE_PATH = os.getenv("SCANNER_EXE_PATH", "")
 TOKEN_SECRET = os.getenv("API_TOKEN_SECRET", "local-dev-secret-change-me")
 CHECKER_EMAIL = os.getenv("CHECKER_EMAIL", "checker@example.com")
 CHECKER_PASSWORD = os.getenv("CHECKER_PASSWORD", "change-me")
@@ -140,6 +143,20 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def send_redirect(self, location: str) -> None:
+        self.send_response(HTTPStatus.FOUND)
+        self.send_header("Location", location)
+        self.end_headers()
+
+    def send_file(self, file_path: Path) -> None:
+        data = file_path.read_bytes()
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Disposition", f'attachment; filename="{file_path.name}"')
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
     def require_checker(self) -> bool:
         if validate_token(self.headers.get("Authorization")):
             return True
@@ -152,6 +169,22 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/health":
             self.send_json(HTTPStatus.OK, {"status": "ok"})
+            return
+
+        if path == "/download/scanner":
+            configured = os.getenv("SCANNER_DOWNLOAD_URL", "").strip()
+            if configured:
+                self.send_redirect(configured)
+                return
+            if SCANNER_EXE_PATH:
+                exe = Path(SCANNER_EXE_PATH)
+                if exe.is_file():
+                    self.send_file(exe)
+                    return
+            self.send_json(
+                HTTPStatus.NOT_FOUND,
+                {"detail": "Scanner download is not configured. Set SCANNER_DOWNLOAD_URL or SCANNER_EXE_PATH."},
+            )
             return
 
         if path == "/sessions":
@@ -219,7 +252,10 @@ class Handler(BaseHTTPRequestHandler):
                     (pin, "pending", to_iso(now), to_iso(expires_at)),
                 )
                 row = conn.execute("SELECT * FROM sessions WHERE pin = ?", (pin,)).fetchone()
-            self.send_json(HTTPStatus.OK, row_to_summary(row))
+            summary = row_to_summary(row)
+            summary["download_url"] = scanner_download_url()
+            summary["invite_url"] = invite_url(summary["pin"])
+            self.send_json(HTTPStatus.OK, summary)
             return
 
         if path == "/reports":

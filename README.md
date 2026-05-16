@@ -42,6 +42,16 @@ For Netlify, deploy the `web-dashboard` folder with:
 - Build command: `npm run build`
 - Publish directory: `dist`
 - Environment variable: `VITE_API_URL=https://your-public-backend-url`
+- Optional: `VITE_SCANNER_DOWNLOAD_URL=https://github.com/popesmoke/test/releases/download/scanner-latest/dngscanner.exe`
+- Optional: `VITE_PUBLIC_APP_URL=https://your-dashboard-url` (used in invite links)
+
+When a reviewer generates a PIN, the API returns `download_url` and `invite_url` fields. Share the invite link (`/?pin=123456`) with suspects so they can download the scanner and see their PIN without logging in.
+
+Backend download settings:
+
+- `SCANNER_DOWNLOAD_URL` — redirect `/download/scanner` to a hosted EXE (GitHub release recommended)
+- `PUBLIC_APP_URL` — dashboard origin for invite links
+- `PUBLIC_API_URL` — API origin when building default download URLs
 
 The dashboard is static. The backend must be hosted separately on a service that can run a Python web server, such as a VPS, Render, Railway, Fly.io, or another server host.
 

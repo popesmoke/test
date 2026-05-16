@@ -831,7 +831,175 @@ input {
   padding: 24px;
 }
 
+.empty-state-panel {
+  place-items: start;
+  align-content: start;
+  gap: 18px;
+}
+
+.workflow-steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  width: 100%;
+}
+
+.workflow-step {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 12px;
+  align-items: start;
+  border: 1px solid #2d171d;
+  border-radius: 8px;
+  background: rgba(10, 8, 10, 0.85);
+  padding: 14px;
+}
+
+.workflow-step.active {
+  border-color: #ef233c;
+  box-shadow: 0 0 0 2px rgba(239, 35, 60, 0.1);
+}
+
+.workflow-step.done {
+  opacity: 0.72;
+}
+
+.workflow-number {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 1px solid #502029;
+  background: #21070c;
+  color: #ff6b7a;
+  font-weight: 800;
+}
+
+.workflow-step h3 {
+  margin: 0 0 6px;
+  font-size: 15px;
+}
+
+.workflow-step p {
+  margin: 0;
+  color: #9eb7c0;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.pin-share-panel,
+.invite-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.pin-share-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.pin-share-dismiss {
+  flex-shrink: 0;
+}
+
+.pin-display {
+  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: clamp(32px, 5vw, 48px);
+  letter-spacing: 0.12em;
+  text-align: center;
+  border: 1px dashed #502029;
+  border-radius: 8px;
+  background: #080708;
+  padding: 18px;
+}
+
+.copy-field {
+  display: grid;
+  gap: 8px;
+}
+
+.copy-field > span {
+  color: #d5d1d3;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.copy-field-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.copy-field-row input {
+  min-width: 0;
+}
+
+.pin-share-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.link-button {
+  text-decoration: none;
+}
+
+.pending-session {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+}
+
+.pending-wait {
+  text-align: center;
+}
+
+.invite-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.invite-panel {
+  width: min(640px, 100%);
+  border: 1px solid #5c1d27;
+  border-radius: 8px;
+  background: rgba(16, 13, 17, 0.92);
+  padding: 28px;
+  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.6);
+}
+
+.invite-panel h1 {
+  margin: 8px 0 10px;
+  font-size: 28px;
+}
+
+.invite-download {
+  justify-self: start;
+}
+
+.invite-footnote {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.invite-footnote a {
+  color: #ff6b7a;
+}
+
+.scan-results > .workflow-steps {
+  margin-bottom: 4px;
+}
+
 @media (max-width: 860px) {
+  .workflow-steps {
+    grid-template-columns: 1fr;
+  }
+
   .topbar,
   .layout,
   .scan-results {
