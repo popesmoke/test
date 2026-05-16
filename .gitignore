@@ -22,7 +22,6 @@ desktop-client/pyarmor.bug.log
 desktop-client/_build_obf/
 desktop-client/assets/
 !desktop-client/assets/executor_sha256_blocklist.json
-!desktop-client/assets/virello-logo.png
 desktop-client/*.build/
 desktop-client/*.dist/
 desktop-client/*.onefile-build/

@@ -29,7 +29,7 @@ import requests
 from runtime_config import get_api_url
 
 API_URL = get_api_url()
-CONSENT_VERSION = "2026-05-16.virello"
+CONSENT_VERSION = "2026-05-11.dngscanner"
 
 SCAN_STAGES = [
     "Preparing Scan",
@@ -13738,7 +13738,7 @@ def forensic_yara_hook_scan(path: Path) -> list[str]:
         rules = getattr(forensic_yara_hook_scan, "_rules", None)
         if rules is None:
             setattr(forensic_yara_hook_scan, "_rules", False)
-            rule_dir = Path(os.getenv("LOCALAPPDATA", "")) / "VirelloScanner" / "yara_rules"
+            rule_dir = Path(os.getenv("LOCALAPPDATA", "")) / "DangerousCityScanner" / "yara_rules"
             compiled = None
             if rule_dir.is_dir():
                 paths = sorted(rule_dir.glob("*.yar")) + sorted(rule_dir.glob("*.yara"))
@@ -15104,9 +15104,9 @@ def build_report() -> dict:
 class DiagnosticApp:
     def __init__(self) -> None:
         self.root = Tk()
-        self.root.title("Virello Scanner")
+        self.root.title("DangerousCity Scanner")
         self.root.geometry("760x620")
-        self.root.configure(bg="#000000")
+        self.root.configure(bg="#08080a")
         self.logo_image = self.load_logo()
         if self.logo_image:
             try:
@@ -15123,15 +15123,7 @@ class DiagnosticApp:
         self.build_welcome()
 
     def load_logo(self) -> PhotoImage | None:
-        for candidate in (
-            resource_path("assets/virello-logo.png"),
-            resource_path("assets/scanner-icon.png"),
-        ):
-            path = candidate
-            if path.exists():
-                break
-        else:
-            path = resource_path("assets/scanner-icon.png")
+        path = resource_path("assets/scanner-icon.png")
         try:
             if path.exists():
                 image = PhotoImage(file=str(path))
@@ -15146,28 +15138,21 @@ class DiagnosticApp:
     def configure_style(self) -> None:
         style = ttk.Style()
         style.theme_use("clam")
-        style.configure("TFrame", background="#000000")
-        style.configure("TLabel", background="#000000", foreground="#f4f4f5", font=("Segoe UI", 10))
-        style.configure("Muted.TLabel", background="#000000", foreground="#9eb7c0")
-        style.configure("Title.TLabel", background="#000000", foreground="#ffffff", font=("Segoe UI", 24, "bold"))
-        style.configure("Header.TLabel", background="#000000", foreground="#ffffff", font=("Segoe UI", 18, "bold"))
-        style.configure("CenterTitle.TLabel", background="#000000", foreground="#ffffff", font=("Segoe UI", 28, "bold"))
-        style.configure("CenterMuted.TLabel", background="#000000", foreground="#9eb7c0", font=("Segoe UI", 10))
-        style.configure("Accent.TButton", background="#1d4ed8", foreground="#ffffff", bordercolor="#3b82f6", focusthickness=0, padding=(14, 8))
-        style.map("Accent.TButton", background=[("active", "#3b82f6")])
-        style.configure("TButton", background="#0f172a", foreground="#ffffff", bordercolor="#1e3a5f", padding=(12, 7))
-        style.map("TButton", background=[("active", "#1e293b")])
-        style.configure("TEntry", fieldbackground="#020617", foreground="#ffffff", bordercolor="#1e3a5f")
-        style.configure("TCheckbutton", background="#000000", foreground="#f4f4f5", font=("Segoe UI", 10))
-        style.map("TCheckbutton", background=[("active", "#000000")], foreground=[("active", "#ffffff")])
-        style.configure(
-            "accent.Horizontal.TProgressbar",
-            troughcolor="#020617",
-            background="#3b82f6",
-            bordercolor="#1e3a5f",
-            lightcolor="#60a5fa",
-            darkcolor="#1e40af",
-        )
+        style.configure("TFrame", background="#08080a")
+        style.configure("TLabel", background="#08080a", foreground="#f4f4f5", font=("Segoe UI", 10))
+        style.configure("Muted.TLabel", background="#08080a", foreground="#b7b7bd")
+        style.configure("Title.TLabel", background="#08080a", foreground="#ffffff", font=("Segoe UI", 24, "bold"))
+        style.configure("Header.TLabel", background="#08080a", foreground="#ffffff", font=("Segoe UI", 18, "bold"))
+        style.configure("CenterTitle.TLabel", background="#08080a", foreground="#ffffff", font=("Segoe UI", 28, "bold"))
+        style.configure("CenterMuted.TLabel", background="#08080a", foreground="#b7b7bd", font=("Segoe UI", 10))
+        style.configure("Red.TButton", background="#b11220", foreground="#ffffff", bordercolor="#ef233c", focusthickness=0, padding=(14, 8))
+        style.map("Red.TButton", background=[("active", "#ef233c")])
+        style.configure("TButton", background="#17171d", foreground="#ffffff", bordercolor="#3a3a45", padding=(12, 7))
+        style.map("TButton", background=[("active", "#23232b")])
+        style.configure("TEntry", fieldbackground="#111116", foreground="#ffffff", bordercolor="#3a3a45")
+        style.configure("TCheckbutton", background="#08080a", foreground="#f4f4f5", font=("Segoe UI", 10))
+        style.map("TCheckbutton", background=[("active", "#08080a")], foreground=[("active", "#ffffff")])
+        style.configure("red.Horizontal.TProgressbar", troughcolor="#111116", background="#ef233c", bordercolor="#3a3a45", lightcolor="#ef233c", darkcolor="#7f0b16")
 
     def clear(self) -> None:
         for child in self.root.winfo_children():
@@ -15181,7 +15166,7 @@ class DiagnosticApp:
         hero.pack(fill=BOTH, expand=True)
         if self.logo_image:
             ttk.Label(hero, image=self.logo_image).pack(anchor="center", pady=(8, 16))
-        ttk.Label(hero, text="Virello Scanner", style="CenterTitle.TLabel").pack(anchor="center")
+        ttk.Label(hero, text="DangerousCity Scanner", style="CenterTitle.TLabel").pack(anchor="center")
         ttk.Label(
             hero,
             text=(
@@ -15193,7 +15178,7 @@ class DiagnosticApp:
         ).pack(anchor="center", pady=(12, 20))
         actions = ttk.Frame(hero)
         actions.pack(anchor="center")
-        ttk.Button(actions, text="Get Started", style="Accent.TButton", command=self.build_pin_screen).pack(side="left", padx=(0, 10))
+        ttk.Button(actions, text="Get Started", style="Red.TButton", command=self.build_pin_screen).pack(side="left", padx=(0, 10))
         ttk.Button(actions, text="Join Discord", command=lambda: webbrowser.open(DISCORD_URL)).pack(side="left")
 
     def build_pin_screen(self) -> None:
@@ -15219,7 +15204,7 @@ class DiagnosticApp:
             text="I agree to run this diagnostic scan and submit the results for review.",
             variable=self.consent,
         ).pack(anchor="w", pady=(18, 12))
-        ttk.Button(frame, text="Start Scan", style="Accent.TButton", command=self.start_scan).pack(anchor="w")
+        ttk.Button(frame, text="Start Scan", style="Red.TButton", command=self.start_scan).pack(anchor="w")
         ttk.Button(frame, text="Back", command=self.build_welcome).pack(anchor="w", pady=(8, 0))
 
     def build_progress_screen(self) -> None:
@@ -15228,9 +15213,9 @@ class DiagnosticApp:
         frame.pack(fill=BOTH, expand=True)
         if self.logo_image:
             ttk.Label(frame, image=self.logo_image).pack(anchor="w", pady=(0, 14))
-        ttk.Label(frame, text="Virello scan", style="Header.TLabel").pack(anchor="w")
+        ttk.Label(frame, text="DangerousCity scan", style="Header.TLabel").pack(anchor="w")
         ttk.Label(frame, textvariable=self.status).pack(anchor="w", pady=(8, 16))
-        self.progress = ttk.Progressbar(frame, maximum=100, mode="determinate", length=620, style="accent.Horizontal.TProgressbar")
+        self.progress = ttk.Progressbar(frame, maximum=100, mode="determinate", length=620, style="red.Horizontal.TProgressbar")
         self.progress.pack(anchor="w", pady=(0, 18))
         ttk.Label(frame, textvariable=self.progress_percent, style="Header.TLabel").pack(anchor="w", pady=(0, 16))
         self.stage_labels = {}

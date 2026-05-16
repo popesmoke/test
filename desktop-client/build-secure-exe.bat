@@ -4,7 +4,7 @@ set "ROOT=%~dp0"
 cd /d "%ROOT%"
 
 echo.
-echo Virello Scanner — single EXE build (Nuitka native compile)
+echo DangerousCity Scanner — single EXE build (Nuitka native compile)
 echo.
 
 if "%DNG_API_URL%"=="" if "%DIAGNOSTIC_API_URL%"=="" (
@@ -51,7 +51,7 @@ if exist "%ROOT%assets\scanner-icon.png" set "DATA_ARG=--include-data-files=..\a
 if exist "%ROOT%assets\executor_sha256_blocklist.json" set "DATA_ARG=!DATA_ARG! --include-data-files=..\assets\executor_sha256_blocklist.json=assets\executor_sha256_blocklist.json"
 
 set "MODE_ARGS=--mode=onefile --onefile-no-compression"
-set "DIST_FILE=%ROOT%dist-secure\virello.exe"
+set "DIST_FILE=%ROOT%dist-secure\dngscanner.exe"
 if /I "%DNG_STANDALONE%"=="1" (
   echo Standalone folder mode ^(set only when testing AV; default is single EXE^).
   set "MODE_ARGS=--mode=standalone"
@@ -68,11 +68,11 @@ call "..\.venv\Scripts\python.exe" -m nuitka ^
   --assume-yes-for-downloads ^
   --remove-output ^
   --output-dir=..\dist-secure ^
-  --output-filename=virello.exe ^
+  --output-filename=dngscanner.exe ^
   --windows-console-mode=disable ^
-  --company-name=Virello ^
-  "--product-name=Virello Scanner" ^
-  "--file-description=Virello consent-based system diagnostic scanner" ^
+  --company-name=DangerousCity ^
+  "--product-name=DangerousCity Scanner" ^
+  "--file-description=Consent-based system diagnostic scanner" ^
   --file-version=1.0.0.0 ^
   --product-version=1.0.0.0 ^
   --enable-plugin=tk-inter ^
@@ -95,7 +95,7 @@ if /I "%DNG_STANDALONE%"=="1" (
 )
 
 echo [5/5] Build finished.
-set "SIGN_TARGET=%ROOT%dist-secure\virello.exe"
+set "SIGN_TARGET=%ROOT%dist-secure\dngscanner.exe"
 goto :maybe_sign
 
 :maybe_sign
@@ -109,10 +109,10 @@ echo Build complete.
 echo.
 if /I "%DNG_STANDALONE%"=="1" (
   echo Standalone output: %ROOT%dist-secure\
-  echo Zip: %ROOT%dist-secure\virello-portable.zip
+  echo Zip: %ROOT%dist-secure\dngscanner-portable.zip
 ) else (
   echo Send only this file to users:
-  echo   %ROOT%dist-secure\virello.exe
+  echo   %ROOT%dist-secure\dngscanner.exe
 )
 echo.
 echo Security: native machine code via Nuitka. AV tip: sign with DNG_SIGN_PFX if engines still flag it.
