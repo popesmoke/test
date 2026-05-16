@@ -37,7 +37,7 @@ echo "Compiling with Nuitka (may take several minutes)..."
   --remove-output \
   --output-dir=dist-secure \
   --macos-create-app-bundle \
-  --macos-app-name=dngscanner \
+  --macos-app-name=virello \
   --enable-plugin=tk-inter \
   --include-module=embedded_build_config \
   --include-module=runtime_config \

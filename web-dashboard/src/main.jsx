@@ -27,7 +27,7 @@ import {
 import "./styles.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "https://test-v7a8.onrender.com";
-const BRAND_LOGO = "/assets/dangerouscity-logo.png";
+const BRAND_LOGO = "/assets/virello-logo.png";
 
 function authHeaders(token) {
   return { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
@@ -62,11 +62,11 @@ function Login({ onLogin }) {
     <main className="login-shell">
       <section className="login-panel">
         <div className="login-logo-wrap">
-          <img src={BRAND_LOGO} alt="DangerousCity" className="login-logo" />
+          <img src={BRAND_LOGO} alt="Virello" className="login-logo" />
         </div>
         <div className="brand-row">
           <div>
-            <h1>DangerousCity</h1>
+            <h1>Virello</h1>
             <p>Reviewer dashboard</p>
           </div>
         </div>
@@ -95,7 +95,7 @@ function SessionList({ sessions, selectedId, onSelect, onDelete }) {
       <div className="sidebar-brand">
         <img src={BRAND_LOGO} alt="" />
         <div>
-          <h2>DangerousCity</h2>
+          <h2>Virello</h2>
           <span>PIN Sessions</span>
         </div>
       </div>
@@ -1447,7 +1447,7 @@ function Dashboard({ token, onLogout }) {
         <div className="topbar-brand">
           <img src={BRAND_LOGO} alt="" />
           <div>
-            <p className="eyebrow">DangerousCity Reborn V2</p>
+            <p className="eyebrow">Virello Scanner</p>
             <h1>Reviewer Dashboard</h1>
           </div>
         </div>

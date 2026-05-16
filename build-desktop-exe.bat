@@ -4,7 +4,7 @@ set "ROOT=%~dp0"
 set "CLIENT=%ROOT%desktop-client"
 
 echo.
-echo Building single dngscanner.exe ^(Nuitka native compile^)
+echo Building single virello.exe ^(Nuitka native compile^)
 echo.
 
 if not exist "%CLIENT%\build-secure-exe.bat" (

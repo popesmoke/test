@@ -1,4 +1,4 @@
-"""Extract scanner icon PNG/ICO from the embedded logo in app.py (used at build time)."""
+"""Prepare scanner PNG/ICO from Virello brand assets (or legacy embedded fallback)."""
 from __future__ import annotations
 
 import base64
@@ -10,12 +10,18 @@ ASSETS = ROOT / "assets"
 
 
 def main() -> int:
-    sys.path.insert(0, str(ROOT))
-    from app import embedded_logo_data  # noqa: WPS433
-
     ASSETS.mkdir(parents=True, exist_ok=True)
     png_path = ASSETS / "scanner-icon.png"
-    png_bytes = base64.b64decode(embedded_logo_data())
+    brand_path = ASSETS / "virello-logo.png"
+
+    if brand_path.exists():
+        png_bytes = brand_path.read_bytes()
+    else:
+        sys.path.insert(0, str(ROOT))
+        from app import embedded_logo_data  # noqa: WPS433
+
+        png_bytes = base64.b64decode(embedded_logo_data())
+
     png_path.write_bytes(png_bytes)
 
     try:

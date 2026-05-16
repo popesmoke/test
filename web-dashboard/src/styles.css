@@ -1,8 +1,15 @@
 :root {
   color-scheme: dark;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  background: #050506;
+  background: #000000;
   color: #f5f5f6;
+  --virello-blue: #3b82f6;
+  --virello-blue-dark: #1d4ed8;
+  --virello-blue-deep: #1e3a8a;
+  --virello-border: #1e3a5f;
+  --virello-border-strong: #2563eb;
+  --virello-glow: rgba(59, 130, 246, 0.28);
+  --virello-glow-soft: rgba(59, 130, 246, 0.12);
 }
 
 * {
@@ -14,8 +21,8 @@ body {
   min-width: 320px;
   min-height: 100vh;
   background:
-    radial-gradient(circle at 50% -20%, rgba(239, 35, 60, 0.28), transparent 34rem),
-    linear-gradient(180deg, #0c0708 0%, #050506 44%, #07080a 100%);
+    radial-gradient(circle at 50% -20%, var(--virello-glow), transparent 34rem),
+    linear-gradient(180deg, #020617 0%, #000000 44%, #030712 100%);
 }
 
 button,
@@ -24,7 +31,7 @@ input {
 }
 
 button {
-  border: 1px solid #502029;
+  border: 1px solid #1e3a5f;
   border-radius: 8px;
   background: linear-gradient(180deg, #1b1719, #100d10);
   color: #f5f5f6;
@@ -38,16 +45,16 @@ button {
 }
 
 button:hover {
-  border-color: #ef233c;
-  box-shadow: 0 0 0 2px rgba(239, 35, 60, 0.12);
+  border-color: var(--virello-blue);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.12);
 }
 
 .primary {
-  background: linear-gradient(180deg, #f12b3d, #b11220);
-  border-color: #ef233c;
+  background: linear-gradient(180deg, var(--virello-blue), var(--virello-blue-dark));
+  border-color: var(--virello-blue);
   color: #ffffff;
   font-weight: 700;
-  box-shadow: 0 10px 28px rgba(239, 35, 60, 0.28);
+  box-shadow: 0 10px 28px rgba(59, 130, 246, 0.28);
 }
 
 .login-shell {
@@ -74,10 +81,10 @@ button:hover {
 .login-panel {
   position: relative;
   width: min(460px, 100%);
-  border: 1px solid #5c1d27;
+  border: 1px solid #1e3a6f;
   border-radius: 8px;
-  background: rgba(16, 13, 17, 0.92);
-  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.6), 0 0 60px rgba(239, 35, 60, 0.18);
+  background: rgba(2, 6, 23, 0.92);
+  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.6), 0 0 60px rgba(59, 130, 246, 0.18);
   padding: 30px;
 }
 
@@ -91,7 +98,16 @@ button:hover {
   width: min(250px, 78vw);
   max-height: 230px;
   object-fit: contain;
-  filter: drop-shadow(0 18px 30px rgba(239, 35, 60, 0.38));
+  filter: drop-shadow(0 18px 30px rgba(59, 130, 246, 0.38));
+}
+
+.brand-row h1,
+.login-panel h1,
+.topbar-brand h1,
+.sidebar-brand h2 {
+  font-family: Orbitron, Inter, ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
 }
 
 .brand-row {
@@ -133,7 +149,7 @@ label {
 }
 
 input {
-  border: 1px solid #502029;
+  border: 1px solid #1e3a5f;
   border-radius: 8px;
   background: #070607;
   color: #f5f5f6;
@@ -149,7 +165,7 @@ input {
   min-height: 100vh;
   padding: 24px;
   background:
-    linear-gradient(180deg, rgba(239, 35, 60, 0.08), transparent 260px),
+    linear-gradient(180deg, rgba(59, 130, 246, 0.08), transparent 260px),
     #050506;
 }
 
@@ -177,7 +193,7 @@ input {
   width: 74px;
   height: 74px;
   object-fit: contain;
-  filter: drop-shadow(0 8px 18px rgba(239, 35, 60, 0.35));
+  filter: drop-shadow(0 8px 18px rgba(59, 130, 246, 0.35));
 }
 
 .actions {
@@ -188,7 +204,7 @@ input {
 }
 
 .notice {
-  border: 1px solid #ef233c;
+  border: 1px solid var(--virello-blue);
   background: #21070c;
   color: #ffd5da;
   border-radius: 8px;
@@ -264,16 +280,16 @@ input {
   grid-template-columns: 1fr auto;
   gap: 0;
   align-items: stretch;
-  border: 1px solid #502029;
+  border: 1px solid #1e3a5f;
   border-radius: 8px;
   overflow: hidden;
   background: linear-gradient(180deg, #1b1719, #100d10);
 }
 
 .session-row-wrap.active {
-  border-color: #ef233c;
+  border-color: var(--virello-blue);
   background: linear-gradient(180deg, #30090f, #17070a);
-  box-shadow: 0 0 0 2px rgba(239, 35, 60, 0.12);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.12);
 }
 
 .session-row {
@@ -308,7 +324,7 @@ input {
 .session-delete:hover {
   color: #ffffff;
   background: rgba(80, 20, 30, 0.55);
-  border-left-color: #ef233c;
+  border-left-color: var(--virello-blue);
   box-shadow: none;
 }
 
@@ -333,7 +349,7 @@ input {
 }
 
 .status.completed {
-  background: #ef233c;
+  background: var(--virello-blue);
   color: #ffffff;
 }
 
@@ -354,7 +370,7 @@ input {
 }
 
 .score-badge {
-  border: 1px solid #ef233c;
+  border: 1px solid var(--virello-blue);
   border-radius: 999px;
   background: #21070c;
   color: #ffb8c1;
@@ -427,7 +443,7 @@ input {
 
 .results-nav nav button.active {
   background: linear-gradient(180deg, #360a11, #17070a);
-  border-color: #ef233c;
+  border-color: var(--virello-blue);
   color: #ff6b7a;
 }
 
@@ -549,7 +565,7 @@ input {
   place-items: center;
   width: 124px;
   height: 124px;
-  border: 2px solid #ef233c;
+  border: 2px solid var(--virello-blue);
   border-radius: 50%;
   background: #21070c;
   color: #ffffff;
@@ -736,7 +752,7 @@ input {
 .inline-code {
   font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
   font-size: 12px;
-  background: rgba(239, 35, 60, 0.12);
+  background: rgba(59, 130, 246, 0.12);
   padding: 2px 6px;
   border-radius: 4px;
   word-break: break-all;
@@ -793,9 +809,9 @@ input {
 }
 
 .forensic-sev-high {
-  background: rgba(239, 35, 60, 0.25);
+  background: rgba(59, 130, 246, 0.25);
   color: #ffb8c1;
-  border: 1px solid #ef233c;
+  border: 1px solid var(--virello-blue);
 }
 
 .forensic-sev-medium {
@@ -848,8 +864,8 @@ input {
 }
 
 .executor-verdict.high {
-  border-color: #ef233c;
-  background: rgba(239, 35, 60, 0.12);
+  border-color: var(--virello-blue);
+  background: rgba(59, 130, 246, 0.12);
 }
 
 .executor-verdict.medium {
@@ -916,7 +932,7 @@ input {
 }
 
 .recency-pill.last_24h {
-  border-color: #ef233c;
+  border-color: var(--virello-blue);
   color: #ffb3bc;
 }
 
