@@ -49,11 +49,11 @@ if exist "%ROOT%assets\scanner-icon.ico" set "ICON_ARG=--windows-icon-from-ico=.
 set "DATA_ARG="
 if exist "%ROOT%assets\scanner-icon.png" set "DATA_ARG=--include-data-files=..\assets\scanner-icon.png=assets\scanner-icon.png --include-data-files=..\assets\scanner-icon.ico=assets\scanner-icon.ico"
 
-set "MODE_ARGS=--standalone --onefile --onefile-no-compression"
+set "MODE_ARGS=--mode=onefile --onefile-no-compression"
 set "DIST_FILE=%ROOT%dist-secure\dngscanner.exe"
 if /I "%DNG_STANDALONE%"=="1" (
   echo Standalone folder mode ^(set only when testing AV; default is single EXE^).
-  set "MODE_ARGS=--standalone"
+  set "MODE_ARGS=--mode=standalone"
   set "DIST_FILE="
 )
 
@@ -61,16 +61,17 @@ if not exist "dist-secure" mkdir "dist-secure"
 
 echo [4/5] Compiling single EXE with Nuitka ^(several minutes on first run^)...
 pushd "_build_obf"
-call "..\.venv\Scripts\python.exe" -m nuitka app.py ^
+call "..\.venv\Scripts\python.exe" -m nuitka ^
   !MODE_ARGS! ^
+  app.py ^
   --assume-yes-for-downloads ^
   --remove-output ^
   --output-dir=..\dist-secure ^
   --output-filename=dngscanner.exe ^
   --windows-console-mode=disable ^
   --company-name=DangerousCity ^
-  --product-name=DangerousCity Scanner ^
-  --file-description=Consent-based system diagnostic scanner ^
+  "--product-name=DangerousCity Scanner" ^
+  "--file-description=Consent-based system diagnostic scanner" ^
   --file-version=1.0.0.0 ^
   --product-version=1.0.0.0 ^
   --enable-plugin=tk-inter ^
