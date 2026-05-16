@@ -20,9 +20,11 @@ import {
   MemoryStick,
   RefreshCw,
   ScanSearch,
+  Search,
   Shield,
   Terminal,
   Trash2,
+  X,
 } from "lucide-react";
 import "./styles.css";
 
@@ -561,16 +563,40 @@ function buildSuspicionSummary(report) {
   };
 }
 
-function Card({ icon: Icon, title, children }) {
+function Card({ icon: Icon, title, description, children, defaultOpen = true }) {
   return (
-    <article className="result-card">
-      <header className="card-title">
+    <details className="result-card" open={defaultOpen}>
+      <summary className="card-title">
         <span className="icon-box"><Icon size={20} /></span>
-        <h3>{title}</h3>
+        <div className="card-heading">
+          <h3>{title}</h3>
+          {description ? <p className="card-description">{description}</p> : null}
+        </div>
         <ChevronUp size={18} className="chevron" />
-      </header>
+      </summary>
+      <div className="card-body">{children}</div>
+    </details>
+  );
+}
+
+function SectionIntro({ title, description, children }) {
+  return (
+    <header className="section-intro">
+      <div>
+        <h3>{title}</h3>
+        {description ? <p>{description}</p> : null}
+      </div>
       {children}
-    </article>
+    </header>
+  );
+}
+
+function OverviewStat({ label, value, tone = "neutral" }) {
+  return (
+    <div className={`overview-stat overview-stat--${tone}`}>
+      <span className="overview-stat__label">{label}</span>
+      <strong className="overview-stat__value">{value}</strong>
+    </div>
   );
 }
 
@@ -578,31 +604,47 @@ function StarterSection({ report }) {
   const summary = buildSuspicionSummary(report);
   const band = summary.score >= 70 ? "High" : summary.score >= 35 ? "Medium" : "Low";
 
+  const tone = summary.score >= 70 ? "high" : summary.score >= 35 ? "medium" : "low";
+
   return (
-    <>
-      <Card icon={Gauge} title="Suspicion Score">
-        <div className="score-panel">
-          <div className="score-ring" aria-label={`Suspicion score ${summary.score} out of 100`}>
+    <div className="section-stack">
+      <Card
+        icon={Gauge}
+        title="Suspicion score"
+        description="Weighted summary of executor, cheat, registry, and clearing signals."
+      >
+        <div className={`score-panel score-panel--${tone}`}>
+          <div className={`score-ring score-ring--${tone}`} aria-label={`Suspicion score ${summary.score} out of 100`}>
             <strong>{summary.score}</strong>
             <span>/100</span>
           </div>
           <div>
-            <p className="score-band">{band} suspicion</p>
-            <p className="muted">Score is based on executor or cheat-like filename matches, profile-folder scans, Prefetch hits, crash/log text, registry activity, Defender signals, and deletion or clearing signals.</p>
+            <p className={`score-band score-band--${tone}`}>{band} suspicion</p>
+            <p className="muted">
+              Higher scores mean more independent signals pointed at executors, cheats, tampering, or log clearing.
+              Review the breakdown below before acting on a single hit.
+            </p>
           </div>
         </div>
-        <div className="signal-grid">
-          <span>File hits <strong>{summary.counts.fileHits}</strong></span>
-          <span>Recent matches <strong>{summary.counts.recentMatched}</strong></span>
-          <span>Prefetch hits <strong>{summary.counts.prefetchHits}</strong></span>
-          <span>Runtime modules <strong>{summary.counts.runtimeModules}</strong></span>
-        </div>
+        <dl className="signal-grid">
+          <div><dt>Path matches</dt><dd>{summary.counts.fileHits}</dd></div>
+          <div><dt>Recent file hits</dt><dd>{summary.counts.recentMatched}</dd></div>
+          <div><dt>Prefetch traces</dt><dd>{summary.counts.prefetchHits}</dd></div>
+          <div><dt>Runtime modules</dt><dd>{summary.counts.runtimeModules}</dd></div>
+        </dl>
       </Card>
-      <Card icon={AlertTriangle} title="Why It Scored This Way">
+      <Card
+        icon={AlertTriangle}
+        title="Score breakdown"
+        description="Each row shows how many points that signal category added."
+      >
         <div className="reason-list">
           {summary.reasons.map((reason) => (
-            <div className="reason-row" key={reason.label}>
-              <span>{reason.points > 0 ? `+${reason.points}` : "0"}</span>
+            <div
+              className={`reason-row ${reason.points > 0 ? "reason-row--hit" : "reason-row--clear"}`}
+              key={reason.label}
+            >
+              <span className="reason-points">{reason.points > 0 ? `+${reason.points}` : "0"}</span>
               <div>
                 <strong>{reason.label}</strong>
                 <p>{reason.detail}</p>
@@ -611,11 +653,15 @@ function StarterSection({ report }) {
           ))}
         </div>
       </Card>
-      <Card icon={Clock3} title="Tracked files (modified + OS access, GMT+3)">
+      <Card
+        icon={Clock3}
+        title="Tracked files"
+        description="Times in GMT+3. Modified time is primary; OS access time is secondary."
+      >
         <p className="muted opened-files-intro">
-          Primary time is <strong>file modified (mtime)</strong> — when the file last changed on disk. Secondary line is{" "}
-          <strong>OS last access (atime)</strong>; Windows updates this when <em>any</em> program reads the file (games,
-          antivirus, search), so it is <em>not</em> reliable as &quot;you opened it in Explorer&quot;.
+          <strong>Modified (mtime)</strong> is when the file last changed on disk.{" "}
+          <strong>OS access (atime)</strong> updates when any program reads the file and is not reliable as
+          &quot;opened in Explorer.&quot;
         </p>
         {summary.openedFiles.length ? (
           <div className="opened-file-list">
@@ -648,7 +694,7 @@ function StarterSection({ report }) {
           </p>
         )}
       </Card>
-    </>
+    </div>
   );
 }
 
@@ -667,8 +713,8 @@ function RobloxSection({ report, query }) {
   }
 
   return (
-    <>
-      <Card icon={Gamepad2} title="Roblox Accounts">
+    <div className="section-stack">
+      <Card icon={Gamepad2} title="Roblox Accounts" description="Usernames and IDs extracted from approved Roblox logs.">
         <div className="account-list">
           {accounts.length === 0 ? (
             <p className="muted">No Roblox account identifiers found in approved logs.</p>
@@ -685,7 +731,7 @@ function RobloxSection({ report, query }) {
           )}
         </div>
       </Card>
-      <Card icon={Gamepad2} title="Roblox Logs">
+      <Card icon={Gamepad2} title="Roblox Logs" description="Per-log metadata and extracted signals.">
         <TerminalBlock query={query}>
           {lines(logs, (log) => {
             const signals = log.signals ?? {};
@@ -708,7 +754,7 @@ function RobloxSection({ report, query }) {
           })}
         </TerminalBlock>
       </Card>
-    </>
+    </div>
   );
 }
 
@@ -1073,36 +1119,126 @@ function ForensicArtifactsSection({ report, query }) {
   );
 }
 
-const resultSections = [
-  { id: "starter", label: "Suspicion Score", icon: Gauge, component: StarterSection },
+const resultSectionGroups = [
   {
-    id: "forensic-findings",
-    label: "Evidence review",
-    icon: Fingerprint,
-    component: ForensicFindingsSection,
+    label: "Overview",
+    sections: [
+      {
+        id: "starter",
+        label: "Summary",
+        icon: Gauge,
+        description: "Start here: overall suspicion score, contributing factors, and tracked files.",
+        component: StarterSection,
+      },
+    ],
   },
   {
-    id: "forensic-corr",
-    label: "Cross-source timeline",
-    icon: GitBranch,
-    component: ForensicCorrelationSection,
+    label: "Forensics",
+    sections: [
+      {
+        id: "forensic-findings",
+        label: "Evidence review",
+        icon: Fingerprint,
+        description: "Ranked forensic findings with severity, risk score, and artifact details.",
+        component: ForensicFindingsSection,
+      },
+      {
+        id: "forensic-corr",
+        label: "Cross-source timeline",
+        icon: GitBranch,
+        description: "How separate artifacts connect into execution chains and a unified timeline.",
+        component: ForensicCorrelationSection,
+      },
+      {
+        id: "forensic-artifacts",
+        label: "Structured OS traces",
+        icon: Boxes,
+        description: "Parsed BAM, PCA, browser SQLite, and USN lifecycle records.",
+        component: ForensicArtifactsSection,
+      },
+    ],
   },
   {
-    id: "forensic-artifacts",
-    label: "Structured OS traces",
-    icon: Boxes,
-    component: ForensicArtifactsSection,
+    label: "Application",
+    sections: [
+      {
+        id: "roblox",
+        label: "Roblox",
+        icon: Gamepad2,
+        description: "Accounts discovered in logs and per-log signal summaries.",
+        component: RobloxSection,
+      },
+    ],
   },
-  { id: "roblox", label: "Roblox", icon: Gamepad2, component: RobloxSection },
-  { id: "system", label: "System", icon: Cpu, component: SystemSection },
-  { id: "bypass", label: "Bypass Detection", icon: Shield, component: BypassSection },
-  { id: "registry", label: "Registry", icon: Database, component: RegistrySection },
-  { id: "file-analysis", label: "File Analysis", icon: ScanSearch, component: FileAnalysisSection },
-  { id: "suspicious", label: "Suspicious Files", icon: ScanSearch, component: SuspiciousFilesSection },
-  { id: "crash", label: "Crash Logs", icon: Terminal, component: CrashLogsSection },
-  { id: "deletions", label: "Deletions", icon: Trash2, component: DeletionsSection },
-  { id: "memory", label: "Memory", icon: MemoryStick, component: MemorySection },
+  {
+    label: "System",
+    sections: [
+      {
+        id: "system",
+        label: "System",
+        icon: Cpu,
+        description: "Host profile, services, recycle bin, and shell history keyword hits.",
+        component: SystemSection,
+      },
+      {
+        id: "registry",
+        label: "Registry",
+        icon: Database,
+        description: "BAM, UserAssist, shellbags, and installed application traces.",
+        component: RegistrySection,
+      },
+      {
+        id: "memory",
+        label: "Memory & persistence",
+        icon: MemoryStick,
+        description: "Roblox integrity, persistence entries, SHA256 blocklist, and process snapshot.",
+        component: MemorySection,
+      },
+    ],
+  },
+  {
+    label: "Threat signals",
+    sections: [
+      {
+        id: "bypass",
+        label: "Bypass detection",
+        icon: Shield,
+        description: "Log clearing, Amcache, Prefetch health, and keyword hits in logs.",
+        component: BypassSection,
+      },
+      {
+        id: "file-analysis",
+        label: "File analysis",
+        icon: ScanSearch,
+        description: "Keyword scans, Prefetch hits, and designated folder suspicious files.",
+        component: FileAnalysisSection,
+      },
+      {
+        id: "suspicious",
+        label: "Suspicious files",
+        icon: ScanSearch,
+        description: "Recent items with matched keywords and Defender integrity output.",
+        component: SuspiciousFilesSection,
+      },
+      {
+        id: "crash",
+        label: "Crash logs",
+        icon: Terminal,
+        description: "Traceback and executor keyword matches inside crash or log files.",
+        component: CrashLogsSection,
+      },
+      {
+        id: "deletions",
+        label: "Deletions",
+        icon: Trash2,
+        description: "Recycle bin metadata, clearing signals, and structured deletion evidence.",
+        component: DeletionsSection,
+      },
+    ],
+  },
 ];
+
+const resultSections = resultSectionGroups.flatMap((group) => group.sections);
 
 function Results({ detail }) {
   const [sectionId, setSectionId] = useState("starter");
@@ -1117,7 +1253,13 @@ function Results({ detail }) {
   }, [detail?.id]);
 
   if (!detail) {
-    return <section className="empty-state">Select or generate a PIN session.</section>;
+    return (
+      <section className="empty-state empty-state--panel">
+        <ScanSearch size={28} />
+        <h3>No session selected</h3>
+        <p>Select a PIN from the sidebar or generate a new one to review scan results.</p>
+      </section>
+    );
   }
 
   const report = detail.report ?? {};
@@ -1125,60 +1267,117 @@ function Results({ detail }) {
   const activeSection = resultSections.find((section) => section.id === sectionId) ?? resultSections[0];
   const ActiveComponent = activeSection.component;
   const showSectionContent = detail.status === "completed";
+  const scoreBand = summary.score >= 70 ? "High" : summary.score >= 35 ? "Medium" : "Low";
+  const scoreToneClass = summary.score >= 70 ? "high" : summary.score >= 35 ? "medium" : "low";
 
   return (
     <section className="scan-results">
       <aside className="results-nav">
-        <button className="back-link">← My Pins</button>
-        <h2>Scan results</h2>
-        <p>
-          {detail.completed_at
-            ? `Submitted ${formatGmtPlus3(detail.completed_at)}`
-            : "Waiting for the desktop client to submit results."}
-        </p>
-        <button className="download-button" onClick={() => downloadReport(detail)}>
-          <Download size={15} /> Download report
+        <div className="results-nav__head">
+          <h2>Scan results</h2>
+          <p className="results-nav__meta">
+            {detail.completed_at
+              ? `Submitted ${formatGmtPlus3(detail.completed_at)}`
+              : "Awaiting submission from the desktop client."}
+          </p>
+        </div>
+        <button className="download-button" type="button" onClick={() => downloadReport(detail)}>
+          <Download size={15} /> Download JSON
         </button>
-        <nav>
-          {resultSections.map((section) => {
-            const Icon = section.icon;
-            return (
-              <button
-                key={section.id}
-                className={sectionId === section.id ? "active" : ""}
-                onClick={() => setSectionId(section.id)}
-                type="button"
-              >
-                <Icon size={18} className="nav-tab-icon" />
-                <span className="nav-tab-labels">
-                  <span className="nav-tab-primary">{section.label}</span>
-                </span>
-              </button>
-            );
-          })}
+        <nav className="results-nav__groups" aria-label="Result sections">
+          {resultSectionGroups.map((group) => (
+            <div className="nav-group" key={group.label}>
+              <p className="nav-group__label">{group.label}</p>
+              {group.sections.map((section) => {
+                const Icon = section.icon;
+                return (
+                  <button
+                    key={section.id}
+                    className={sectionId === section.id ? "active" : ""}
+                    onClick={() => setSectionId(section.id)}
+                    type="button"
+                  >
+                    <Icon size={18} className="nav-tab-icon" />
+                    <span className="nav-tab-labels">
+                      <span className="nav-tab-primary">{section.label}</span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          ))}
         </nav>
       </aside>
       <div className="result-content">
-        <div className="result-header">
-        <div>
-          <p className="eyebrow">Session PIN</p>
-          <h2>{detail.pin}</h2>
-        </div>
-        <div className="header-badges">
-          {detail.status === "completed" && <span className="score-badge">Suspicion {summary.score}/100</span>}
-          <span className={`status large ${detail.status}`}>{detail.status}</span>
-        </div>
-        </div>
+        <header className="result-header">
+          <div className="result-header__main">
+            <p className="eyebrow">Session PIN</p>
+            <h2>{detail.pin}</h2>
+            {showSectionContent && report.scan_started_at ? (
+              <p className="result-header__window">
+                Scan window: {formatGmtPlus3(report.scan_started_at)} →{" "}
+                {formatGmtPlus3(report.generated_at ?? detail.completed_at)}
+              </p>
+            ) : null}
+          </div>
+          <div className="header-badges">
+            {showSectionContent ? (
+              <span className={`score-badge score-badge--${scoreToneClass}`}>
+                {scoreBand} · {summary.score}/100
+              </span>
+            ) : null}
+            <span className={`status large ${detail.status}`}>{detail.status}</span>
+          </div>
+        </header>
+
+        {showSectionContent ? (
+          <div className="overview-strip" role="region" aria-label="Quick scan metrics">
+            <OverviewStat label="Suspicion" value={`${summary.score}/100`} tone={scoreToneClass} />
+            <OverviewStat label="Path matches" value={summary.counts.fileHits} />
+            <OverviewStat label="Recent hits" value={summary.counts.recentMatched} />
+            <OverviewStat label="Prefetch" value={summary.counts.prefetchHits} />
+            <OverviewStat label="Log matches" value={summary.counts.logHits} />
+            <OverviewStat
+              label="SHA256 hits"
+              value={summary.counts.shaBlocklistHits}
+              tone={summary.counts.shaBlocklistHits ? "high" : "neutral"}
+            />
+          </div>
+        ) : null}
+
         {!showSectionContent ? (
-          <div className="empty-state">Waiting for the desktop client to submit results.</div>
+          <div className="empty-state empty-state--panel">
+            <Clock3 size={28} />
+            <h3>Waiting for results</h3>
+            <p>
+              The desktop client has not finished this scan yet. Results will appear here automatically once the
+              submission is complete.
+            </p>
+          </div>
         ) : (
           <>
-            <input
-              className="section-search"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder={`Search ${activeSection.label} keywords...`}
-            />
+            <SectionIntro title={activeSection.label} description={activeSection.description}>
+              <div className="section-search-wrap">
+                <Search size={16} className="section-search-icon" aria-hidden />
+                <input
+                  className="section-search"
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder={`Filter ${activeSection.label.toLowerCase()}…`}
+                  aria-label={`Search within ${activeSection.label}`}
+                />
+                {query ? (
+                  <button
+                    type="button"
+                    className="section-search-clear"
+                    onClick={() => setQuery("")}
+                    aria-label="Clear search"
+                  >
+                    <X size={16} />
+                  </button>
+                ) : null}
+              </div>
+            </SectionIntro>
             <ActiveComponent report={report} query={query} />
           </>
         )}
