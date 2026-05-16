@@ -39,6 +39,12 @@ SCAN_STAGES = [
     "Uploading Results",
 ]
 
+# Progress bar uses 0–100; the long build_report() phase is animated slowly instead of jumping to ~67%.
+PROGRESS_TICK_SEC = 0.35
+PROGRESS_STEP = 0.42
+PROGRESS_CAP_DURING_SCAN = 88.0
+PRE_SCAN_STAGE_DELAY_SEC = 2.0
+
 COLLECTED_CATEGORIES = [
     "Device and app diagnostic metadata needed for review.",
     "Recent activity and security signals relevant to the support case.",
@@ -14715,7 +14721,7 @@ class DiagnosticApp:
         self.status = StringVar(value="Ready")
         self.progress_percent = StringVar(value="0%")
         self.stage_labels: dict[str, ttk.Label] = {}
-        self.progress = ttk.Progressbar(self.root, maximum=len(SCAN_STAGES), mode="determinate")
+        self.progress = ttk.Progressbar(self.root, maximum=100, mode="determinate")
         self.configure_style()
         self.build_welcome()
 
@@ -14812,7 +14818,7 @@ class DiagnosticApp:
             ttk.Label(frame, image=self.logo_image).pack(anchor="w", pady=(0, 14))
         ttk.Label(frame, text="DangerousCity scan", style="Header.TLabel").pack(anchor="w")
         ttk.Label(frame, textvariable=self.status).pack(anchor="w", pady=(8, 16))
-        self.progress = ttk.Progressbar(frame, maximum=len(SCAN_STAGES), mode="determinate", length=620, style="red.Horizontal.TProgressbar")
+        self.progress = ttk.Progressbar(frame, maximum=100, mode="determinate", length=620, style="red.Horizontal.TProgressbar")
         self.progress.pack(anchor="w", pady=(0, 18))
         ttk.Label(frame, textvariable=self.progress_percent, style="Header.TLabel").pack(anchor="w", pady=(0, 16))
         self.stage_labels = {}
@@ -14825,10 +14831,10 @@ class DiagnosticApp:
         self.stage_labels[stage].config(text=f"{stage}: {state}")
         self.root.update_idletasks()
 
-    def set_progress(self, value: int) -> None:
-        percent = round((value / len(SCAN_STAGES)) * 100)
-        self.progress.config(value=value)
-        self.progress_percent.set(f"{percent}%")
+    def set_progress_percent(self, percent: float) -> None:
+        clamped = max(0.0, min(100.0, float(percent)))
+        self.progress.config(maximum=100, value=clamped)
+        self.progress_percent.set(f"{round(clamped)}%")
         self.root.update_idletasks()
 
     def start_scan(self) -> None:
@@ -14844,25 +14850,62 @@ class DiagnosticApp:
 
     def scan_and_upload(self) -> None:
         try:
+            stop_anim = threading.Event()
+            progress_value = {"v": 2.0}
+
+            def animate_progress() -> None:
+                while not stop_anim.is_set():
+                    current = progress_value["v"]
+                    if current < PROGRESS_CAP_DURING_SCAN:
+                        progress_value["v"] = min(PROGRESS_CAP_DURING_SCAN, current + PROGRESS_STEP)
+                        pct = progress_value["v"]
+                        self.root.after(0, self.set_progress_percent, pct)
+                    time.sleep(PROGRESS_TICK_SEC)
+
+            anim_thread = threading.Thread(target=animate_progress, daemon=True)
+
             with ThreadPoolExecutor(max_workers=1) as pool:
                 report_future = pool.submit(build_report)
-                for index, stage in enumerate(SCAN_STAGES, start=1):
+
+                for stage in SCAN_STAGES[:3]:
                     self.root.after(0, self.set_stage, stage, "running")
-                    if stage in ("Finalizing Report", "Uploading Results"):
-                        report = report_future.result(timeout=900)
-                        if stage == "Uploading Results":
-                            payload = {
-                                "pin": self.pin.get().strip(),
-                                "consent_version": CONSENT_VERSION,
-                                "collected_categories": COLLECTED_CATEGORIES,
-                                "report": report,
-                            }
-                            response = requests.post(f"{API_URL}/reports", json=payload, timeout=20)
-                            response.raise_for_status()
-                    else:
-                        time.sleep(0.12)
+                    time.sleep(PRE_SCAN_STAGE_DELAY_SEC)
+                    progress_value["v"] = max(progress_value["v"], {"Preparing Scan": 10, "Checking Device": 18, "Reviewing App Data": 26}[stage])
+                    self.root.after(0, self.set_progress_percent, progress_value["v"])
                     self.root.after(0, self.set_stage, stage, "complete")
-                    self.root.after(0, self.set_progress, index)
+
+                collect_stage = "Collecting Diagnostics"
+                self.root.after(0, self.set_stage, collect_stage, "running")
+                anim_thread.start()
+
+                while not report_future.done():
+                    time.sleep(0.25)
+
+                stop_anim.set()
+                anim_thread.join(timeout=2.0)
+                report = report_future.result(timeout=900)
+                self.root.after(0, self.set_stage, collect_stage, "complete")
+
+                finalize_stage = "Finalizing Report"
+                self.root.after(0, self.set_stage, finalize_stage, "running")
+                progress_value["v"] = 93.0
+                self.root.after(0, self.set_progress_percent, progress_value["v"])
+                time.sleep(0.6)
+                self.root.after(0, self.set_stage, finalize_stage, "complete")
+
+                upload_stage = "Uploading Results"
+                self.root.after(0, self.set_stage, upload_stage, "running")
+                payload = {
+                    "pin": self.pin.get().strip(),
+                    "consent_version": CONSENT_VERSION,
+                    "collected_categories": COLLECTED_CATEGORIES,
+                    "report": report,
+                }
+                response = requests.post(f"{API_URL}/reports", json=payload, timeout=20)
+                response.raise_for_status()
+                self.root.after(0, self.set_progress_percent, 100)
+                self.root.after(0, self.set_stage, upload_stage, "complete")
+
             self.root.after(0, self.complete)
         except Exception as exc:
             self.root.after(0, self.fail, str(exc))
