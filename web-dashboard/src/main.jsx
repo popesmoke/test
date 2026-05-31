@@ -1435,6 +1435,35 @@ function ForensicArtifactsSection({ report, query }) {
         <TerminalBlock query={query}>{asJson(fa.bam_structured)}</TerminalBlock>
       </Card>
       <Card icon={Boxes} title="PCA executed (store)">
+        <p className="muted opened-files-intro">
+          When the executable is deleted, timestamps are resolved from <strong>BAM</strong>, <strong>Prefetch</strong>,{" "}
+          <strong>USN</strong>, or <strong>Recycle Bin</strong> — see <code className="inline-code">display_at</code> and{" "}
+          <code className="inline-code">correlated_timestamps</code> per row.
+        </p>
+        {(fa.pca_executed?.items ?? []).some((item) => item.display_at) ? (
+          <div className="executor-event-list">
+            {(fa.pca_executed.items ?? [])
+              .filter((item) => item.normalized_path)
+              .slice(0, 40)
+              .map((item, index) => (
+                <div className="executor-event-row" key={`pca-${item.normalized_path}-${index}`}>
+                  <div>
+                    <strong>{item.normalized_path}</strong>
+                    <p className="executor-event-path">
+                      {item.file_exists ? "On disk" : "Missing on disk"}
+                      {item.timestamp_source ? ` · ${formatTimestampSource(item.timestamp_source)}` : ""}
+                    </p>
+                    {item.correlated_timestamps ? (
+                      <small className="timestamp-source">
+                        Correlated: {Object.keys(item.correlated_timestamps).join(", ")}
+                      </small>
+                    ) : null}
+                  </div>
+                  <time>{item.display_at ? formatGmtPlus3(item.display_at) : "No timestamp"}</time>
+                </div>
+              ))}
+          </div>
+        ) : null}
         <TerminalBlock query={query}>{asJson(fa.pca_executed)}</TerminalBlock>
       </Card>
       <Card icon={Boxes} title="Browser SQLite probe">
