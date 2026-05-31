@@ -62,6 +62,7 @@ RESEND_FROM = os.getenv("RESEND_FROM", "onboarding@resend.dev")
 BREVO_API_KEY = os.getenv("BREVO_API_KEY", "")
 BREVO_FROM_EMAIL = os.getenv("BREVO_FROM_EMAIL", "")
 BREVO_FROM_NAME = os.getenv("BREVO_FROM_NAME", "DangerousCity")
+REQUIRE_EMAIL_OTP_MODE = os.getenv("REQUIRE_EMAIL_OTP", "auto").strip().lower()
 
 
 def utc_now() -> datetime:
@@ -237,6 +238,14 @@ def brevo_is_configured() -> bool:
 
 def email_is_configured() -> bool:
     return brevo_is_configured() or bool(RESEND_API_KEY) or smtp_is_configured()
+
+
+def require_email_otp() -> bool:
+    if REQUIRE_EMAIL_OTP_MODE in {"false", "0", "no", "off"}:
+        return False
+    if REQUIRE_EMAIL_OTP_MODE in {"true", "1", "yes", "on"}:
+        return True
+    return email_is_configured()
 
 
 def otp_email_body(username: str, otp: str) -> str:
@@ -656,6 +665,21 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(HTTPStatus.UNAUTHORIZED, {"detail": "Missing or invalid bearer token"})
         return False
 
+    def send_discord_registration_response(self, user_id: int, return_to: str) -> None:
+        if not discord_is_configured():
+            self.send_json(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                {"detail": "Account created, but Discord verification is not configured yet."},
+            )
+            return
+        self.send_json(
+            HTTPStatus.CREATED,
+            {
+                "requires_discord": True,
+                "discord_url": create_discord_auth_url(return_to, make_discord_link_ticket(user_id)),
+            },
+        )
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
@@ -663,6 +687,16 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/health":
             self.send_json(HTTPStatus.OK, {"status": "ok"})
+            return
+
+        if path == "/auth/config":
+            self.send_json(
+                HTTPStatus.OK,
+                {
+                    "require_email_otp": require_email_otp(),
+                    "email_configured": email_is_configured(),
+                },
+            )
             return
 
         if path == "/auth/discord/start":
@@ -754,6 +788,7 @@ class Handler(BaseHTTPRequestHandler):
             email = normalize_email(str(payload.get("email", "")))
             username = normalize_username(str(payload.get("username", "")))
             password = str(payload.get("password", ""))
+            return_to = query.get("return_to", [FRONTEND_URL])[0]
             if "@" not in email or len(email) > 254:
                 self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Enter a valid email address."})
                 return
@@ -766,6 +801,38 @@ class Handler(BaseHTTPRequestHandler):
             if len(password) < 6:
                 self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Password must be at least 6 characters."})
                 return
+            if not allowed_return_to(return_to):
+                self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Invalid return URL"})
+                return
+            with connect() as conn:
+                existing = db_execute(
+                    conn,
+                    "SELECT id FROM users WHERE email = ? OR username = ?",
+                    (email, username),
+                ).fetchone()
+            if existing is not None:
+                self.send_json(HTTPStatus.CONFLICT, {"detail": "Email or username is already registered."})
+                return
+            if not require_email_otp():
+                salt, password_hash = hash_password(password)
+                try:
+                    with connect() as conn:
+                        db_execute(
+                            conn,
+                            """
+                            INSERT INTO users (email, username, password_salt, password_hash, created_at)
+                            VALUES (?, ?, ?, ?, ?)
+                            """,
+                            (email, username, salt, password_hash, to_iso(utc_now())),
+                        )
+                        user_id = db_execute(conn, "SELECT id FROM users WHERE email = ?", (email,)).fetchone()["id"]
+                except Exception as error:
+                    if not is_unique_violation(error):
+                        raise
+                    self.send_json(HTTPStatus.CONFLICT, {"detail": "Email or username is already registered."})
+                    return
+                self.send_discord_registration_response(user_id, return_to)
+                return
             if not email_is_configured():
                 self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"detail": "Email OTP is not configured yet."})
                 return
@@ -775,14 +842,6 @@ class Handler(BaseHTTPRequestHandler):
             expires_at = now + timedelta(minutes=OTP_TTL_MINUTES)
             try:
                 with connect() as conn:
-                    existing = db_execute(
-                        conn,
-                        "SELECT id FROM users WHERE email = ? OR username = ?",
-                        (email, username),
-                    ).fetchone()
-                    if existing is not None:
-                        self.send_json(HTTPStatus.CONFLICT, {"detail": "Email or username is already registered."})
-                        return
                     pending_username = db_execute(
                         conn,
                         "SELECT email FROM pending_registration_otps WHERE username = ? AND expires_at > ? AND email <> ?",
@@ -863,19 +922,7 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 user_id = db_execute(conn, "SELECT id FROM users WHERE email = ?", (email,)).fetchone()["id"]
                 db_execute(conn, "DELETE FROM pending_registration_otps WHERE email = ?", (email,))
-            if not discord_is_configured():
-                self.send_json(
-                    HTTPStatus.SERVICE_UNAVAILABLE,
-                    {"detail": "Email verified, but Discord verification is not configured yet."},
-                )
-                return
-            self.send_json(
-                HTTPStatus.CREATED,
-                {
-                    "requires_discord": True,
-                    "discord_url": create_discord_auth_url(return_to, make_discord_link_ticket(user_id)),
-                },
-            )
+            self.send_discord_registration_response(user_id, return_to)
             return
 
         if path == "/auth/login":

@@ -46,6 +46,7 @@ const DISCORD_ERROR_MESSAGES = {
 function Login({ onLogin, loginError }) {
   const [mode, setMode] = useState("login");
   const [registerStep, setRegisterStep] = useState("details");
+  const [registerUsesOtp, setRegisterUsesOtp] = useState(true);
   const [email, setEmail] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -56,6 +57,13 @@ function Login({ onLogin, loginError }) {
   useEffect(() => {
     setError(loginError || "");
   }, [loginError]);
+
+  useEffect(() => {
+    fetch(`${API_URL}/auth/config`)
+      .then((response) => (response.ok ? response.json() : { require_email_otp: true }))
+      .then((data) => setRegisterUsesOtp(Boolean(data.require_email_otp)))
+      .catch(() => setRegisterUsesOtp(true));
+  }, []);
 
   function resetRegisterFlow() {
     setRegisterStep("details");
@@ -73,17 +81,27 @@ function Login({ onLogin, loginError }) {
     setError("");
     setBusy(true);
     try {
-      const response = await fetch(`${API_URL}/auth/register/start`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, username, password }),
-      });
+      const returnTo = `${window.location.origin}${window.location.pathname}`;
+      const response = await fetch(
+        `${API_URL}/auth/register/start?return_to=${encodeURIComponent(returnTo)}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, username, password }),
+        },
+      );
       const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        setError(data.detail || "Could not send verification code.");
+      if (data.requires_discord && data.discord_url) {
+        window.location.assign(data.discord_url);
         return;
       }
-      setRegisterStep("verify");
+      if (!response.ok) {
+        setError(data.detail || "Account creation failed.");
+        return;
+      }
+      if (data.status === "otp_sent") {
+        setRegisterStep("verify");
+      }
     } catch {
       setError(`Could not reach backend at ${API_URL}`);
     } finally {
@@ -152,7 +170,12 @@ function Login({ onLogin, loginError }) {
     }
   }
 
-  const showingRegisterVerify = mode === "register" && registerStep === "verify";
+  const showingRegisterVerify = mode === "register" && registerUsesOtp && registerStep === "verify";
+  const registerButtonLabel = showingRegisterVerify
+    ? "Verify and continue to Discord"
+    : registerUsesOtp
+      ? "Send verification code"
+      : "Create and verify Discord";
 
   return (
     <main className="login-shell">
@@ -282,9 +305,7 @@ function Login({ onLogin, loginError }) {
             {busy
               ? "Please wait..."
               : mode === "register"
-                ? showingRegisterVerify
-                  ? "Verify and continue to Discord"
-                  : "Send verification code"
+                ? registerButtonLabel
                 : "Sign in"}
           </button>
         </form>
