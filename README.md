@@ -27,6 +27,33 @@ Default checker login:
 
 Set `CHECKER_EMAIL`, `CHECKER_PASSWORD`, and `API_TOKEN_SECRET` in the environment for non-demo use.
 
+### Discord role-gated dashboard login
+
+The dashboard can also use Discord OAuth. A Discord user can sign in, but the backend only issues a dashboard token if that user belongs to your configured Discord server and has the configured `Access` role.
+
+Create an app in the Discord Developer Portal, then add this redirect URL to the app's OAuth2 redirects:
+
+```text
+https://your-backend-host/auth/discord/callback
+```
+
+Set these backend environment variables:
+
+```text
+DISCORD_CLIENT_ID=1510615702103392327
+DISCORD_CLIENT_SECRET=your Discord application client secret
+DISCORD_REDIRECT_URI=https://test-v7a8.onrender.com/auth/discord/callback
+DISCORD_GUILD_ID=1510614253508493373
+DISCORD_ACCESS_ROLE_ID=1510614274299531334
+FRONTEND_URL=https://joyful-torte-157157.netlify.app
+CORS_ORIGINS=http://localhost:3000,https://joyful-torte-157157.netlify.app
+API_TOKEN_SECRET=a long random secret
+```
+
+The Discord OAuth scopes used are `identify` and `guilds.members.read`.
+
+The public Discord invite shown on the login page defaults to `https://discord.gg/wPZXKaPyWY`.
+
 ### Web Dashboard
 
 ```powershell

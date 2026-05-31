@@ -6,18 +6,35 @@ import json
 import os
 import secrets
 import sqlite3
+import base64
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib import error as urlerror
+from urllib import request as urlrequest
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 DB_PATH = Path(__file__).resolve().parent / "diagnostics.db"
 TOKEN_SECRET = os.getenv("API_TOKEN_SECRET", "local-dev-secret-change-me")
 CHECKER_EMAIL = os.getenv("CHECKER_EMAIL", "checker@example.com")
 CHECKER_PASSWORD = os.getenv("CHECKER_PASSWORD", "change-me")
 PIN_TTL_MINUTES = int(os.getenv("PIN_TTL_MINUTES", "30"))
-CORS_ORIGIN = os.getenv("CORS_ORIGIN", "http://localhost:3000")
+DEFAULT_FRONTEND_URL = "https://joyful-torte-157157.netlify.app"
+LOCAL_FRONTEND_URL = "http://localhost:3000"
+CORS_ORIGINS = [
+    origin.strip().rstrip("/")
+    for origin in os.getenv("CORS_ORIGINS", os.getenv("CORS_ORIGIN", f"{LOCAL_FRONTEND_URL},{DEFAULT_FRONTEND_URL}")).split(",")
+    if origin.strip()
+]
+FRONTEND_URL = os.getenv("FRONTEND_URL", DEFAULT_FRONTEND_URL)
+DISCORD_API_BASE = "https://discord.com/api/v10"
+DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID", "1510615702103392327")
+DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET", "")
+DISCORD_REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI", "https://test-v7a8.onrender.com/auth/discord/callback")
+DISCORD_GUILD_ID = os.getenv("DISCORD_GUILD_ID", "1510614253508493373")
+DISCORD_ACCESS_ROLE_ID = os.getenv("DISCORD_ACCESS_ROLE_ID", "1510614274299531334")
+DISCORD_AUTH_SCOPES = "identify guilds.members.read"
 
 
 def utc_now() -> datetime:
@@ -51,6 +68,17 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS discord_users (
+                discord_id TEXT PRIMARY KEY,
+                username TEXT NOT NULL,
+                avatar TEXT,
+                roles_json TEXT NOT NULL,
+                last_login_at TEXT NOT NULL
+            )
+            """
+        )
 
 
 def make_token(email: str) -> str:
@@ -58,6 +86,119 @@ def make_token(email: str) -> str:
     payload = f"{email}:{timestamp}"
     signature = hmac.new(TOKEN_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
     return f"{payload}:{signature}"
+
+
+def discord_is_configured() -> bool:
+    return all(
+        [
+            DISCORD_CLIENT_ID,
+            DISCORD_CLIENT_SECRET,
+            DISCORD_REDIRECT_URI,
+            DISCORD_GUILD_ID,
+            DISCORD_ACCESS_ROLE_ID,
+        ]
+    )
+
+
+def add_query_params(url: str, params: dict[str, str]) -> str:
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query, keep_blank_values=True)
+    for key, value in params.items():
+        query[key] = [value]
+    return urlunparse(parsed._replace(query=urlencode(query, doseq=True)))
+
+
+def allowed_return_to(value: str) -> bool:
+    allowed_origins = [FRONTEND_URL.rstrip("/"), *CORS_ORIGINS]
+    return any(value.rstrip("/").startswith(origin) for origin in allowed_origins)
+
+
+def signed_state(return_to: str) -> str:
+    payload = {
+        "return_to": return_to,
+        "nonce": secrets.token_urlsafe(12),
+        "ts": int(utc_now().timestamp()),
+    }
+    encoded = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode()
+    signature = hmac.new(TOKEN_SECRET.encode(), encoded.encode(), hashlib.sha256).hexdigest()
+    return f"{encoded}.{signature}"
+
+
+def verify_state(state: str) -> dict | None:
+    try:
+        encoded, signature = state.rsplit(".", 1)
+    except ValueError:
+        return None
+    expected = hmac.new(TOKEN_SECRET.encode(), encoded.encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        return None
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(encoded.encode()).decode())
+        created_at = datetime.fromtimestamp(int(payload["ts"]), timezone.utc)
+    except (ValueError, KeyError, json.JSONDecodeError):
+        return None
+    if created_at < utc_now() - timedelta(minutes=10):
+        return None
+    return payload
+
+
+def discord_json_request(path: str, bearer_token: str) -> dict:
+    req = urlrequest.Request(
+        f"{DISCORD_API_BASE}{path}",
+        headers={
+            "Authorization": f"Bearer {bearer_token}",
+            "Accept": "application/json",
+            "User-Agent": "DangerousCityDashboard/1.0",
+        },
+    )
+    with urlrequest.urlopen(req, timeout=12) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def exchange_discord_code(code: str) -> dict:
+    body = urlencode(
+        {
+            "client_id": DISCORD_CLIENT_ID,
+            "client_secret": DISCORD_CLIENT_SECRET,
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": DISCORD_REDIRECT_URI,
+        }
+    ).encode("utf-8")
+    req = urlrequest.Request(
+        f"{DISCORD_API_BASE}/oauth2/token",
+        data=body,
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+            "User-Agent": "DangerousCityDashboard/1.0",
+        },
+        method="POST",
+    )
+    with urlrequest.urlopen(req, timeout=12) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def save_discord_user(user: dict, roles: list[str]) -> None:
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO discord_users (discord_id, username, avatar, roles_json, last_login_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(discord_id) DO UPDATE SET
+                username = excluded.username,
+                avatar = excluded.avatar,
+                roles_json = excluded.roles_json,
+                last_login_at = excluded.last_login_at
+            """,
+            (
+                user["id"],
+                user.get("global_name") or user.get("username") or user["id"],
+                user.get("avatar"),
+                json.dumps(roles),
+                to_iso(utc_now()),
+            ),
+        )
 
 
 def validate_token(auth_header: str | None) -> str | None:
@@ -96,7 +237,9 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "DiagnosticBackend/0.1"
 
     def end_headers(self) -> None:
-        self.send_header("Access-Control-Allow-Origin", CORS_ORIGIN)
+        request_origin = self.headers.get("Origin", "").rstrip("/")
+        allowed_origin = request_origin if request_origin in CORS_ORIGINS else CORS_ORIGINS[0]
+        self.send_header("Access-Control-Allow-Origin", allowed_origin)
         self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
         super().end_headers()
@@ -140,6 +283,11 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def redirect(self, location: str) -> None:
+        self.send_response(HTTPStatus.FOUND)
+        self.send_header("Location", location)
+        self.end_headers()
+
     def require_checker(self) -> bool:
         if validate_token(self.headers.get("Authorization")):
             return True
@@ -149,9 +297,60 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
+        query = parse_qs(parsed.query)
 
         if path == "/health":
             self.send_json(HTTPStatus.OK, {"status": "ok"})
+            return
+
+        if path == "/auth/discord/start":
+            if not discord_is_configured():
+                self.send_json(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    {"detail": "Discord login is not configured on this backend."},
+                )
+                return
+            return_to = query.get("return_to", [FRONTEND_URL])[0]
+            if not allowed_return_to(return_to):
+                self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Invalid return URL"})
+                return
+            auth_url = "https://discord.com/oauth2/authorize?" + urlencode(
+                {
+                    "client_id": DISCORD_CLIENT_ID,
+                    "redirect_uri": DISCORD_REDIRECT_URI,
+                    "response_type": "code",
+                    "scope": DISCORD_AUTH_SCOPES,
+                    "state": signed_state(return_to),
+                }
+            )
+            self.send_json(HTTPStatus.OK, {"url": auth_url})
+            return
+
+        if path == "/auth/discord/callback":
+            state_payload = verify_state(query.get("state", [""])[0])
+            return_to = (state_payload or {}).get("return_to") or FRONTEND_URL
+            if not state_payload or not allowed_return_to(return_to):
+                self.redirect(add_query_params(FRONTEND_URL, {"discord_error": "invalid_state"}))
+                return
+            code = query.get("code", [""])[0]
+            if not code:
+                self.redirect(add_query_params(return_to, {"discord_error": "missing_code"}))
+                return
+            try:
+                token_data = exchange_discord_code(code)
+                access_token = token_data["access_token"]
+                user = discord_json_request("/users/@me", access_token)
+                member = discord_json_request(f"/users/@me/guilds/{DISCORD_GUILD_ID}/member", access_token)
+                roles = [str(role) for role in member.get("roles", [])]
+            except (KeyError, urlerror.URLError, TimeoutError, json.JSONDecodeError):
+                self.redirect(add_query_params(return_to, {"discord_error": "discord_auth_failed"}))
+                return
+            if DISCORD_ACCESS_ROLE_ID not in roles:
+                self.redirect(add_query_params(return_to, {"discord_error": "missing_access_role"}))
+                return
+            save_discord_user(user, roles)
+            token = make_token(f"discord-{user['id']}")
+            self.redirect(add_query_params(return_to, {"token": token}))
             return
 
         if path == "/sessions":

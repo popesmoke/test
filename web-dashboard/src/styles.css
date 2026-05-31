@@ -114,6 +114,47 @@ p {
   gap: 16px;
 }
 
+.discord-button {
+  min-height: 44px;
+  border-color: #5865f2;
+  background: linear-gradient(180deg, #5865f2, #3b45aa);
+  color: #ffffff;
+  font-weight: 800;
+}
+
+.discord-button:hover {
+  border-color: #7b85ff;
+  box-shadow: 0 0 0 2px rgba(88, 101, 242, 0.22);
+}
+
+.login-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: #817a7e;
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.login-divider::before,
+.login-divider::after {
+  content: "";
+  height: 1px;
+  flex: 1;
+  background: #2d171d;
+}
+
+.discord-invite {
+  color: #9eb7c0;
+  font-size: 13px;
+  text-align: center;
+  text-decoration: none;
+}
+
+.discord-invite:hover {
+  color: #ffffff;
+}
+
 label {
   display: grid;
   gap: 7px;

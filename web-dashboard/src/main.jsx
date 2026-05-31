@@ -17,6 +17,7 @@ import {
   KeyRound,
   Lock,
   LogOut,
+  MessageCircle,
   MemoryStick,
   RefreshCw,
   ScanSearch,
@@ -28,15 +29,27 @@ import "./styles.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "https://test-v7a8.onrender.com";
 const BRAND_LOGO = "/assets/dangerouscity-logo.png";
+const DISCORD_INVITE_URL = import.meta.env.VITE_DISCORD_INVITE_URL || "https://discord.gg/wPZXKaPyWY";
 
 function authHeaders(token) {
   return { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
 }
 
-function Login({ onLogin }) {
+const DISCORD_ERROR_MESSAGES = {
+  discord_auth_failed: "Discord login failed. Please try again.",
+  invalid_state: "Discord login expired. Please try again.",
+  missing_access_role: "Your Discord account does not have the Access role.",
+  missing_code: "Discord did not return a login code. Please try again.",
+};
+
+function Login({ onLogin, loginError }) {
   const [email, setEmail] = useState("dng@email.com");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
+  const [error, setError] = useState(loginError || "");
+
+  useEffect(() => {
+    setError(loginError || "");
+  }, [loginError]);
 
   async function submit(event) {
     event.preventDefault();
@@ -58,6 +71,22 @@ function Login({ onLogin }) {
     }
   }
 
+  async function startDiscordLogin() {
+    setError("");
+    try {
+      const returnTo = `${window.location.origin}${window.location.pathname}`;
+      const response = await fetch(`${API_URL}/auth/discord/start?return_to=${encodeURIComponent(returnTo)}`);
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setError(data.detail || "Discord login is not configured yet.");
+        return;
+      }
+      window.location.assign(data.url);
+    } catch {
+      setError(`Could not reach backend at ${API_URL}`);
+    }
+  }
+
   return (
     <main className="login-shell">
       <section className="login-panel">
@@ -71,6 +100,12 @@ function Login({ onLogin }) {
           </div>
         </div>
         <form onSubmit={submit} className="form-stack">
+          <button className="discord-button" type="button" onClick={startDiscordLogin}>
+            <MessageCircle size={18} /> Continue with Discord
+          </button>
+          <div className="login-divider">
+            <span>or</span>
+          </div>
           <label>
             Email
             <input value={email} onChange={(event) => setEmail(event.target.value)} />
@@ -80,6 +115,9 @@ function Login({ onLogin }) {
             <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} />
           </label>
           {error && <p className="error">{error}</p>}
+          <a className="discord-invite" href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer">
+            Need access? Join the Discord server.
+          </a>
           <button className="primary" type="submit">
             <Lock size={18} /> Sign in
           </button>
@@ -1485,15 +1523,36 @@ function Dashboard({ token, onLogout }) {
 
 function App() {
   const [token, setToken] = useState(localStorage.getItem("checkerToken") ?? "");
+  const [loginError, setLoginError] = useState("");
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const nextToken = params.get("token");
+    const discordError = params.get("discord_error");
+    if (!nextToken && !discordError) {
+      return;
+    }
+    const cleanUrl = `${window.location.origin}${window.location.pathname}${window.location.hash}`;
+    window.history.replaceState({}, document.title, cleanUrl);
+    if (nextToken) {
+      localStorage.setItem("checkerToken", nextToken);
+      setToken(nextToken);
+      setLoginError("");
+      return;
+    }
+    setLoginError(DISCORD_ERROR_MESSAGES[discordError] || "Discord login failed. Please try again.");
+  }, []);
+
   function login(nextToken) {
     localStorage.setItem("checkerToken", nextToken);
     setToken(nextToken);
+    setLoginError("");
   }
   function logout() {
     localStorage.removeItem("checkerToken");
     setToken("");
   }
-  return token ? <Dashboard token={token} onLogout={logout} /> : <Login onLogin={login} />;
+  return token ? <Dashboard token={token} onLogout={logout} /> : <Login onLogin={login} loginError={loginError} />;
 }
 
 try {
