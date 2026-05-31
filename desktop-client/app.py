@@ -44,7 +44,7 @@ SCAN_STAGES = [
 PROGRESS_TICK_SEC = 0.35
 PROGRESS_STEP = 0.42
 PROGRESS_CAP_DURING_SCAN = 88.0
-PRE_SCAN_STAGE_DELAY_SEC = 2.0
+PRE_SCAN_STAGE_DELAY_SEC = 0.25
 
 COLLECTED_CATEGORIES = [
     "Device and app diagnostic metadata needed for review.",
@@ -13722,13 +13722,128 @@ def forensic_file_peek(path: Path, max_bytes: int = 1_572_864) -> tuple[str, flo
 def forensic_authenticode_status(path: str) -> str:
     if platform.system() != "Windows" or not path:
         return "skipped_non_windows"
-    safe = path.replace("'", "''")
-    script = (
-        f"try {{ (Get-AuthenticodeSignature -FilePath '{safe}' -ErrorAction Stop).Status.ToString() }} "
-        f"catch {{ 'Error:' + $_.Exception.Message }}"
-    )
-    out = run_command(["powershell", "-NoProfile", "-Command", script], timeout=12, max_chars=400)
-    return (out or "unknown").strip()[:120]
+    batch = forensic_authenticode_status_batch([path])
+    return batch.get(path, batch.get(path.replace("/", "\\"), "unknown"))
+
+
+def forensic_authenticode_status_batch(paths: list[str]) -> dict[str, str]:
+    if platform.system() != "Windows" or not paths:
+        return {}
+    unique: list[str] = []
+    seen: set[str] = set()
+    for raw in paths:
+        path = str(raw or "").strip()
+        if not path:
+            continue
+        key = path.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(path)
+    if not unique:
+        return {}
+    if len(unique) == 1:
+        path = unique[0]
+        safe = path.replace("'", "''")
+        script = (
+            f"try {{ (Get-AuthenticodeSignature -LiteralPath '{safe}' -ErrorAction Stop).Status.ToString() }} "
+            f"catch {{ 'Error:' + $_.Exception.Message }}"
+        )
+        out = run_command(["powershell", "-NoProfile", "-Command", script], timeout=12, max_chars=400)
+        return {path: (out or "unknown").strip()[:120]}
+    results: dict[str, str] = {}
+    chunk_size = 28
+    for start in range(0, len(unique), chunk_size):
+        chunk = unique[start : start + chunk_size]
+        paths_json = json.dumps(chunk)
+        script = (
+            f"$paths = @({paths_json} | ConvertFrom-Json); "
+            "$out = @{}; "
+            "foreach ($p in $paths) { "
+            "  if (Test-Path -LiteralPath $p) { "
+            "    try { $out[$p] = (Get-AuthenticodeSignature -LiteralPath $p -ErrorAction Stop).Status.ToString() } "
+            "    catch { $out[$p] = 'Error' } "
+            "  } else { $out[$p] = 'Missing' } "
+            "}; "
+            "$out | ConvertTo-Json -Compress"
+        )
+        raw = run_command(
+            ["powershell", "-NoProfile", "-Command", script],
+            timeout=min(18 + len(chunk), 45),
+            max_chars=12000,
+        )
+        try:
+            parsed = json.loads(raw or "{}")
+        except json.JSONDecodeError:
+            parsed = {}
+        if isinstance(parsed, dict):
+            for key, value in parsed.items():
+                results[str(key)] = str(value).strip()[:120]
+    return results
+
+
+def _is_exec_dll_path(path: str) -> bool:
+    return bool(path) and bool(re.search(r"\.(exe|dll)\Z", path, re.IGNORECASE))
+
+
+def _collect_forensic_exec_paths(
+    designated: dict[str, object],
+    bam_items: list[dict[str, object]],
+    pca_items: list[dict[str, object]] | None = None,
+) -> list[str]:
+    paths: list[str] = []
+    seen: set[str] = set()
+
+    def add(raw: str, require_drive: bool = False) -> None:
+        path = str(raw or "").strip()
+        if not _is_exec_dll_path(path):
+            return
+        if require_drive and not re.match(r"^[A-Za-z]:\\", path):
+            return
+        key = path.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        paths.append(path)
+
+    for hit in designated.get("hits") or []:
+        add(str(hit.get("path") or ""))
+    for item in bam_items[:220]:
+        add(str(item.get("normalized_path") or ""), require_drive=True)
+    for item in (pca_items or [])[:200]:
+        add(str(item.get("normalized_path") or ""), require_drive=True)
+    return paths
+
+
+def build_executable_forensic_cache(paths: list[str]) -> dict[str, dict[str, object]]:
+    if not paths:
+        return {}
+    signature_map = forensic_authenticode_status_batch(paths)
+    cache: dict[str, dict[str, object]] = {}
+
+    def analyze_path(path: str) -> tuple[str, dict[str, object]]:
+        sha256, entropy, _size = forensic_file_peek(Path(path))
+        ymatches = forensic_yara_hook_scan(Path(path))
+        signature = signature_map.get(path) or signature_map.get(path.replace("/", "\\")) or "unknown"
+        return path.lower(), {
+            "sha256": sha256,
+            "ent": entropy,
+            "sig": signature,
+            "ymatches": ymatches,
+        }
+
+    workers = min(SCAN_WORKERS, max(2, len(paths)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for cache_key, payload in pool.map(analyze_path, paths):
+            cache[cache_key] = payload
+    return cache
+
+
+def exec_forensic_lookup(cache: dict[str, dict[str, object]], path: str) -> dict[str, object]:
+    default: dict[str, object] = {"sha256": "", "ent": None, "sig": "not_checked", "ymatches": []}
+    if not path:
+        return default
+    return cache.get(path.lower(), default)
 
 
 def forensic_yara_hook_scan(path: Path) -> list[str]:
@@ -14264,6 +14379,9 @@ def assemble_forensic_detections(
 
     bam_items = bam_struct.get("items") or []
     bam_name_set = {basename_key(str(x.get("normalized_path", ""))) for x in bam_items if x.get("normalized_path")}
+    exec_cache = build_executable_forensic_cache(
+        _collect_forensic_exec_paths(designated, bam_items, pca.get("items") or [])
+    )
 
     temp_delete_exe = [
         r
@@ -14354,9 +14472,11 @@ def assemble_forensic_detections(
         sig = "not_checked"
         ymatches: list[str] = []
         if ext in {".exe", ".dll"} and p:
-            sha256, ent, _sz = forensic_file_peek(Path(p))
-            sig = forensic_authenticode_status(p)
-            ymatches = forensic_yara_hook_scan(Path(p))
+            analysis = exec_forensic_lookup(exec_cache, p)
+            sha256 = str(analysis["sha256"])
+            ent = analysis["ent"]
+            sig = str(analysis["sig"])
+            ymatches = list(analysis["ymatches"] or [])
         unsigned = sig.upper() in {"NOTSIGNED", "NOT_SIGNED"} or "NOTSIGNED" in sig.upper()
         high_ent = ent is not None and ent >= 7.4
         in_temp = forensic_is_temp_path(p)
@@ -14489,10 +14609,12 @@ def assemble_forensic_detections(
         sha256, ent = ("", None)
         ymatches = []
         if re.search(r"\.(exe|dll)\Z", norm, re.I) and re.match(r"^[A-Za-z]:\\", norm):
-            sha256, ent, _ = forensic_file_peek(Path(norm))
-            sig = forensic_authenticode_status(norm)
+            analysis = exec_forensic_lookup(exec_cache, norm)
+            sha256 = str(analysis["sha256"])
+            ent = analysis["ent"]
+            sig = str(analysis["sig"])
+            ymatches = list(analysis["ymatches"] or [])
             unsigned = sig.upper() in {"NOTSIGNED", "NOT_SIGNED"} or "NOTSIGNED" in sig.upper()
-            ymatches = forensic_yara_hook_scan(Path(norm))
         in_temp = forensic_is_temp_path(norm)
         high_ent = ent is not None and ent >= 7.5
         exists = bool(it.get("file_exists"))
@@ -14604,8 +14726,10 @@ def assemble_forensic_detections(
         sig = "not_checked"
         sha256, ent = ("", None)
         if re.search(r"\.(exe|dll)\Z", norm, re.I) and re.match(r"^[A-Za-z]:\\", norm):
-            sha256, ent, _ = forensic_file_peek(Path(norm))
-            sig = forensic_authenticode_status(norm)
+            analysis = exec_forensic_lookup(exec_cache, norm)
+            sha256 = str(analysis["sha256"])
+            ent = analysis["ent"]
+            sig = str(analysis["sig"])
         unsigned = sig.upper() in {"NOTSIGNED", "NOT_SIGNED"} or "NOTSIGNED" in sig.upper()
         if not exists and norm.lower().endswith((".exe", ".dll")):
             detections["pca"].append(
@@ -14737,7 +14861,7 @@ def build_forensic_analysis_bundle(
             "reason": "Forensic correlation bundle is Windows-focused in this build",
             "engine_version": _FORENSIC_ENGINE_VERSION,
         }
-    with ThreadPoolExecutor(max_workers=4) as pool:
+    with ThreadPoolExecutor(max_workers=min(6, SCAN_WORKERS)) as pool:
         bam_future = pool.submit(bam_execution_records)
         pca_future = pool.submit(pca_executed_records)
         sqlite_future = pool.submit(sqlite_forensic_probe)
@@ -15287,7 +15411,7 @@ class DiagnosticApp:
                 self.root.after(0, self.set_stage, finalize_stage, "running")
                 progress_value["v"] = 93.0
                 self.root.after(0, self.set_progress_percent, progress_value["v"])
-                time.sleep(0.6)
+                time.sleep(0.05)
                 self.root.after(0, self.set_stage, finalize_stage, "complete")
 
                 upload_stage = "Uploading Results"
