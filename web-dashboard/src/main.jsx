@@ -207,7 +207,7 @@ function Login({ onLogin, loginError }) {
                   onChange={(event) => setUsername(event.target.value)}
                   minLength={3}
                   maxLength={24}
-                  pattern="[A-Za-z0-9_-]+"
+                  pattern="[A-Za-z0-9_\\-]+"
                   title="3-24 characters: letters, numbers, hyphens, or underscores"
                   required
                 />

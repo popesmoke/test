@@ -26,12 +26,22 @@ CHECKER_PASSWORD = os.getenv("CHECKER_PASSWORD", "change-me")
 PIN_TTL_MINUTES = int(os.getenv("PIN_TTL_MINUTES", "30"))
 DEFAULT_FRONTEND_URL = "https://joyful-torte-157157.netlify.app"
 LOCAL_FRONTEND_URL = "http://localhost:3000"
-CORS_ORIGINS = [
-    origin.strip().rstrip("/")
-    for origin in os.getenv("CORS_ORIGINS", os.getenv("CORS_ORIGIN", f"{LOCAL_FRONTEND_URL},{DEFAULT_FRONTEND_URL}")).split(",")
-    if origin.strip()
-]
 FRONTEND_URL = os.getenv("FRONTEND_URL", DEFAULT_FRONTEND_URL)
+
+
+def build_cors_origins() -> list[str]:
+    configured = os.getenv("CORS_ORIGINS", os.getenv("CORS_ORIGIN", ""))
+    origins: list[str] = []
+    seen: set[str] = set()
+    for value in (LOCAL_FRONTEND_URL, DEFAULT_FRONTEND_URL, FRONTEND_URL, *configured.split(",")):
+        origin = value.strip().rstrip("/")
+        if origin and origin not in seen:
+            seen.add(origin)
+            origins.append(origin)
+    return origins
+
+
+CORS_ORIGINS = build_cors_origins()
 DISCORD_API_BASE = "https://discord.com/api/v10"
 DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID", "1510615702103392327")
 DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET", "")
@@ -47,6 +57,8 @@ SMTP_USERNAME = os.getenv("SMTP_USERNAME", "")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 SMTP_FROM = os.getenv("SMTP_FROM", SMTP_USERNAME)
 SMTP_USE_TLS = os.getenv("SMTP_USE_TLS", "true").lower() != "false"
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
+RESEND_FROM = os.getenv("RESEND_FROM", "onboarding@resend.dev")
 
 
 def utc_now() -> datetime:
@@ -216,30 +228,72 @@ def smtp_is_configured() -> bool:
     return bool(SMTP_HOST and SMTP_FROM)
 
 
-def send_otp_email(email: str, username: str, otp: str) -> None:
-    if not smtp_is_configured():
-        raise RuntimeError("Email OTP is not configured.")
+def email_is_configured() -> bool:
+    return smtp_is_configured() or bool(RESEND_API_KEY)
+
+
+def otp_email_body(username: str, otp: str) -> str:
+    return "\n".join(
+        [
+            f"Hi {username},",
+            "",
+            f"Your DangerousCity verification code is: {otp}",
+            "",
+            f"This code expires in {OTP_TTL_MINUTES} minutes.",
+        ]
+    )
+
+
+def send_otp_email_via_resend(email: str, username: str, otp: str) -> None:
+    payload = json.dumps(
+        {
+            "from": RESEND_FROM,
+            "to": [email],
+            "subject": "Your DangerousCity verification code",
+            "text": otp_email_body(username, otp),
+        }
+    ).encode("utf-8")
+    request = urlrequest.Request(
+        "https://api.resend.com/emails",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {RESEND_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urlrequest.urlopen(request, timeout=15) as response:
+            if response.status >= 400:
+                raise RuntimeError("Email provider rejected the verification message.")
+    except urlerror.HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace")
+        raise RuntimeError("Email provider rejected the verification message.") from error
+    except urlerror.URLError as error:
+        raise RuntimeError("Could not reach the email provider.") from error
+
+
+def send_otp_email_via_smtp(email: str, username: str, otp: str) -> None:
     message = EmailMessage()
     message["Subject"] = "Your DangerousCity verification code"
     message["From"] = SMTP_FROM
     message["To"] = email
-    message.set_content(
-        "\n".join(
-            [
-                f"Hi {username},",
-                "",
-                f"Your DangerousCity verification code is: {otp}",
-                "",
-                f"This code expires in {OTP_TTL_MINUTES} minutes.",
-            ]
-        )
-    )
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as smtp:
+    message.set_content(otp_email_body(username, otp))
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=8) as smtp:
         if SMTP_USE_TLS:
             smtp.starttls()
         if SMTP_USERNAME or SMTP_PASSWORD:
             smtp.login(SMTP_USERNAME, SMTP_PASSWORD)
         smtp.send_message(message)
+
+
+def send_otp_email(email: str, username: str, otp: str) -> None:
+    if not email_is_configured():
+        raise RuntimeError("Email OTP is not configured.")
+    if RESEND_API_KEY:
+        send_otp_email_via_resend(email, username, otp)
+        return
+    send_otp_email_via_smtp(email, username, otp)
 
 
 def discord_is_configured() -> bool:
@@ -454,9 +508,17 @@ class Handler(BaseHTTPRequestHandler):
         request_origin = self.headers.get("Origin", "").rstrip("/")
         allowed_origin = request_origin if request_origin in CORS_ORIGINS else CORS_ORIGINS[0]
         self.send_header("Access-Control-Allow-Origin", allowed_origin)
+        self.send_header("Vary", "Origin")
         self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
         super().end_headers()
+
+    def do_POST(self) -> None:
+        try:
+            self.handle_post()
+        except Exception as error:
+            print(f"Unhandled POST error: {error!r}", flush=True)
+            self.send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"detail": "Internal server error"})
 
     def do_OPTIONS(self) -> None:
         self.send_response(HTTPStatus.NO_CONTENT)
@@ -591,7 +653,7 @@ class Handler(BaseHTTPRequestHandler):
 
         self.send_json(HTTPStatus.NOT_FOUND, {"detail": "Not found"})
 
-    def do_POST(self) -> None:
+    def handle_post(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
         query = parse_qs(parsed.query)
@@ -618,7 +680,7 @@ class Handler(BaseHTTPRequestHandler):
             if len(password) < 6:
                 self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Password must be at least 6 characters."})
                 return
-            if not smtp_is_configured():
+            if not email_is_configured():
                 self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"detail": "Email OTP is not configured yet."})
                 return
             salt, password_hash = hash_password(password)
@@ -663,8 +725,13 @@ class Handler(BaseHTTPRequestHandler):
             except RuntimeError as error:
                 self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"detail": str(error)})
                 return
-            except Exception:
-                raise
+            except Exception as error:
+                print(f"Registration email error: {error!r}", flush=True)
+                self.send_json(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    {"detail": "Could not send verification email. Try again later."},
+                )
+                return
             self.send_json(HTTPStatus.OK, {"status": "otp_sent"})
             return
 
