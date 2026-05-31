@@ -59,6 +59,9 @@ SMTP_FROM = os.getenv("SMTP_FROM", SMTP_USERNAME)
 SMTP_USE_TLS = os.getenv("SMTP_USE_TLS", "true").lower() != "false"
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
 RESEND_FROM = os.getenv("RESEND_FROM", "onboarding@resend.dev")
+BREVO_API_KEY = os.getenv("BREVO_API_KEY", "")
+BREVO_FROM_EMAIL = os.getenv("BREVO_FROM_EMAIL", "")
+BREVO_FROM_NAME = os.getenv("BREVO_FROM_NAME", "DangerousCity")
 
 
 def utc_now() -> datetime:
@@ -228,8 +231,12 @@ def smtp_is_configured() -> bool:
     return bool(SMTP_HOST and SMTP_FROM)
 
 
+def brevo_is_configured() -> bool:
+    return bool(BREVO_API_KEY and BREVO_FROM_EMAIL)
+
+
 def email_is_configured() -> bool:
-    return smtp_is_configured() or bool(RESEND_API_KEY)
+    return brevo_is_configured() or bool(RESEND_API_KEY) or smtp_is_configured()
 
 
 def otp_email_body(username: str, otp: str) -> str:
@@ -261,6 +268,58 @@ def resend_error_detail(status: int, body: str) -> str:
             "Resend test mode only allows sending to the email on your Resend account. "
             "Verify a domain at resend.com/domains, then set RESEND_FROM to something like "
             "DangerousCity <noreply@yourdomain.com>."
+        )
+    if message:
+        return message
+    return "Email provider rejected the verification message."
+
+
+def send_otp_email_via_brevo(email: str, username: str, otp: str) -> None:
+    payload = json.dumps(
+        {
+            "sender": {"name": BREVO_FROM_NAME, "email": BREVO_FROM_EMAIL},
+            "to": [{"email": email}],
+            "subject": "Your DangerousCity verification code",
+            "textContent": otp_email_body(username, otp),
+        }
+    ).encode("utf-8")
+    request = urlrequest.Request(
+        "https://api.brevo.com/v3/smtp/email",
+        data=payload,
+        headers={
+            "api-key": BREVO_API_KEY,
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urlrequest.urlopen(request, timeout=15) as response:
+            if response.status >= 400:
+                detail = response.read().decode("utf-8", errors="replace")
+                raise RuntimeError(brevo_error_detail(response.status, detail))
+    except urlerror.HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace")
+        raise RuntimeError(brevo_error_detail(error.code, detail)) from error
+    except urlerror.URLError as error:
+        raise RuntimeError("Could not reach the email provider.") from error
+
+
+def brevo_error_detail(status: int, body: str) -> str:
+    message = ""
+    try:
+        payload = json.loads(body)
+        if isinstance(payload.get("message"), str):
+            message = payload["message"]
+        elif isinstance(payload.get("error"), str):
+            message = payload["error"]
+    except json.JSONDecodeError:
+        message = body.strip()
+
+    lowered = message.lower()
+    if "sender" in lowered and ("not valid" in lowered or "verify" in lowered or "authenticated" in lowered):
+        return (
+            "Your Brevo sender email is not verified yet. In Brevo, go to Senders & IP, "
+            "add BREVO_FROM_EMAIL, and click the verification link sent to that inbox."
         )
     if message:
         return message
@@ -314,6 +373,9 @@ def send_otp_email_via_smtp(email: str, username: str, otp: str) -> None:
 def send_otp_email(email: str, username: str, otp: str) -> None:
     if not email_is_configured():
         raise RuntimeError("Email OTP is not configured.")
+    if brevo_is_configured():
+        send_otp_email_via_brevo(email, username, otp)
+        return
     if RESEND_API_KEY:
         send_otp_email_via_resend(email, username, otp)
         return
