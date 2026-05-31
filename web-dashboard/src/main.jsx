@@ -15,7 +15,6 @@ import {
   Gamepad2,
   GitBranch,
   KeyRound,
-  Lock,
   LogOut,
   MessageCircle,
   MemoryStick,
@@ -38,18 +37,22 @@ function authHeaders(token) {
 const DISCORD_ERROR_MESSAGES = {
   discord_auth_failed: "Discord login failed. Please try again.",
   invalid_state: "Discord login expired. Please try again.",
-  missing_account_link: "Sign in again before verifying Discord access.",
-  missing_access_role: "Your Discord account does not have the Access role.",
   missing_code: "Discord did not return a login code. Please try again.",
 };
 
-function Login({ onLogin, loginError }) {
-  const [mode, setMode] = useState("login");
-  const [registerStep, setRegisterStep] = useState("details");
-  const [email, setEmail] = useState("");
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-  const [otp, setOtp] = useState("");
+async function startDiscordLogin() {
+  const returnTo = `${window.location.origin}${window.location.pathname}`;
+  const response = await fetch(
+    `${API_URL}/auth/discord/start?return_to=${encodeURIComponent(returnTo)}`,
+  );
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.url) {
+    throw new Error(data.detail || "Could not start Discord login.");
+  }
+  window.location.assign(data.url);
+}
+
+function Login({ loginError }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(loginError || "");
 
@@ -57,102 +60,16 @@ function Login({ onLogin, loginError }) {
     setError(loginError || "");
   }, [loginError]);
 
-  function resetRegisterFlow() {
-    setRegisterStep("details");
-    setOtp("");
-    setError("");
-  }
-
-  function switchMode(nextMode) {
-    setMode(nextMode);
-    resetRegisterFlow();
-  }
-
-  async function startRegistration(event) {
-    event.preventDefault();
+  async function handleDiscordLogin() {
     setError("");
     setBusy(true);
     try {
-      const response = await fetch(`${API_URL}/auth/register/start`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, username, password }),
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        setError(data.detail || "Could not send verification code.");
-        return;
-      }
-      setRegisterStep("verify");
-    } catch {
-      setError(`Could not reach backend at ${API_URL}`);
-    } finally {
+      await startDiscordLogin();
+    } catch (caught) {
+      setError(caught.message || `Could not reach backend at ${API_URL}`);
       setBusy(false);
     }
   }
-
-  async function verifyRegistration(event) {
-    event.preventDefault();
-    setError("");
-    setBusy(true);
-    try {
-      const returnTo = `${window.location.origin}${window.location.pathname}`;
-      const response = await fetch(
-        `${API_URL}/auth/register/verify?return_to=${encodeURIComponent(returnTo)}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email, otp }),
-        },
-      );
-      const data = await response.json().catch(() => ({}));
-      if (data.requires_discord && data.discord_url) {
-        window.location.assign(data.discord_url);
-        return;
-      }
-      if (!response.ok) {
-        setError(data.detail || "Verification failed.");
-        return;
-      }
-      if (data.token) {
-        onLogin(data.token);
-      }
-    } catch {
-      setError(`Could not reach backend at ${API_URL}`);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function submitLogin(event) {
-    event.preventDefault();
-    setError("");
-    setBusy(true);
-    try {
-      const returnTo = `${window.location.origin}${window.location.pathname}`;
-      const response = await fetch(`${API_URL}/auth/login?return_to=${encodeURIComponent(returnTo)}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
-      });
-      const data = await response.json().catch(() => ({}));
-      if (data.requires_discord && data.discord_url) {
-        window.location.assign(data.discord_url);
-        return;
-      }
-      if (!response.ok) {
-        setError(data.detail || "Login failed.");
-        return;
-      }
-      onLogin(data.token);
-    } catch {
-      setError(`Could not reach backend at ${API_URL}`);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const showingRegisterVerify = mode === "register" && registerStep === "verify";
 
   return (
     <main className="login-shell">
@@ -163,131 +80,23 @@ function Login({ onLogin, loginError }) {
         <div className="brand-row">
           <div>
             <h1>DangerousCity</h1>
-            <p>Reviewer dashboard</p>
+            <p>Sign in with Discord to open the reviewer dashboard.</p>
           </div>
         </div>
-        <form
-          onSubmit={mode === "register" ? (showingRegisterVerify ? verifyRegistration : startRegistration) : submitLogin}
-          className="form-stack"
-        >
-          <div className="auth-mode-tabs">
-            <button
-              className={mode === "login" ? "selected" : ""}
-              type="button"
-              onClick={() => switchMode("login")}
-            >
-              Sign in
-            </button>
-            <button
-              className={mode === "register" ? "selected" : ""}
-              type="button"
-              onClick={() => switchMode("register")}
-            >
-              Create account
-            </button>
-          </div>
-          {mode === "register" && !showingRegisterVerify ? (
-            <>
-              <label>
-                Email
-                <input
-                  type="email"
-                  autoComplete="email"
-                  value={email}
-                  onChange={(event) => setEmail(event.target.value)}
-                  required
-                />
-              </label>
-              <label>
-                Username
-                <input
-                  type="text"
-                  autoComplete="username"
-                  value={username}
-                  onChange={(event) => setUsername(event.target.value)}
-                  minLength={3}
-                  maxLength={24}
-                  pattern="[A-Za-z0-9_\\-]+"
-                  title="3-24 characters: letters, numbers, hyphens, or underscores"
-                  required
-                />
-              </label>
-              <label>
-                Password
-                <input
-                  type="password"
-                  autoComplete="new-password"
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                  minLength={6}
-                  required
-                />
-              </label>
-            </>
-          ) : null}
-          {mode === "register" && showingRegisterVerify ? (
-            <>
-              <p className="otp-hint">
-                Enter the 6-digit code sent to <strong>{email}</strong>.
-              </p>
-              <label>
-                Verification code
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  autoComplete="one-time-code"
-                  value={otp}
-                  onChange={(event) => setOtp(event.target.value.replace(/\D/g, "").slice(0, 6))}
-                  minLength={6}
-                  maxLength={6}
-                  pattern="[0-9]{6}"
-                  required
-                />
-              </label>
-              <button className="text-button" type="button" onClick={resetRegisterFlow} disabled={busy}>
-                Change email or username
-              </button>
-            </>
-          ) : null}
-          {mode === "login" ? (
-            <>
-              <label>
-                Email
-                <input
-                  type="email"
-                  autoComplete="email"
-                  value={email}
-                  onChange={(event) => setEmail(event.target.value)}
-                  required
-                />
-              </label>
-              <label>
-                Password
-                <input
-                  type="password"
-                  autoComplete="current-password"
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                  required
-                />
-              </label>
-            </>
-          ) : null}
+        <div className="form-stack login-discord-stack">
           {error && <p className="error">{error}</p>}
+          <p className="login-help">
+            You need the <strong>Access</strong> role in our Discord server to use PIN sessions and scan results.
+            If you do not have it yet, you can still sign in and see what to do next.
+          </p>
           <a className="discord-invite" href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer">
             Need access? Join the Discord server.
           </a>
-          <button className="primary" type="submit" disabled={busy}>
-            {mode === "register" ? <MessageCircle size={18} /> : <Lock size={18} />}
-            {busy
-              ? "Please wait..."
-              : mode === "register"
-                ? showingRegisterVerify
-                  ? "Verify and continue to Discord"
-                  : "Send verification code"
-                : "Sign in"}
+          <button className="primary discord-login-button" type="button" onClick={handleDiscordLogin} disabled={busy}>
+            <MessageCircle size={18} />
+            {busy ? "Connecting to Discord..." : "Continue with Discord"}
           </button>
-        </form>
+        </div>
       </section>
     </main>
   );
@@ -1507,6 +1316,9 @@ function downloadReport(detail) {
 }
 
 function Dashboard({ token, onLogout }) {
+  const [profile, setProfile] = useState(null);
+  const [profileLoading, setProfileLoading] = useState(true);
+  const [verifyBusy, setVerifyBusy] = useState(false);
   const [sessions, setSessions] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [detail, setDetail] = useState(null);
@@ -1514,12 +1326,59 @@ function Dashboard({ token, onLogout }) {
   const [error, setError] = useState("");
   const detailFetchSeq = useRef(0);
 
+  const hasAccess = Boolean(profile?.has_access);
+
+  const loadProfile = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_URL}/auth/me`, { headers: authHeaders(token) });
+      if (response.status === 401) {
+        localStorage.removeItem("checkerToken");
+        window.location.reload();
+        return;
+      }
+      if (!response.ok) {
+        throw new Error(`Profile load failed: ${response.status}`);
+      }
+      const data = await response.json();
+      setProfile(data);
+      setError("");
+    } catch (caught) {
+      setError(`Could not load your profile from ${API_URL}. ${caught.message}`);
+    } finally {
+      setProfileLoading(false);
+    }
+  }, [token]);
+
+  async function verifyAccess() {
+    setVerifyBusy(true);
+    setError("");
+    try {
+      await startDiscordLogin();
+    } catch (caught) {
+      setError(caught.message);
+      setVerifyBusy(false);
+    }
+  }
+
   const loadSessions = useCallback(async () => {
+    if (!hasAccess) {
+      setSessions([]);
+      setSelectedId(null);
+      setDetail(null);
+      return;
+    }
     try {
       const response = await fetch(`${API_URL}/sessions`, { headers: authHeaders(token) });
       if (response.status === 401) {
         localStorage.removeItem("checkerToken");
         window.location.reload();
+        return;
+      }
+      if (response.status === 403) {
+        setSessions([]);
+        setSelectedId(null);
+        setDetail(null);
+        await loadProfile();
         return;
       }
       if (!response.ok) {
@@ -1537,9 +1396,12 @@ function Dashboard({ token, onLogout }) {
     } catch (caught) {
       setError(`Could not load sessions from ${API_URL}. ${caught.message}`);
     }
-  }, [token]);
+  }, [token, hasAccess, loadProfile]);
 
   async function deleteSession(session) {
+    if (!hasAccess) {
+      return;
+    }
     if (
       !window.confirm(
         `Delete session PIN ${session.pin}? The scan record will be removed from the dashboard.`,
@@ -1568,6 +1430,9 @@ function Dashboard({ token, onLogout }) {
   }
 
   async function createPin() {
+    if (!hasAccess) {
+      return;
+    }
     try {
       const response = await fetch(`${API_URL}/sessions`, { method: "POST", headers: authHeaders(token) });
       if (!response.ok) {
@@ -1584,13 +1449,23 @@ function Dashboard({ token, onLogout }) {
   }
 
   useEffect(() => {
-    loadSessions();
-    const timer = setInterval(loadSessions, 5000);
-    return () => clearInterval(timer);
-  }, [loadSessions]);
+    void loadProfile();
+  }, [loadProfile]);
 
   useEffect(() => {
-    if (!selectedId) {
+    if (profileLoading) {
+      return;
+    }
+    void loadSessions();
+    if (!hasAccess) {
+      return;
+    }
+    const timer = setInterval(loadSessions, 5000);
+    return () => clearInterval(timer);
+  }, [loadSessions, profileLoading, hasAccess]);
+
+  useEffect(() => {
+    if (!hasAccess || !selectedId) {
       setDetail(null);
       return;
     }
@@ -1641,9 +1516,10 @@ function Dashboard({ token, onLogout }) {
       });
 
     return () => controller.abort();
-  }, [selectedId, sessions, token, loadSessions]);
+  }, [selectedId, sessions, token, loadSessions, hasAccess]);
 
   const selectedPin = useMemo(() => sessions.find((session) => session.id === selectedId)?.pin, [sessions, selectedId]);
+  const greetingName = profile?.username || "there";
 
   return (
     <main className="dashboard">
@@ -1652,29 +1528,69 @@ function Dashboard({ token, onLogout }) {
           <img src={BRAND_LOGO} alt="" />
           <div>
             <p className="eyebrow">DangerousCity Reborn V2</p>
-            <h1>Reviewer Dashboard</h1>
+            <h1>Hi, {greetingName}</h1>
+            <p className="topbar-subtitle">
+              {hasAccess
+                ? "Welcome back. Generate a PIN, then review completed scans here."
+                : "You are signed in, but dashboard tools stay locked until you have Access."}
+            </p>
           </div>
         </div>
-        <div className="actions">
-          {selectedPin && (
+        <div className="topbar-user">
+          {profile?.avatar_url ? (
+            <img src={profile.avatar_url} alt="" className="topbar-avatar" />
+          ) : null}
+          <div className="actions">
+          {hasAccess && selectedPin && (
             <button onClick={() => navigator.clipboard?.writeText(selectedPin)}>
               <Clipboard size={18} /> Copy PIN
             </button>
           )}
-          <button onClick={loadSessions}>
-            <RefreshCw size={18} /> Refresh
-          </button>
-          <button className="primary" onClick={createPin}>
-            <KeyRound size={18} /> Generate New PIN
-          </button>
+          {hasAccess ? (
+            <>
+              <button onClick={loadSessions}>
+                <RefreshCw size={18} /> Refresh
+              </button>
+              <button className="primary" onClick={createPin}>
+                <KeyRound size={18} /> Generate New PIN
+              </button>
+            </>
+          ) : (
+            <button className="primary" onClick={verifyAccess} disabled={verifyBusy}>
+              <Shield size={18} /> {verifyBusy ? "Checking Discord..." : "Verify Access"}
+            </button>
+          )}
           <button type="button" onClick={onLogout}>
             <LogOut size={18} /> Log out
           </button>
+          </div>
         </div>
       </header>
+      {!hasAccess ? (
+        <section className="access-gate">
+          <div className="access-gate-card">
+            <Shield size={28} />
+            <div>
+              <h2>Access not verified yet</h2>
+              <p>
+                Join our Discord server and get the <strong>Access</strong> role. After that, click{" "}
+                <strong>Verify Access</strong> to unlock PIN generation and scan results.
+              </p>
+            </div>
+            <div className="access-gate-actions">
+              <a className="discord-invite inline-invite" href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer">
+                Open Discord server
+              </a>
+              <button className="primary" type="button" onClick={verifyAccess} disabled={verifyBusy}>
+                {verifyBusy ? "Checking Discord..." : "Verify Access"}
+              </button>
+            </div>
+          </div>
+        </section>
+      ) : null}
       {message && <div className="notice">{message}</div>}
       {error && <div className="error-banner">{error}</div>}
-      <div className="layout">
+      <div className={`layout ${hasAccess ? "" : "layout-locked"}`}>
         <SessionList
           sessions={sessions}
           selectedId={selectedId}
@@ -1709,16 +1625,11 @@ function App() {
     setLoginError(DISCORD_ERROR_MESSAGES[discordError] || "Discord login failed. Please try again.");
   }, []);
 
-  function login(nextToken) {
-    localStorage.setItem("checkerToken", nextToken);
-    setToken(nextToken);
-    setLoginError("");
-  }
   function logout() {
     localStorage.removeItem("checkerToken");
     setToken("");
   }
-  return token ? <Dashboard token={token} onLogout={logout} /> : <Login onLogin={login} loginError={loginError} />;
+  return token ? <Dashboard token={token} onLogout={logout} /> : <Login loginError={loginError} />;
 }
 
 try {

@@ -620,6 +620,55 @@ def validate_token(auth_header: str | None) -> str | None:
     return email
 
 
+def is_checker_subject(subject: str) -> bool:
+    return hmac.compare_digest(subject, CHECKER_EMAIL)
+
+
+def discord_id_from_subject(subject: str) -> str | None:
+    prefix = "discord:"
+    if subject.startswith(prefix):
+        return subject[len(prefix) :]
+    return None
+
+
+def get_discord_profile(discord_id: str) -> dict | None:
+    with connect() as conn:
+        row = db_execute(conn, "SELECT * FROM discord_users WHERE discord_id = ?", (discord_id,)).fetchone()
+    if row is None:
+        return None
+    roles = json.loads(row["roles_json"] or "[]")
+    avatar = row["avatar"]
+    avatar_url = None
+    if avatar:
+        avatar_url = f"https://cdn.discordapp.com/avatars/{discord_id}/{avatar}.png?size=128"
+    return {
+        "discord_id": discord_id,
+        "username": row["username"],
+        "avatar_url": avatar_url,
+        "has_access": DISCORD_ACCESS_ROLE_ID in roles,
+    }
+
+
+def subject_has_dashboard_access(subject: str) -> bool:
+    if is_checker_subject(subject):
+        return True
+    discord_id = discord_id_from_subject(subject)
+    if not discord_id:
+        return False
+    profile = get_discord_profile(discord_id)
+    return bool(profile and profile["has_access"])
+
+
+def fetch_discord_member(access_token: str) -> list[str]:
+    try:
+        member = discord_json_request(f"/users/@me/guilds/{DISCORD_GUILD_ID}/member", access_token)
+    except urlerror.HTTPError as error:
+        if error.code == 404:
+            return []
+        raise
+    return [str(role) for role in member.get("roles", [])]
+
+
 def row_to_summary(row: sqlite3.Row) -> dict:
     return {
         "id": row["id"],
@@ -694,26 +743,24 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Location", location)
         self.end_headers()
 
-    def require_checker(self) -> bool:
-        if validate_token(self.headers.get("Authorization")):
-            return True
+    def require_auth_subject(self) -> str | None:
+        subject = validate_token(self.headers.get("Authorization"))
+        if subject:
+            return subject
         self.send_json(HTTPStatus.UNAUTHORIZED, {"detail": "Missing or invalid bearer token"})
-        return False
+        return None
 
-    def send_discord_registration_response(self, user_id: int, return_to: str) -> None:
-        if not discord_is_configured():
+    def require_checker(self) -> bool:
+        subject = self.require_auth_subject()
+        if not subject:
+            return False
+        if not subject_has_dashboard_access(subject):
             self.send_json(
-                HTTPStatus.SERVICE_UNAVAILABLE,
-                {"detail": "Account created, but Discord verification is not configured yet."},
+                HTTPStatus.FORBIDDEN,
+                {"detail": "access_required", "has_access": False},
             )
-            return
-        self.send_json(
-            HTTPStatus.CREATED,
-            {
-                "requires_discord": True,
-                "discord_url": create_discord_auth_url(return_to, make_discord_link_ticket(user_id)),
-            },
-        )
+            return False
+        return True
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -722,6 +769,33 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/health":
             self.send_json(HTTPStatus.OK, {"status": "ok"})
+            return
+
+        if path == "/auth/me":
+            subject = validate_token(self.headers.get("Authorization"))
+            if not subject:
+                self.send_json(HTTPStatus.UNAUTHORIZED, {"detail": "Missing or invalid bearer token"})
+                return
+            if is_checker_subject(subject):
+                self.send_json(
+                    HTTPStatus.OK,
+                    {
+                        "username": "Reviewer",
+                        "has_access": True,
+                        "is_checker": True,
+                        "avatar_url": None,
+                    },
+                )
+                return
+            discord_id = discord_id_from_subject(subject)
+            if not discord_id:
+                self.send_json(HTTPStatus.UNAUTHORIZED, {"detail": "Missing or invalid bearer token"})
+                return
+            profile = get_discord_profile(discord_id)
+            if profile is None:
+                self.send_json(HTTPStatus.UNAUTHORIZED, {"detail": "Missing or invalid bearer token"})
+                return
+            self.send_json(HTTPStatus.OK, {**profile, "is_checker": False})
             return
 
         if path == "/auth/discord/start":
@@ -752,20 +826,12 @@ class Handler(BaseHTTPRequestHandler):
                 token_data = exchange_discord_code(code)
                 access_token = token_data["access_token"]
                 user = discord_json_request("/users/@me", access_token)
-                member = discord_json_request(f"/users/@me/guilds/{DISCORD_GUILD_ID}/member", access_token)
-                roles = [str(role) for role in member.get("roles", [])]
-            except (KeyError, urlerror.URLError, TimeoutError, json.JSONDecodeError):
+                roles = fetch_discord_member(access_token)
+            except (KeyError, urlerror.URLError, urlerror.HTTPError, TimeoutError, json.JSONDecodeError):
                 self.redirect(add_query_params(return_to, {"discord_error": "discord_auth_failed"}))
                 return
-            if DISCORD_ACCESS_ROLE_ID not in roles:
-                self.redirect(add_query_params(return_to, {"discord_error": "missing_access_role"}))
-                return
             save_discord_user(user, roles)
-            user_id = verify_discord_link_ticket(state_payload.get("link_ticket", ""))
-            if not user_id or not save_user_discord_access(user_id, user, roles):
-                self.redirect(add_query_params(return_to, {"discord_error": "missing_account_link"}))
-                return
-            token = make_token(f"user-{user_id}")
+            token = make_token(f"discord:{user['id']}")
             self.redirect(add_query_params(return_to, {"token": token}))
             return
 
@@ -807,154 +873,6 @@ class Handler(BaseHTTPRequestHandler):
             payload = self.read_json()
         except json.JSONDecodeError:
             self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Invalid JSON"})
-            return
-
-        if path == "/auth/register/start":
-            email = normalize_email(str(payload.get("email", "")))
-            username = normalize_username(str(payload.get("username", "")))
-            password = str(payload.get("password", ""))
-            if "@" not in email or len(email) > 254:
-                self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Enter a valid email address."})
-                return
-            if not valid_username(username):
-                self.send_json(
-                    HTTPStatus.BAD_REQUEST,
-                    {"detail": "Username must be 3-24 characters using letters, numbers, hyphens, or underscores."},
-                )
-                return
-            if len(password) < 6:
-                self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Password must be at least 6 characters."})
-                return
-            if not email_is_configured():
-                self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"detail": "Email OTP is not configured yet."})
-                return
-            salt, password_hash = hash_password(password)
-            otp = f"{secrets.randbelow(1_000_000):06d}"
-            now = utc_now()
-            expires_at = now + timedelta(minutes=OTP_TTL_MINUTES)
-            try:
-                with connect() as conn:
-                    existing = db_execute(
-                        conn,
-                        "SELECT id FROM users WHERE email = ? OR username = ?",
-                        (email, username),
-                    ).fetchone()
-                    if existing is not None:
-                        self.send_json(HTTPStatus.CONFLICT, {"detail": "Email or username is already registered."})
-                        return
-                    pending_username = db_execute(
-                        conn,
-                        "SELECT email FROM pending_registration_otps WHERE username = ? AND expires_at > ? AND email <> ?",
-                        (username, to_iso(now), email),
-                    ).fetchone()
-                    if pending_username is not None:
-                        self.send_json(HTTPStatus.CONFLICT, {"detail": "That username is already being registered."})
-                        return
-                    db_execute(
-                        conn,
-                        """
-                        INSERT INTO pending_registration_otps
-                            (email, username, password_salt, password_hash, otp_hash, created_at, expires_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(email) DO UPDATE SET
-                            username = excluded.username,
-                            password_salt = excluded.password_salt,
-                            password_hash = excluded.password_hash,
-                            otp_hash = excluded.otp_hash,
-                            created_at = excluded.created_at,
-                            expires_at = excluded.expires_at
-                        """,
-                        (email, username, salt, password_hash, hash_otp(email, otp), to_iso(now), to_iso(expires_at)),
-                    )
-                send_otp_email(email, username, otp)
-            except RuntimeError as error:
-                self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"detail": str(error)})
-                return
-            except Exception as error:
-                print(f"Registration email error: {error!r}", flush=True)
-                self.send_json(
-                    HTTPStatus.SERVICE_UNAVAILABLE,
-                    {"detail": "Could not send verification email. Try again later."},
-                )
-                return
-            self.send_json(HTTPStatus.OK, {"status": "otp_sent"})
-            return
-
-        if path == "/auth/register/verify":
-            email = normalize_email(str(payload.get("email", "")))
-            otp = str(payload.get("otp", ""))
-            return_to = query.get("return_to", [FRONTEND_URL])[0]
-            if not allowed_return_to(return_to):
-                self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Invalid return URL"})
-                return
-            with connect() as conn:
-                pending = db_execute(conn, "SELECT * FROM pending_registration_otps WHERE email = ?", (email,)).fetchone()
-                if pending is None:
-                    self.send_json(HTTPStatus.NOT_FOUND, {"detail": "No pending verification code for that email."})
-                    return
-                expires_at = datetime.fromisoformat(pending["expires_at"].replace("Z", "+00:00"))
-                if expires_at < utc_now():
-                    db_execute(conn, "DELETE FROM pending_registration_otps WHERE email = ?", (email,))
-                    self.send_json(HTTPStatus.GONE, {"detail": "Verification code expired. Request a new code."})
-                    return
-                if not hmac.compare_digest(pending["otp_hash"], hash_otp(email, otp)):
-                    self.send_json(HTTPStatus.UNAUTHORIZED, {"detail": "Invalid verification code."})
-                    return
-                try:
-                    db_execute(
-                        conn,
-                        """
-                        INSERT INTO users (email, username, password_salt, password_hash, created_at)
-                        VALUES (?, ?, ?, ?, ?)
-                        """,
-                        (
-                            pending["email"],
-                            pending["username"],
-                            pending["password_salt"],
-                            pending["password_hash"],
-                            to_iso(utc_now()),
-                        ),
-                    )
-                except Exception as error:
-                    if not is_unique_violation(error):
-                        raise
-                    self.send_json(HTTPStatus.CONFLICT, {"detail": "Email or username is already registered."})
-                    return
-                user_id = db_execute(conn, "SELECT id FROM users WHERE email = ?", (email,)).fetchone()["id"]
-                db_execute(conn, "DELETE FROM pending_registration_otps WHERE email = ?", (email,))
-            self.send_discord_registration_response(user_id, return_to)
-            return
-
-        if path == "/auth/login":
-            email = normalize_email(str(payload.get("email", "")))
-            password = str(payload.get("password", ""))
-            return_to = query.get("return_to", [FRONTEND_URL])[0]
-            valid_email = hmac.compare_digest(email, CHECKER_EMAIL)
-            valid_password = hmac.compare_digest(password, CHECKER_PASSWORD)
-            if valid_email and valid_password:
-                self.send_json(HTTPStatus.OK, {"token": make_token(email)})
-                return
-            if not allowed_return_to(return_to):
-                self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Invalid return URL"})
-                return
-            with connect() as conn:
-                row = db_execute(conn, "SELECT * FROM users WHERE email = ?", (email,)).fetchone()
-            if row is None or not password_matches(password, row["password_salt"], row["password_hash"]):
-                self.send_json(HTTPStatus.UNAUTHORIZED, {"detail": "Invalid credentials"})
-                return
-            if not discord_is_configured():
-                self.send_json(
-                    HTTPStatus.SERVICE_UNAVAILABLE,
-                    {"detail": "Discord verification is not configured yet."},
-                )
-                return
-            self.send_json(
-                HTTPStatus.OK,
-                {
-                    "requires_discord": True,
-                    "discord_url": create_discord_auth_url(return_to, make_discord_link_ticket(row["id"])),
-                },
-            )
             return
 
         if path == "/sessions":
