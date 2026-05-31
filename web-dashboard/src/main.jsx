@@ -604,9 +604,6 @@ const EXECUTOR_KIND_LABELS = {
   persistence: "Startup / persistence",
 };
 
-  persistence: "Startup / persistence",
-};
-
 const ACTIVITY_CATEGORY_LABELS = {
   deletions: "Deletions",
   execution: "Execution",
