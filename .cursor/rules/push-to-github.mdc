@@ -1,0 +1,21 @@
+---
+description: Commit and push code changes to GitHub after completing work
+alwaysApply: true
+---
+
+# Push Changes to GitHub
+
+After making code changes in this project, commit and push them to GitHub unless the user explicitly says not to.
+
+## Workflow
+
+1. Run `git status` and `git diff` to review changes.
+2. Do not commit secrets (`.env`, credentials, API keys, passwords).
+3. Stage relevant files and create a concise commit message focused on why.
+4. Push to the remote with `git push` (use `-u origin HEAD` if the branch has no upstream).
+
+## When to skip
+
+- User explicitly asks not to commit or push.
+- There are no changes to commit.
+- Changes are incomplete and the user asked to stop mid-task without pushing.

@@ -27,6 +27,8 @@ Default checker login:
 
 Set `CHECKER_EMAIL`, `CHECKER_PASSWORD`, and `API_TOKEN_SECRET` in the environment for non-demo use.
 
+For production, set `DATABASE_URL` to a PostgreSQL connection string. If `DATABASE_URL` is not set, the backend falls back to the local SQLite file at `backend/diagnostics.db`.
+
 ### Discord role-gated dashboard login
 
 The dashboard supports normal email/password accounts, but the backend only issues a usable dashboard token after the user verifies through Discord and belongs to your configured Discord server with the configured `Access` role. Discord is checked each time a normal user signs in.
@@ -40,6 +42,7 @@ https://test-v7a8.onrender.com/auth/discord/callback
 Set these backend environment variables:
 
 ```text
+DATABASE_URL=your Render PostgreSQL internal database URL
 DISCORD_CLIENT_ID=1510615702103392327
 DISCORD_CLIENT_SECRET=your Discord application client secret
 DISCORD_REDIRECT_URI=https://test-v7a8.onrender.com/auth/discord/callback
@@ -104,14 +107,13 @@ The desktop client:
 
 ## Implementation Note
 
-The backend is currently a dependency-free Python HTTP server to avoid native package build failures on newer Python versions. It exposes the same local API used by the dashboard and desktop client.
+The backend uses PostgreSQL when `DATABASE_URL` is configured and SQLite as a local development fallback. It exposes the same API used by the dashboard and desktop client.
 
 ## Production Hardening Checklist
 
 - Put the API behind HTTPS.
 - Replace demo auth with a real identity provider or hardened password auth.
 - Store password hashes with a managed user table.
-- Use PostgreSQL or MongoDB instead of local SQLite.
 - Add rate limiting for login, PIN creation, and report upload.
 - Encrypt reports at rest.
 - Add an audit log for all checker access.

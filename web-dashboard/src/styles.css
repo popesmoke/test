@@ -167,6 +167,27 @@ input {
   color: #ff8d8d;
 }
 
+.otp-hint {
+  margin: 0;
+  color: #a8a3a6;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.text-button {
+  justify-self: start;
+  min-height: auto;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: #9eb7c0;
+  font-size: 13px;
+}
+
+.text-button:hover:not(:disabled) {
+  color: #ffffff;
+}
+
 .dashboard {
   min-height: 100vh;
   padding: 24px;

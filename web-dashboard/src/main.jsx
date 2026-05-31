@@ -45,21 +45,92 @@ const DISCORD_ERROR_MESSAGES = {
 
 function Login({ onLogin, loginError }) {
   const [mode, setMode] = useState("login");
+  const [registerStep, setRegisterStep] = useState("details");
   const [email, setEmail] = useState("");
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [otp, setOtp] = useState("");
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState(loginError || "");
 
   useEffect(() => {
     setError(loginError || "");
   }, [loginError]);
 
-  async function submit(event) {
+  function resetRegisterFlow() {
+    setRegisterStep("details");
+    setOtp("");
+    setError("");
+  }
+
+  function switchMode(nextMode) {
+    setMode(nextMode);
+    resetRegisterFlow();
+  }
+
+  async function startRegistration(event) {
     event.preventDefault();
     setError("");
+    setBusy(true);
+    try {
+      const response = await fetch(`${API_URL}/auth/register/start`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, username, password }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setError(data.detail || "Could not send verification code.");
+        return;
+      }
+      setRegisterStep("verify");
+    } catch {
+      setError(`Could not reach backend at ${API_URL}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function verifyRegistration(event) {
+    event.preventDefault();
+    setError("");
+    setBusy(true);
     try {
       const returnTo = `${window.location.origin}${window.location.pathname}`;
-      const endpoint = mode === "register" ? "/auth/register" : "/auth/login";
-      const response = await fetch(`${API_URL}${endpoint}?return_to=${encodeURIComponent(returnTo)}`, {
+      const response = await fetch(
+        `${API_URL}/auth/register/verify?return_to=${encodeURIComponent(returnTo)}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, otp }),
+        },
+      );
+      const data = await response.json().catch(() => ({}));
+      if (data.requires_discord && data.discord_url) {
+        window.location.assign(data.discord_url);
+        return;
+      }
+      if (!response.ok) {
+        setError(data.detail || "Verification failed.");
+        return;
+      }
+      if (data.token) {
+        onLogin(data.token);
+      }
+    } catch {
+      setError(`Could not reach backend at ${API_URL}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submitLogin(event) {
+    event.preventDefault();
+    setError("");
+    setBusy(true);
+    try {
+      const returnTo = `${window.location.origin}${window.location.pathname}`;
+      const response = await fetch(`${API_URL}/auth/login?return_to=${encodeURIComponent(returnTo)}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
@@ -70,14 +141,18 @@ function Login({ onLogin, loginError }) {
         return;
       }
       if (!response.ok) {
-        setError(data.detail || (mode === "register" ? "Account creation failed." : "Login failed."));
+        setError(data.detail || "Login failed.");
         return;
       }
       onLogin(data.token);
-    } catch (error) {
+    } catch {
       setError(`Could not reach backend at ${API_URL}`);
+    } finally {
+      setBusy(false);
     }
   }
+
+  const showingRegisterVerify = mode === "register" && registerStep === "verify";
 
   return (
     <main className="login-shell">
@@ -91,44 +166,126 @@ function Login({ onLogin, loginError }) {
             <p>Reviewer dashboard</p>
           </div>
         </div>
-        <form onSubmit={submit} className="form-stack">
+        <form
+          onSubmit={mode === "register" ? (showingRegisterVerify ? verifyRegistration : startRegistration) : submitLogin}
+          className="form-stack"
+        >
           <div className="auth-mode-tabs">
             <button
               className={mode === "login" ? "selected" : ""}
               type="button"
-              onClick={() => {
-                setMode("login");
-                setError("");
-              }}
+              onClick={() => switchMode("login")}
             >
               Sign in
             </button>
             <button
               className={mode === "register" ? "selected" : ""}
               type="button"
-              onClick={() => {
-                setMode("register");
-                setError("");
-              }}
+              onClick={() => switchMode("register")}
             >
               Create account
             </button>
           </div>
-          <label>
-            Email
-            <input type="email" value={email} onChange={(event) => setEmail(event.target.value)} />
-          </label>
-          <label>
-            Password
-            <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} />
-          </label>
+          {mode === "register" && !showingRegisterVerify ? (
+            <>
+              <label>
+                Email
+                <input
+                  type="email"
+                  autoComplete="email"
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                  required
+                />
+              </label>
+              <label>
+                Username
+                <input
+                  type="text"
+                  autoComplete="username"
+                  value={username}
+                  onChange={(event) => setUsername(event.target.value)}
+                  minLength={3}
+                  maxLength={24}
+                  pattern="[A-Za-z0-9_-]+"
+                  title="3-24 characters: letters, numbers, hyphens, or underscores"
+                  required
+                />
+              </label>
+              <label>
+                Password
+                <input
+                  type="password"
+                  autoComplete="new-password"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  minLength={6}
+                  required
+                />
+              </label>
+            </>
+          ) : null}
+          {mode === "register" && showingRegisterVerify ? (
+            <>
+              <p className="otp-hint">
+                Enter the 6-digit code sent to <strong>{email}</strong>.
+              </p>
+              <label>
+                Verification code
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  value={otp}
+                  onChange={(event) => setOtp(event.target.value.replace(/\D/g, "").slice(0, 6))}
+                  minLength={6}
+                  maxLength={6}
+                  pattern="[0-9]{6}"
+                  required
+                />
+              </label>
+              <button className="text-button" type="button" onClick={resetRegisterFlow} disabled={busy}>
+                Change email or username
+              </button>
+            </>
+          ) : null}
+          {mode === "login" ? (
+            <>
+              <label>
+                Email
+                <input
+                  type="email"
+                  autoComplete="email"
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                  required
+                />
+              </label>
+              <label>
+                Password
+                <input
+                  type="password"
+                  autoComplete="current-password"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  required
+                />
+              </label>
+            </>
+          ) : null}
           {error && <p className="error">{error}</p>}
           <a className="discord-invite" href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer">
             Need access? Join the Discord server.
           </a>
-          <button className="primary" type="submit">
+          <button className="primary" type="submit" disabled={busy}>
             {mode === "register" ? <MessageCircle size={18} /> : <Lock size={18} />}
-            {mode === "register" ? "Create and verify Discord" : "Sign in"}
+            {busy
+              ? "Please wait..."
+              : mode === "register"
+                ? showingRegisterVerify
+                  ? "Verify and continue to Discord"
+                  : "Send verification code"
+                : "Sign in"}
           </button>
         </form>
       </section>

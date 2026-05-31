@@ -7,7 +7,10 @@ import os
 import secrets
 import sqlite3
 import base64
+import smtplib
+from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -16,6 +19,7 @@ from urllib import request as urlrequest
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 DB_PATH = Path(__file__).resolve().parent / "diagnostics.db"
+DATABASE_URL = os.getenv("DATABASE_URL", "")
 TOKEN_SECRET = os.getenv("API_TOKEN_SECRET", "local-dev-secret-change-me")
 CHECKER_EMAIL = os.getenv("CHECKER_EMAIL", "checker@example.com")
 CHECKER_PASSWORD = os.getenv("CHECKER_PASSWORD", "change-me")
@@ -36,6 +40,13 @@ DISCORD_GUILD_ID = os.getenv("DISCORD_GUILD_ID", "1510614253508493373")
 DISCORD_ACCESS_ROLE_ID = os.getenv("DISCORD_ACCESS_ROLE_ID", "1510614274299531334")
 DISCORD_AUTH_SCOPES = "identify guilds.members.read"
 PASSWORD_HASH_ITERATIONS = 260_000
+OTP_TTL_MINUTES = int(os.getenv("OTP_TTL_MINUTES", "10"))
+SMTP_HOST = os.getenv("SMTP_HOST", "")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USERNAME = os.getenv("SMTP_USERNAME", "")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+SMTP_FROM = os.getenv("SMTP_FROM", SMTP_USERNAME)
+SMTP_USE_TLS = os.getenv("SMTP_USE_TLS", "true").lower() != "false"
 
 
 def utc_now() -> datetime:
@@ -46,18 +57,47 @@ def to_iso(value: datetime) -> str:
     return value.isoformat().replace("+00:00", "Z")
 
 
-def connect() -> sqlite3.Connection:
+def using_postgres() -> bool:
+    return bool(DATABASE_URL)
+
+
+def connect():
+    if using_postgres():
+        import psycopg
+        from psycopg.rows import dict_row
+
+        return psycopg.connect(DATABASE_URL, row_factory=dict_row)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
 
+def db_sql(sql: str) -> str:
+    return sql.replace("?", "%s") if using_postgres() else sql
+
+
+def db_execute(conn, sql: str, params: Sequence | None = None):
+    return conn.execute(db_sql(sql), params or ())
+
+
+def is_unique_violation(error: Exception) -> bool:
+    return isinstance(error, sqlite3.IntegrityError) or error.__class__.__name__ == "UniqueViolation"
+
+
+def ensure_column(conn, table: str, column: str, definition: str) -> None:
+    try:
+        db_execute(conn, f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+    except Exception:
+        return
+
+
 def init_db() -> None:
     with connect() as conn:
+        id_column = "SERIAL PRIMARY KEY" if using_postgres() else "INTEGER PRIMARY KEY AUTOINCREMENT"
         conn.execute(
-            """
+            f"""
             CREATE TABLE IF NOT EXISTS sessions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {id_column},
                 pin TEXT NOT NULL UNIQUE,
                 status TEXT NOT NULL,
                 created_at TEXT NOT NULL,
@@ -81,10 +121,11 @@ def init_db() -> None:
             """
         )
         conn.execute(
-            """
+            f"""
             CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {id_column},
                 email TEXT NOT NULL UNIQUE,
+                username TEXT NOT NULL,
                 password_salt TEXT NOT NULL,
                 password_hash TEXT NOT NULL,
                 discord_id TEXT,
@@ -92,6 +133,21 @@ def init_db() -> None:
                 discord_roles_json TEXT NOT NULL DEFAULT '[]',
                 discord_access_verified_at TEXT,
                 created_at TEXT NOT NULL
+            )
+            """
+        )
+        ensure_column(conn, "users", "username", "TEXT NOT NULL DEFAULT ''")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS users_username_unique ON users (username) WHERE username <> ''")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS pending_registration_otps (
+                email TEXT PRIMARY KEY,
+                username TEXT NOT NULL,
+                password_salt TEXT NOT NULL,
+                password_hash TEXT NOT NULL,
+                otp_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL
             )
             """
         )
@@ -108,6 +164,14 @@ def normalize_email(email: str) -> str:
     return email.strip().lower()
 
 
+def normalize_username(username: str) -> str:
+    return username.strip()
+
+
+def valid_username(username: str) -> bool:
+    return 3 <= len(username) <= 24 and username.replace("_", "").replace("-", "").isalnum()
+
+
 def hash_password(password: str, salt_hex: str | None = None) -> tuple[str, str]:
     salt = bytes.fromhex(salt_hex) if salt_hex else secrets.token_bytes(16)
     digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, PASSWORD_HASH_ITERATIONS)
@@ -117,6 +181,41 @@ def hash_password(password: str, salt_hex: str | None = None) -> tuple[str, str]
 def password_matches(password: str, salt_hex: str, expected_hash: str) -> bool:
     _, actual_hash = hash_password(password, salt_hex)
     return hmac.compare_digest(actual_hash, expected_hash)
+
+
+def hash_otp(email: str, otp: str) -> str:
+    payload = f"{normalize_email(email)}:{otp.strip()}"
+    return hmac.new(TOKEN_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
+
+
+def smtp_is_configured() -> bool:
+    return bool(SMTP_HOST and SMTP_FROM)
+
+
+def send_otp_email(email: str, username: str, otp: str) -> None:
+    if not smtp_is_configured():
+        raise RuntimeError("Email OTP is not configured.")
+    message = EmailMessage()
+    message["Subject"] = "Your DangerousCity verification code"
+    message["From"] = SMTP_FROM
+    message["To"] = email
+    message.set_content(
+        "\n".join(
+            [
+                f"Hi {username},",
+                "",
+                f"Your DangerousCity verification code is: {otp}",
+                "",
+                f"This code expires in {OTP_TTL_MINUTES} minutes.",
+            ]
+        )
+    )
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as smtp:
+        if SMTP_USE_TLS:
+            smtp.starttls()
+        if SMTP_USERNAME or SMTP_PASSWORD:
+            smtp.login(SMTP_USERNAME, SMTP_PASSWORD)
+        smtp.send_message(message)
 
 
 def discord_is_configured() -> bool:
@@ -236,7 +335,8 @@ def exchange_discord_code(code: str) -> dict:
 
 def save_discord_user(user: dict, roles: list[str]) -> None:
     with connect() as conn:
-        conn.execute(
+        db_execute(
+            conn,
             """
             INSERT INTO discord_users (discord_id, username, avatar, roles_json, last_login_at)
             VALUES (?, ?, ?, ?, ?)
@@ -258,7 +358,8 @@ def save_discord_user(user: dict, roles: list[str]) -> None:
 
 def save_user_discord_access(user_id: int, user: dict, roles: list[str]) -> bool:
     with connect() as conn:
-        cursor = conn.execute(
+        cursor = db_execute(
+            conn,
             """
             UPDATE users
             SET discord_id = ?,
@@ -351,7 +452,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Invalid session id"})
             return
         with connect() as conn:
-            cursor = conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+            cursor = db_execute(conn, "DELETE FROM sessions WHERE id = ?", (session_id,))
             deleted = cursor.rowcount
         if deleted == 0:
             self.send_json(HTTPStatus.NOT_FOUND, {"detail": "Session not found"})
@@ -441,7 +542,7 @@ class Handler(BaseHTTPRequestHandler):
             if not self.require_checker():
                 return
             with connect() as conn:
-                rows = conn.execute("SELECT * FROM sessions ORDER BY id DESC").fetchall()
+                rows = db_execute(conn, "SELECT * FROM sessions ORDER BY id DESC").fetchall()
             self.send_json(HTTPStatus.OK, [row_to_summary(row) for row in rows])
             return
 
@@ -454,7 +555,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Invalid session id"})
                 return
             with connect() as conn:
-                row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+                row = db_execute(conn, "SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
             if row is None:
                 self.send_json(HTTPStatus.NOT_FOUND, {"detail": "Session not found"})
                 return
@@ -477,37 +578,118 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Invalid JSON"})
             return
 
-        if path == "/auth/register":
+        if path == "/auth/register/start":
             email = normalize_email(str(payload.get("email", "")))
+            username = normalize_username(str(payload.get("username", "")))
             password = str(payload.get("password", ""))
-            return_to = query.get("return_to", [FRONTEND_URL])[0]
             if "@" not in email or len(email) > 254:
                 self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Enter a valid email address."})
+                return
+            if not valid_username(username):
+                self.send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"detail": "Username must be 3-24 characters using letters, numbers, hyphens, or underscores."},
+                )
                 return
             if len(password) < 6:
                 self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Password must be at least 6 characters."})
                 return
+            if not smtp_is_configured():
+                self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"detail": "Email OTP is not configured yet."})
+                return
+            salt, password_hash = hash_password(password)
+            otp = f"{secrets.randbelow(1_000_000):06d}"
+            now = utc_now()
+            expires_at = now + timedelta(minutes=OTP_TTL_MINUTES)
+            try:
+                with connect() as conn:
+                    existing = db_execute(
+                        conn,
+                        "SELECT id FROM users WHERE email = ? OR username = ?",
+                        (email, username),
+                    ).fetchone()
+                    if existing is not None:
+                        self.send_json(HTTPStatus.CONFLICT, {"detail": "Email or username is already registered."})
+                        return
+                    pending_username = db_execute(
+                        conn,
+                        "SELECT email FROM pending_registration_otps WHERE username = ? AND expires_at > ? AND email <> ?",
+                        (username, to_iso(now), email),
+                    ).fetchone()
+                    if pending_username is not None:
+                        self.send_json(HTTPStatus.CONFLICT, {"detail": "That username is already being registered."})
+                        return
+                    db_execute(
+                        conn,
+                        """
+                        INSERT INTO pending_registration_otps
+                            (email, username, password_salt, password_hash, otp_hash, created_at, expires_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(email) DO UPDATE SET
+                            username = excluded.username,
+                            password_salt = excluded.password_salt,
+                            password_hash = excluded.password_hash,
+                            otp_hash = excluded.otp_hash,
+                            created_at = excluded.created_at,
+                            expires_at = excluded.expires_at
+                        """,
+                        (email, username, salt, password_hash, hash_otp(email, otp), to_iso(now), to_iso(expires_at)),
+                    )
+                send_otp_email(email, username, otp)
+            except RuntimeError as error:
+                self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"detail": str(error)})
+                return
+            except Exception:
+                raise
+            self.send_json(HTTPStatus.OK, {"status": "otp_sent"})
+            return
+
+        if path == "/auth/register/verify":
+            email = normalize_email(str(payload.get("email", "")))
+            otp = str(payload.get("otp", ""))
+            return_to = query.get("return_to", [FRONTEND_URL])[0]
             if not allowed_return_to(return_to):
                 self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Invalid return URL"})
                 return
-            salt, password_hash = hash_password(password)
-            try:
-                with connect() as conn:
-                    cursor = conn.execute(
+            with connect() as conn:
+                pending = db_execute(conn, "SELECT * FROM pending_registration_otps WHERE email = ?", (email,)).fetchone()
+                if pending is None:
+                    self.send_json(HTTPStatus.NOT_FOUND, {"detail": "No pending verification code for that email."})
+                    return
+                expires_at = datetime.fromisoformat(pending["expires_at"].replace("Z", "+00:00"))
+                if expires_at < utc_now():
+                    db_execute(conn, "DELETE FROM pending_registration_otps WHERE email = ?", (email,))
+                    self.send_json(HTTPStatus.GONE, {"detail": "Verification code expired. Request a new code."})
+                    return
+                if not hmac.compare_digest(pending["otp_hash"], hash_otp(email, otp)):
+                    self.send_json(HTTPStatus.UNAUTHORIZED, {"detail": "Invalid verification code."})
+                    return
+                try:
+                    db_execute(
+                        conn,
                         """
-                        INSERT INTO users (email, password_salt, password_hash, created_at)
-                        VALUES (?, ?, ?, ?)
+                        INSERT INTO users (email, username, password_salt, password_hash, created_at)
+                        VALUES (?, ?, ?, ?, ?)
                         """,
-                        (email, salt, password_hash, to_iso(utc_now())),
+                        (
+                            pending["email"],
+                            pending["username"],
+                            pending["password_salt"],
+                            pending["password_hash"],
+                            to_iso(utc_now()),
+                        ),
                     )
-                    user_id = cursor.lastrowid
-            except sqlite3.IntegrityError:
-                self.send_json(HTTPStatus.CONFLICT, {"detail": "An account already exists for that email."})
-                return
+                except Exception as error:
+                    if not is_unique_violation(error):
+                        raise
+                    self.send_json(HTTPStatus.CONFLICT, {"detail": "Email or username is already registered."})
+                    return
+                user_id = db_execute(conn, "SELECT id FROM users WHERE email = ?", (email,)).fetchone()["id"]
+                db_execute(conn, "DELETE FROM pending_registration_otps WHERE email = ?", (email,))
             if not discord_is_configured():
                 self.send_json(
                     HTTPStatus.SERVICE_UNAVAILABLE,
-                    {"detail": "Account created, but Discord verification is not configured yet."},
+                    {"detail": "Email verified, but Discord verification is not configured yet."},
                 )
                 return
             self.send_json(
@@ -532,7 +714,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Invalid return URL"})
                 return
             with connect() as conn:
-                row = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+                row = db_execute(conn, "SELECT * FROM users WHERE email = ?", (email,)).fetchone()
             if row is None or not password_matches(password, row["password_salt"], row["password_hash"]):
                 self.send_json(HTTPStatus.UNAUTHORIZED, {"detail": "Invalid credentials"})
                 return
@@ -558,14 +740,15 @@ class Handler(BaseHTTPRequestHandler):
             now = utc_now()
             expires_at = now + timedelta(minutes=PIN_TTL_MINUTES)
             with connect() as conn:
-                conn.execute(
+                db_execute(
+                    conn,
                     """
                     INSERT INTO sessions (pin, status, created_at, expires_at)
                     VALUES (?, ?, ?, ?)
                     """,
                     (pin, "pending", to_iso(now), to_iso(expires_at)),
                 )
-                row = conn.execute("SELECT * FROM sessions WHERE pin = ?", (pin,)).fetchone()
+                row = db_execute(conn, "SELECT * FROM sessions WHERE pin = ?", (pin,)).fetchone()
             self.send_json(HTTPStatus.OK, row_to_summary(row))
             return
 
@@ -577,7 +760,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             now = utc_now()
             with connect() as conn:
-                row = conn.execute("SELECT * FROM sessions WHERE pin = ?", (pin,)).fetchone()
+                row = db_execute(conn, "SELECT * FROM sessions WHERE pin = ?", (pin,)).fetchone()
                 if row is None:
                     self.send_json(HTTPStatus.NOT_FOUND, {"detail": "PIN not found"})
                     return
@@ -586,10 +769,11 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 expires_at = datetime.fromisoformat(row["expires_at"].replace("Z", "+00:00"))
                 if expires_at < now:
-                    conn.execute("UPDATE sessions SET status = ? WHERE id = ?", ("expired", row["id"]))
+                    db_execute(conn, "UPDATE sessions SET status = ? WHERE id = ?", ("expired", row["id"]))
                     self.send_json(HTTPStatus.GONE, {"detail": "PIN expired"})
                     return
-                conn.execute(
+                db_execute(
+                    conn,
                     """
                     UPDATE sessions
                     SET status = ?, completed_at = ?, consent_version = ?,
