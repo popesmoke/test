@@ -57,6 +57,7 @@ SMTP_USERNAME = os.getenv("SMTP_USERNAME", "")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 SMTP_FROM = os.getenv("SMTP_FROM", SMTP_USERNAME)
 SMTP_USE_TLS = os.getenv("SMTP_USE_TLS", "true").lower() != "false"
+EMAIL_PROVIDER = os.getenv("EMAIL_PROVIDER", "auto").strip().lower()
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
 RESEND_FROM = os.getenv("RESEND_FROM", "onboarding@resend.dev")
 BREVO_API_KEY = os.getenv("BREVO_API_KEY", "")
@@ -227,16 +228,43 @@ def hash_otp(email: str, otp: str) -> str:
     return hmac.new(TOKEN_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
 
 
-def smtp_is_configured() -> bool:
-    return bool(SMTP_HOST and SMTP_FROM)
-
-
 def brevo_is_configured() -> bool:
     return bool(BREVO_API_KEY and BREVO_FROM_EMAIL)
 
 
+def smtp_is_configured() -> bool:
+    return bool(SMTP_HOST and SMTP_FROM and SMTP_USERNAME and SMTP_PASSWORD)
+
+
+def smtp_use_ssl() -> bool:
+    configured = os.getenv("SMTP_USE_SSL", "").strip().lower()
+    if configured in {"true", "1", "yes", "on"}:
+        return True
+    if configured in {"false", "0", "no", "off"}:
+        return False
+    return SMTP_PORT == 465
+
+
+def selected_email_provider() -> str:
+    if EMAIL_PROVIDER in {"smtp", "brevo", "resend"}:
+        if EMAIL_PROVIDER == "smtp" and not smtp_is_configured():
+            return ""
+        if EMAIL_PROVIDER == "brevo" and not brevo_is_configured():
+            return ""
+        if EMAIL_PROVIDER == "resend" and not RESEND_API_KEY:
+            return ""
+        return EMAIL_PROVIDER
+    if brevo_is_configured():
+        return "brevo"
+    if RESEND_API_KEY:
+        return "resend"
+    if smtp_is_configured():
+        return "smtp"
+    return ""
+
+
 def email_is_configured() -> bool:
-    return brevo_is_configured() or bool(RESEND_API_KEY) or smtp_is_configured()
+    return bool(selected_email_provider())
 
 
 def otp_email_body(username: str, otp: str) -> str:
@@ -362,21 +390,37 @@ def send_otp_email_via_smtp(email: str, username: str, otp: str) -> None:
     message["From"] = SMTP_FROM
     message["To"] = email
     message.set_content(otp_email_body(username, otp))
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=8) as smtp:
-        if SMTP_USE_TLS:
-            smtp.starttls()
-        if SMTP_USERNAME or SMTP_PASSWORD:
+    try:
+        if smtp_use_ssl():
+            with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=15) as smtp:
+                smtp.login(SMTP_USERNAME, SMTP_PASSWORD)
+                smtp.send_message(message)
+            return
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as smtp:
+            if SMTP_USE_TLS:
+                smtp.starttls()
             smtp.login(SMTP_USERNAME, SMTP_PASSWORD)
-        smtp.send_message(message)
+            smtp.send_message(message)
+    except smtplib.SMTPAuthenticationError as error:
+        raise RuntimeError(
+            "Email login failed. For Gmail, create an App Password at "
+            "https://myaccount.google.com/apppasswords and use that instead of your normal password."
+        ) from error
+    except (TimeoutError, OSError, smtplib.SMTPException) as error:
+        raise RuntimeError(
+            "Could not send email through SMTP. Render often blocks outbound SMTP; "
+            "use Brevo on Render, or run the backend locally with Gmail SMTP."
+        ) from error
 
 
 def send_otp_email(email: str, username: str, otp: str) -> None:
-    if not email_is_configured():
+    provider = selected_email_provider()
+    if not provider:
         raise RuntimeError("Email OTP is not configured.")
-    if brevo_is_configured():
+    if provider == "brevo":
         send_otp_email_via_brevo(email, username, otp)
         return
-    if RESEND_API_KEY:
+    if provider == "resend":
         send_otp_email_via_resend(email, username, otp)
         return
     send_otp_email_via_smtp(email, username, otp)
