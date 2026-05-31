@@ -29,12 +29,12 @@ Set `CHECKER_EMAIL`, `CHECKER_PASSWORD`, and `API_TOKEN_SECRET` in the environme
 
 ### Discord role-gated dashboard login
 
-The dashboard can also use Discord OAuth. A Discord user can sign in, but the backend only issues a dashboard token if that user belongs to your configured Discord server and has the configured `Access` role.
+The dashboard supports normal email/password accounts, but the backend only issues a usable dashboard token after the user verifies through Discord and belongs to your configured Discord server with the configured `Access` role. Discord is checked each time a normal user signs in.
 
 Create an app in the Discord Developer Portal, then add this redirect URL to the app's OAuth2 redirects:
 
 ```text
-https://your-backend-host/auth/discord/callback
+https://test-v7a8.onrender.com/auth/discord/callback
 ```
 
 Set these backend environment variables:

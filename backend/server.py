@@ -35,6 +35,7 @@ DISCORD_REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI", "https://test-v7a8.onre
 DISCORD_GUILD_ID = os.getenv("DISCORD_GUILD_ID", "1510614253508493373")
 DISCORD_ACCESS_ROLE_ID = os.getenv("DISCORD_ACCESS_ROLE_ID", "1510614274299531334")
 DISCORD_AUTH_SCOPES = "identify guilds.members.read"
+PASSWORD_HASH_ITERATIONS = 260_000
 
 
 def utc_now() -> datetime:
@@ -79,6 +80,21 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT NOT NULL UNIQUE,
+                password_salt TEXT NOT NULL,
+                password_hash TEXT NOT NULL,
+                discord_id TEXT,
+                discord_username TEXT,
+                discord_roles_json TEXT NOT NULL DEFAULT '[]',
+                discord_access_verified_at TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
 
 
 def make_token(email: str) -> str:
@@ -86,6 +102,21 @@ def make_token(email: str) -> str:
     payload = f"{email}:{timestamp}"
     signature = hmac.new(TOKEN_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
     return f"{payload}:{signature}"
+
+
+def normalize_email(email: str) -> str:
+    return email.strip().lower()
+
+
+def hash_password(password: str, salt_hex: str | None = None) -> tuple[str, str]:
+    salt = bytes.fromhex(salt_hex) if salt_hex else secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, PASSWORD_HASH_ITERATIONS)
+    return salt.hex(), digest.hex()
+
+
+def password_matches(password: str, salt_hex: str, expected_hash: str) -> bool:
+    _, actual_hash = hash_password(password, salt_hex)
+    return hmac.compare_digest(actual_hash, expected_hash)
 
 
 def discord_is_configured() -> bool:
@@ -113,20 +144,15 @@ def allowed_return_to(value: str) -> bool:
     return any(value.rstrip("/").startswith(origin) for origin in allowed_origins)
 
 
-def signed_state(return_to: str) -> str:
-    payload = {
-        "return_to": return_to,
-        "nonce": secrets.token_urlsafe(12),
-        "ts": int(utc_now().timestamp()),
-    }
+def signed_payload(payload: dict) -> str:
     encoded = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode()
     signature = hmac.new(TOKEN_SECRET.encode(), encoded.encode(), hashlib.sha256).hexdigest()
     return f"{encoded}.{signature}"
 
 
-def verify_state(state: str) -> dict | None:
+def verify_signed_payload(value: str, max_age: timedelta) -> dict | None:
     try:
-        encoded, signature = state.rsplit(".", 1)
+        encoded, signature = value.rsplit(".", 1)
     except ValueError:
         return None
     expected = hmac.new(TOKEN_SECRET.encode(), encoded.encode(), hashlib.sha256).hexdigest()
@@ -137,9 +163,38 @@ def verify_state(state: str) -> dict | None:
         created_at = datetime.fromtimestamp(int(payload["ts"]), timezone.utc)
     except (ValueError, KeyError, json.JSONDecodeError):
         return None
-    if created_at < utc_now() - timedelta(minutes=10):
+    if created_at < utc_now() - max_age:
         return None
     return payload
+
+
+def make_discord_link_ticket(user_id: int) -> str:
+    return signed_payload({"user_id": user_id, "ts": int(utc_now().timestamp())})
+
+
+def verify_discord_link_ticket(ticket: str) -> int | None:
+    payload = verify_signed_payload(ticket, timedelta(minutes=10))
+    if not payload:
+        return None
+    try:
+        return int(payload["user_id"])
+    except (KeyError, ValueError):
+        return None
+
+
+def signed_state(return_to: str, link_ticket: str = "") -> str:
+    payload = {
+        "return_to": return_to,
+        "nonce": secrets.token_urlsafe(12),
+        "ts": int(utc_now().timestamp()),
+    }
+    if link_ticket:
+        payload["link_ticket"] = link_ticket
+    return signed_payload(payload)
+
+
+def verify_state(state: str) -> dict | None:
+    return verify_signed_payload(state, timedelta(minutes=10))
 
 
 def discord_json_request(path: str, bearer_token: str) -> dict:
@@ -199,6 +254,40 @@ def save_discord_user(user: dict, roles: list[str]) -> None:
                 to_iso(utc_now()),
             ),
         )
+
+
+def save_user_discord_access(user_id: int, user: dict, roles: list[str]) -> bool:
+    with connect() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE users
+            SET discord_id = ?,
+                discord_username = ?,
+                discord_roles_json = ?,
+                discord_access_verified_at = ?
+            WHERE id = ?
+            """,
+            (
+                user["id"],
+                user.get("global_name") or user.get("username") or user["id"],
+                json.dumps(roles),
+                to_iso(utc_now()),
+                user_id,
+            ),
+        )
+        return cursor.rowcount > 0
+
+
+def create_discord_auth_url(return_to: str, link_ticket: str = "") -> str:
+    return "https://discord.com/oauth2/authorize?" + urlencode(
+        {
+            "client_id": DISCORD_CLIENT_ID,
+            "redirect_uri": DISCORD_REDIRECT_URI,
+            "response_type": "code",
+            "scope": DISCORD_AUTH_SCOPES,
+            "state": signed_state(return_to, link_ticket),
+        }
+    )
 
 
 def validate_token(auth_header: str | None) -> str | None:
@@ -314,16 +403,7 @@ class Handler(BaseHTTPRequestHandler):
             if not allowed_return_to(return_to):
                 self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Invalid return URL"})
                 return
-            auth_url = "https://discord.com/oauth2/authorize?" + urlencode(
-                {
-                    "client_id": DISCORD_CLIENT_ID,
-                    "redirect_uri": DISCORD_REDIRECT_URI,
-                    "response_type": "code",
-                    "scope": DISCORD_AUTH_SCOPES,
-                    "state": signed_state(return_to),
-                }
-            )
-            self.send_json(HTTPStatus.OK, {"url": auth_url})
+            self.send_json(HTTPStatus.OK, {"url": create_discord_auth_url(return_to, query.get("link_ticket", [""])[0])})
             return
 
         if path == "/auth/discord/callback":
@@ -349,7 +429,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.redirect(add_query_params(return_to, {"discord_error": "missing_access_role"}))
                 return
             save_discord_user(user, roles)
-            token = make_token(f"discord-{user['id']}")
+            user_id = verify_discord_link_ticket(state_payload.get("link_ticket", ""))
+            if not user_id or not save_user_discord_access(user_id, user, roles):
+                self.redirect(add_query_params(return_to, {"discord_error": "missing_account_link"}))
+                return
+            token = make_token(f"user-{user_id}")
             self.redirect(add_query_params(return_to, {"token": token}))
             return
 
@@ -385,6 +469,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
+        query = parse_qs(parsed.query)
 
         try:
             payload = self.read_json()
@@ -392,15 +477,78 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Invalid JSON"})
             return
 
-        if path == "/auth/login":
-            email = str(payload.get("email", ""))
+        if path == "/auth/register":
+            email = normalize_email(str(payload.get("email", "")))
             password = str(payload.get("password", ""))
+            return_to = query.get("return_to", [FRONTEND_URL])[0]
+            if "@" not in email or len(email) > 254:
+                self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Enter a valid email address."})
+                return
+            if len(password) < 6:
+                self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Password must be at least 6 characters."})
+                return
+            if not allowed_return_to(return_to):
+                self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Invalid return URL"})
+                return
+            salt, password_hash = hash_password(password)
+            try:
+                with connect() as conn:
+                    cursor = conn.execute(
+                        """
+                        INSERT INTO users (email, password_salt, password_hash, created_at)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (email, salt, password_hash, to_iso(utc_now())),
+                    )
+                    user_id = cursor.lastrowid
+            except sqlite3.IntegrityError:
+                self.send_json(HTTPStatus.CONFLICT, {"detail": "An account already exists for that email."})
+                return
+            if not discord_is_configured():
+                self.send_json(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    {"detail": "Account created, but Discord verification is not configured yet."},
+                )
+                return
+            self.send_json(
+                HTTPStatus.CREATED,
+                {
+                    "requires_discord": True,
+                    "discord_url": create_discord_auth_url(return_to, make_discord_link_ticket(user_id)),
+                },
+            )
+            return
+
+        if path == "/auth/login":
+            email = normalize_email(str(payload.get("email", "")))
+            password = str(payload.get("password", ""))
+            return_to = query.get("return_to", [FRONTEND_URL])[0]
             valid_email = hmac.compare_digest(email, CHECKER_EMAIL)
             valid_password = hmac.compare_digest(password, CHECKER_PASSWORD)
-            if not valid_email or not valid_password:
+            if valid_email and valid_password:
+                self.send_json(HTTPStatus.OK, {"token": make_token(email)})
+                return
+            if not allowed_return_to(return_to):
+                self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Invalid return URL"})
+                return
+            with connect() as conn:
+                row = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+            if row is None or not password_matches(password, row["password_salt"], row["password_hash"]):
                 self.send_json(HTTPStatus.UNAUTHORIZED, {"detail": "Invalid credentials"})
                 return
-            self.send_json(HTTPStatus.OK, {"token": make_token(email)})
+            if not discord_is_configured():
+                self.send_json(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    {"detail": "Discord verification is not configured yet."},
+                )
+                return
+            self.send_json(
+                HTTPStatus.OK,
+                {
+                    "requires_discord": True,
+                    "discord_url": create_discord_auth_url(return_to, make_discord_link_ticket(row["id"])),
+                },
+            )
             return
 
         if path == "/sessions":

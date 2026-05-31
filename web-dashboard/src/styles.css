@@ -114,34 +114,27 @@ p {
   gap: 16px;
 }
 
-.discord-button {
-  min-height: 44px;
-  border-color: #5865f2;
-  background: linear-gradient(180deg, #5865f2, #3b45aa);
+.auth-mode-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding: 4px;
+  border: 1px solid #2d171d;
+  border-radius: 8px;
+  background: #080708;
+}
+
+.auth-mode-tabs button {
+  min-height: 36px;
+  border-color: transparent;
+  background: transparent;
+  color: #a8a3a6;
+}
+
+.auth-mode-tabs button.selected {
+  border-color: #ef233c;
+  background: linear-gradient(180deg, #30090f, #17070a);
   color: #ffffff;
-  font-weight: 800;
-}
-
-.discord-button:hover {
-  border-color: #7b85ff;
-  box-shadow: 0 0 0 2px rgba(88, 101, 242, 0.22);
-}
-
-.login-divider {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  color: #817a7e;
-  font-size: 12px;
-  text-transform: uppercase;
-}
-
-.login-divider::before,
-.login-divider::after {
-  content: "";
-  height: 1px;
-  flex: 1;
-  background: #2d171d;
 }
 
 .discord-invite {

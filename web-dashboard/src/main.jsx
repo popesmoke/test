@@ -38,12 +38,14 @@ function authHeaders(token) {
 const DISCORD_ERROR_MESSAGES = {
   discord_auth_failed: "Discord login failed. Please try again.",
   invalid_state: "Discord login expired. Please try again.",
+  missing_account_link: "Sign in again before verifying Discord access.",
   missing_access_role: "Your Discord account does not have the Access role.",
   missing_code: "Discord did not return a login code. Please try again.",
 };
 
 function Login({ onLogin, loginError }) {
-  const [email, setEmail] = useState("dng@email.com");
+  const [mode, setMode] = useState("login");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState(loginError || "");
 
@@ -55,34 +57,24 @@ function Login({ onLogin, loginError }) {
     event.preventDefault();
     setError("");
     try {
-      const response = await fetch(`${API_URL}/auth/login`, {
+      const returnTo = `${window.location.origin}${window.location.pathname}`;
+      const endpoint = mode === "register" ? "/auth/register" : "/auth/login";
+      const response = await fetch(`${API_URL}${endpoint}?return_to=${encodeURIComponent(returnTo)}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
       });
-      if (!response.ok) {
-        setError("Login failed. Check the email and password.");
+      const data = await response.json().catch(() => ({}));
+      if (data.requires_discord && data.discord_url) {
+        window.location.assign(data.discord_url);
         return;
       }
-      const data = await response.json();
+      if (!response.ok) {
+        setError(data.detail || (mode === "register" ? "Account creation failed." : "Login failed."));
+        return;
+      }
       onLogin(data.token);
     } catch (error) {
-      setError(`Could not reach backend at ${API_URL}`);
-    }
-  }
-
-  async function startDiscordLogin() {
-    setError("");
-    try {
-      const returnTo = `${window.location.origin}${window.location.pathname}`;
-      const response = await fetch(`${API_URL}/auth/discord/start?return_to=${encodeURIComponent(returnTo)}`);
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        setError(data.detail || "Discord login is not configured yet.");
-        return;
-      }
-      window.location.assign(data.url);
-    } catch {
       setError(`Could not reach backend at ${API_URL}`);
     }
   }
@@ -100,15 +92,31 @@ function Login({ onLogin, loginError }) {
           </div>
         </div>
         <form onSubmit={submit} className="form-stack">
-          <button className="discord-button" type="button" onClick={startDiscordLogin}>
-            <MessageCircle size={18} /> Continue with Discord
-          </button>
-          <div className="login-divider">
-            <span>or</span>
+          <div className="auth-mode-tabs">
+            <button
+              className={mode === "login" ? "selected" : ""}
+              type="button"
+              onClick={() => {
+                setMode("login");
+                setError("");
+              }}
+            >
+              Sign in
+            </button>
+            <button
+              className={mode === "register" ? "selected" : ""}
+              type="button"
+              onClick={() => {
+                setMode("register");
+                setError("");
+              }}
+            >
+              Create account
+            </button>
           </div>
           <label>
             Email
-            <input value={email} onChange={(event) => setEmail(event.target.value)} />
+            <input type="email" value={email} onChange={(event) => setEmail(event.target.value)} />
           </label>
           <label>
             Password
@@ -119,7 +127,8 @@ function Login({ onLogin, loginError }) {
             Need access? Join the Discord server.
           </a>
           <button className="primary" type="submit">
-            <Lock size={18} /> Sign in
+            {mode === "register" ? <MessageCircle size={18} /> : <Lock size={18} />}
+            {mode === "register" ? "Create and verify Discord" : "Sign in"}
           </button>
         </form>
       </section>
