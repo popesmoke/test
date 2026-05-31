@@ -84,17 +84,35 @@ def is_unique_violation(error: Exception) -> bool:
     return isinstance(error, sqlite3.IntegrityError) or error.__class__.__name__ == "UniqueViolation"
 
 
+def column_exists(conn, table: str, column: str) -> bool:
+    if using_postgres():
+        row = db_execute(
+            conn,
+            """
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = ? AND column_name = ?
+            """,
+            (table, column),
+        ).fetchone()
+        return row is not None
+    rows = db_execute(conn, f"PRAGMA table_info({table})").fetchall()
+    return any(row["name"] == column for row in rows)
+
+
 def ensure_column(conn, table: str, column: str, definition: str) -> None:
-    try:
-        db_execute(conn, f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
-    except Exception:
+    if column_exists(conn, table, column):
         return
+    db_execute(conn, f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def init_db() -> None:
     with connect() as conn:
+        if using_postgres():
+            conn.autocommit = True
         id_column = "SERIAL PRIMARY KEY" if using_postgres() else "INTEGER PRIMARY KEY AUTOINCREMENT"
-        conn.execute(
+        db_execute(
+            conn,
             f"""
             CREATE TABLE IF NOT EXISTS sessions (
                 id {id_column},
@@ -109,7 +127,8 @@ def init_db() -> None:
             )
             """
         )
-        conn.execute(
+        db_execute(
+            conn,
             """
             CREATE TABLE IF NOT EXISTS discord_users (
                 discord_id TEXT PRIMARY KEY,
@@ -120,7 +139,8 @@ def init_db() -> None:
             )
             """
         )
-        conn.execute(
+        db_execute(
+            conn,
             f"""
             CREATE TABLE IF NOT EXISTS users (
                 id {id_column},
@@ -137,8 +157,12 @@ def init_db() -> None:
             """
         )
         ensure_column(conn, "users", "username", "TEXT NOT NULL DEFAULT ''")
-        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS users_username_unique ON users (username) WHERE username <> ''")
-        conn.execute(
+        db_execute(
+            conn,
+            "CREATE UNIQUE INDEX IF NOT EXISTS users_username_unique ON users (username) WHERE username <> ''",
+        )
+        db_execute(
+            conn,
             """
             CREATE TABLE IF NOT EXISTS pending_registration_otps (
                 email TEXT PRIMARY KEY,
