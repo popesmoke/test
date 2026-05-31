@@ -244,6 +244,29 @@ def otp_email_body(username: str, otp: str) -> str:
     )
 
 
+def resend_error_detail(status: int, body: str) -> str:
+    message = ""
+    try:
+        payload = json.loads(body)
+        if isinstance(payload.get("message"), str):
+            message = payload["message"]
+        elif isinstance(payload.get("error"), dict) and isinstance(payload["error"].get("message"), str):
+            message = payload["error"]["message"]
+    except json.JSONDecodeError:
+        message = body.strip()
+
+    lowered = message.lower()
+    if status == 403 or "verify a domain" in lowered or "only send testing emails" in lowered:
+        return (
+            "Resend test mode only allows sending to the email on your Resend account. "
+            "Verify a domain at resend.com/domains, then set RESEND_FROM to something like "
+            "DangerousCity <noreply@yourdomain.com>."
+        )
+    if message:
+        return message
+    return "Email provider rejected the verification message."
+
+
 def send_otp_email_via_resend(email: str, username: str, otp: str) -> None:
     payload = json.dumps(
         {
@@ -265,10 +288,11 @@ def send_otp_email_via_resend(email: str, username: str, otp: str) -> None:
     try:
         with urlrequest.urlopen(request, timeout=15) as response:
             if response.status >= 400:
-                raise RuntimeError("Email provider rejected the verification message.")
+                detail = response.read().decode("utf-8", errors="replace")
+                raise RuntimeError(resend_error_detail(response.status, detail))
     except urlerror.HTTPError as error:
         detail = error.read().decode("utf-8", errors="replace")
-        raise RuntimeError("Email provider rejected the verification message.") from error
+        raise RuntimeError(resend_error_detail(error.code, detail)) from error
     except urlerror.URLError as error:
         raise RuntimeError("Could not reach the email provider.") from error
 
