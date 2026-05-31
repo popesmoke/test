@@ -603,11 +603,11 @@ def validate_token(auth_header: str | None) -> str | None:
     if not auth_header or not auth_header.startswith("Bearer "):
         return None
     token = auth_header.removeprefix("Bearer ").strip()
-    parts = token.split(":")
+    parts = token.rsplit(":", 2)
     if len(parts) != 3:
         return None
-    email, timestamp, signature = parts
-    payload = f"{email}:{timestamp}"
+    subject, timestamp, signature = parts
+    payload = f"{subject}:{timestamp}"
     expected = hmac.new(TOKEN_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(signature, expected):
         return None
@@ -617,7 +617,7 @@ def validate_token(auth_header: str | None) -> str | None:
         return None
     if issued_at < utc_now() - timedelta(hours=8):
         return None
-    return email
+    return subject
 
 
 def is_checker_subject(subject: str) -> bool:
@@ -625,9 +625,9 @@ def is_checker_subject(subject: str) -> bool:
 
 
 def discord_id_from_subject(subject: str) -> str | None:
-    prefix = "discord:"
-    if subject.startswith(prefix):
-        return subject[len(prefix) :]
+    for prefix in ("discord-", "discord:"):
+        if subject.startswith(prefix):
+            return subject[len(prefix) :]
     return None
 
 
@@ -831,7 +831,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.redirect(add_query_params(return_to, {"discord_error": "discord_auth_failed"}))
                 return
             save_discord_user(user, roles)
-            token = make_token(f"discord:{user['id']}")
+            token = make_token(f"discord-{user['id']}")
             self.redirect(add_query_params(return_to, {"token": token}))
             return
 
