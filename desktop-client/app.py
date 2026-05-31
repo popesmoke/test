@@ -12899,22 +12899,165 @@ def windows_filetime_to_iso(value: int) -> str | None:
         return None
 
 
+def chrome_webkit_time_to_iso(value: object) -> str | None:
+    try:
+        micros = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if micros <= 0:
+        return None
+    try:
+        epoch = datetime(1601, 1, 1, tzinfo=timezone.utc)
+        return (epoch + timedelta(microseconds=micros)).isoformat()
+    except (OverflowError, ValueError):
+        return None
+
+
+def resolve_display_timestamp(
+    *,
+    primary: str | None = None,
+    fallbacks: list[tuple[str, str | None]] | None = None,
+) -> tuple[str | None, str | None]:
+    if primary:
+        return primary, "recorded"
+    for source, candidate in fallbacks or []:
+        if candidate:
+            return candidate, source
+    return None, None
+
+
+def _parse_us_datetime(raw: str) -> str | None:
+    cleaned = raw.strip().replace(",", "")
+    for fmt in ("%m/%d/%Y %H:%M:%S.%f", "%m/%d/%Y %H:%M:%S", "%d/%m/%Y %H:%M:%S"):
+        try:
+            dt = datetime.strptime(cleaned, fmt)
+            return dt.replace(tzinfo=timezone.utc).isoformat()
+        except ValueError:
+            continue
+    return None
+
+
+def parse_usn_timestamp(body: str) -> str | None:
+    if not body:
+        return None
+    for pattern in (
+        r"Time\s+[Ss]tamp\s*,\s*(\d{1,2}/\d{1,2}/\d{4}\s+\d{1,2}:\d{2}:\d{2}(?:\.\d+)?)",
+        r"Time\s+[Ss]tamp\s*:\s*(\d{1,2}/\d{1,2}/\d{4}\s+\d{1,2}:\d{2}:\d{2}(?:\.\d+)?)",
+        r"(\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}(?:\.\d+)?)",
+    ):
+        match = re.search(pattern, body, re.IGNORECASE)
+        if match:
+            parsed = _parse_us_datetime(match.group(1))
+            if parsed:
+                return parsed
+            try:
+                dt = datetime.fromisoformat(match.group(1).replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt.isoformat()
+            except ValueError:
+                pass
+    filetime_match = re.search(r"Time\s+[Ss]tamp\s*,\s*(0x[0-9a-fA-F]+)", body, re.IGNORECASE)
+    if filetime_match:
+        return windows_filetime_to_iso(int(filetime_match.group(1), 16))
+    csv_match = re.match(
+        r"[^,]*,[^,]*,[^,]*,[^,]*,[^,]*,\s*(\d{1,2}/\d{1,2}/\d{4}\s+\d{1,2}:\d{2}:\d{2})",
+        body,
+    )
+    if csv_match:
+        return _parse_us_datetime(csv_match.group(1))
+    return None
+
+
+def normalize_event_time(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text or text.lower() in {"none", "null", "0"}:
+            return None
+        if is_iso_date_string(text):
+            return text
+        parsed = _parse_us_datetime(text)
+        if parsed:
+            return parsed
+        try:
+            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.isoformat()
+        except ValueError:
+            return None
+    if isinstance(value, (int, float)):
+        if value > 10_000_000_000_000:
+            return chrome_webkit_time_to_iso(int(value))
+        if value > 1_000_000_000_000:
+            try:
+                return datetime.fromtimestamp(float(value) / 1000.0, timezone.utc).isoformat()
+            except (OSError, ValueError, OverflowError):
+                return None
+        if value > 1_000_000_000:
+            try:
+                return datetime.fromtimestamp(float(value), timezone.utc).isoformat()
+            except (OSError, ValueError, OverflowError):
+                return None
+        return windows_filetime_to_iso(int(value))
+    return None
+
+
+def is_iso_date_string(value: str) -> bool:
+    return bool(re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", value))
+
+
 def recycle_info_record(path: Path) -> dict | None:
     try:
         data = path.read_bytes()
     except Exception:
         return None
-    if len(data) < 28:
+    if len(data) < 24:
         return None
-    original_size = int.from_bytes(data[8:16], "little", signed=False)
-    deleted_at = windows_filetime_to_iso(int.from_bytes(data[16:24], "little", signed=False))
-    raw_path = data[24:].decode("utf-16-le", errors="replace").split("\x00", 1)[0]
+    version = int.from_bytes(data[0:8], "little", signed=False) if len(data) >= 8 else 0
+    if version >= 2 and len(data) >= 28:
+        original_size = int.from_bytes(data[8:16], "little", signed=False)
+        deleted_raw = int.from_bytes(data[16:24], "little", signed=False)
+        path_offset = 28
+        if len(data) >= 28:
+            path_len = int.from_bytes(data[24:28], "little", signed=False)
+            if path_len > 0 and path_offset + path_len * 2 <= len(data):
+                raw_path = data[path_offset : path_offset + path_len * 2].decode("utf-16-le", errors="replace")
+            else:
+                raw_path = data[path_offset:].decode("utf-16-le", errors="replace").split("\x00", 1)[0]
+        else:
+            raw_path = ""
+    else:
+        original_size = int.from_bytes(data[8:16], "little", signed=False) if len(data) >= 16 else 0
+        deleted_raw = int.from_bytes(data[16:24], "little", signed=False) if len(data) >= 24 else 0
+        raw_path = data[24:].decode("utf-16-le", errors="replace").split("\x00", 1)[0]
+    deleted_at = windows_filetime_to_iso(deleted_raw)
+    metadata_modified = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
+    companion_mtime: str | None = None
+    companion = path.with_name(path.name.replace("$I", "$R", 1))
+    if companion.is_file():
+        try:
+            companion_mtime = datetime.fromtimestamp(companion.stat().st_mtime, timezone.utc).isoformat()
+        except OSError:
+            companion_mtime = None
+    display_at, timestamp_source = resolve_display_timestamp(
+        primary=deleted_at,
+        fallbacks=[
+            ("recycle_metadata_mtime", metadata_modified),
+            ("recycle_data_mtime", companion_mtime),
+        ],
+    )
     return {
         "recycle_metadata_file": path.name,
-        "original_path": raw_path,
+        "original_path": raw_path.strip(),
         "deleted_at": deleted_at,
+        "display_at": display_at,
+        "timestamp_source": timestamp_source,
         "original_size_bytes": original_size,
-        "metadata_modified": datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat(),
+        "metadata_modified": metadata_modified,
+        "recycle_data_modified": companion_mtime,
     }
 
 
@@ -12958,10 +13101,17 @@ def recycle_bin_metadata() -> dict:
                 }
                 if info_record:
                     item.update(info_record)
+                else:
+                    display_at, timestamp_source = resolve_display_timestamp(
+                        primary=item.get("modified"),
+                        fallbacks=[("os_access", item.get("accessed"))],
+                    )
+                    item["display_at"] = display_at
+                    item["timestamp_source"] = timestamp_source
                 items.append(item)
             except Exception:
                 continue
-    items.sort(key=lambda item: item.get("deleted_at") or item.get("modified") or "", reverse=True)
+    items.sort(key=lambda item: item.get("display_at") or item.get("deleted_at") or item.get("modified") or "", reverse=True)
     return {
         "status": "Recycle Bin metadata collected" if items else "No accessible Trash/Recycle Bin item found",
         "count": len(items[:180]),
@@ -13075,20 +13225,48 @@ def userassist_registry_entries() -> dict:
         "$props=Get-ItemProperty $_.PSPath;"
         "$props.PSObject.Properties | Where-Object { $_.Name -notlike 'PS*' } | ForEach-Object {"
         "$decoded=Decode-Rot13 $_.Name;"
+        "$lastRun=$null;"
+        "if($_.Value -is [byte[]] -and $_.Value.Length -ge 16){"
+        "  $ft=[BitConverter]::ToUInt64($_.Value,8);"
+        "  if($ft -gt 0){ $lastRun=$ft }"
+        "};"
         "$matches=@();"
         "$keywords=@('Roblox','executor','loader','bootstrapper','script','inject','bypass','cleaner');"
         "foreach($k in $keywords){ if($decoded -match [regex]::Escape($k)){ $matches += $k } }"
-        "$out += [pscustomobject]@{DecodedPath=$decoded; MatchedKeywords=$matches}"
+        "$out += [pscustomobject]@{DecodedPath=$decoded; MatchedKeywords=$matches; LastRunFileTimeUtc=$lastRun}"
         "}"
         "}"
         "};"
         "$out | Select-Object -First 120 | ConvertTo-Json -Depth 4"
     )
+    raw = run_command(["powershell", "-NoProfile", "-Command", script])[:16000]
+    structured: list[dict] = []
+    try:
+        parsed = json.loads(raw) if raw and not raw.startswith("Unavailable:") else []
+        rows = parsed if isinstance(parsed, list) else [parsed] if isinstance(parsed, dict) else []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            path = str(row.get("DecodedPath") or "")
+            last_run = normalize_event_time(row.get("LastRunFileTimeUtc"))
+            display_at, timestamp_source = resolve_display_timestamp(primary=last_run)
+            structured.append(
+                {
+                    "path": path,
+                    "matched_keywords": list(row.get("MatchedKeywords") or []),
+                    "last_run_utc": last_run,
+                    "display_at": display_at,
+                    "timestamp_source": timestamp_source,
+                }
+            )
+    except json.JSONDecodeError:
+        structured = []
     return {
         "available": True,
         "source": "HKCU Software Microsoft Windows CurrentVersion Explorer UserAssist",
-        "raw_sample": run_command(["powershell", "-NoProfile", "-Command", script])[:16000],
-        "note": "UserAssist entries are collected as bounded metadata for reviewer triage.",
+        "raw_sample": raw,
+        "items": structured[:120],
+        "note": "UserAssist entries include last-run timestamps when the Count blob is available.",
     }
 
 
@@ -14025,12 +14203,28 @@ $out | Select-Object -First 220 | ConvertTo-Json -Compress
         name = str(it.get("StoreValueName") or "")
         norm = forensic_normalize_pathish(name)
         exists = False
+        file_modified: str | None = None
         if norm and re.match(r"^[A-Za-z]:\\", norm):
             try:
-                exists = Path(norm).is_file()
+                target = Path(norm)
+                exists = target.is_file()
+                if exists:
+                    file_modified = datetime.fromtimestamp(target.stat().st_mtime, timezone.utc).isoformat()
             except OSError:
                 exists = False
-        parsed.append({"raw": name, "normalized_path": norm, "file_exists": exists})
+        display_at, timestamp_source = resolve_display_timestamp(
+            primary=file_modified,
+        )
+        parsed.append(
+            {
+                "raw": name,
+                "normalized_path": norm,
+                "file_exists": exists,
+                "file_modified_utc": file_modified,
+                "display_at": display_at,
+                "timestamp_source": timestamp_source,
+            }
+        )
     return {"available": True, "items": parsed, "source": "PCA Store (HKCU)"}
 
 
@@ -14105,7 +14299,19 @@ def usn_parse_records(lines: list[str]) -> list[dict[str, object]]:
         if not path:
             path_m2 = re.search(r"(\\\\[^\s,\"]+)", body)
             path = path_m2.group(1) if path_m2 else ""
-        rows.append({"drive": drive, "reasons": reasons, "path": path, "raw": body[:900]})
+        timestamp_utc = parse_usn_timestamp(body)
+        display_at, timestamp_source = resolve_display_timestamp(primary=timestamp_utc)
+        rows.append(
+            {
+                "drive": drive,
+                "reasons": reasons,
+                "path": path,
+                "timestamp_utc": timestamp_utc,
+                "display_at": display_at,
+                "timestamp_source": timestamp_source,
+                "raw": body[:900],
+            }
+        )
     return rows
 
 
@@ -14269,7 +14475,7 @@ class UnifiedCorrelationEngine:
                 {
                     "artifact": "pca_store",
                     "path": it.get("normalized_path"),
-                    "timestamp": None,
+                    "timestamp": it.get("display_at") or it.get("file_modified_utc"),
                     "detail": "pca_record",
                 }
             )
@@ -14278,7 +14484,7 @@ class UnifiedCorrelationEngine:
                 {
                     "artifact": "usn",
                     "path": row.get("path"),
-                    "timestamp": None,
+                    "timestamp": row.get("display_at") or row.get("timestamp_utc"),
                     "detail": ",".join(row.get("reasons") or []) or "usn_row",
                 }
             )
@@ -14886,6 +15092,428 @@ def build_forensic_analysis_bundle(
     bundle["available"] = True
     return bundle
 
+
+def _activity_recency_bucket(timestamp: str | None, report_end: str | None) -> str:
+    return _executor_activity_recency_bucket(timestamp, report_end)
+
+
+def _append_activity_event(
+    events: list[dict],
+    *,
+    category: str,
+    kind: str,
+    label: str,
+    path: str,
+    occurred_at: str | None,
+    timestamp_source: str | None,
+    detail: str,
+    generated_at: str,
+    extra: dict | None = None,
+) -> None:
+    display_at = occurred_at
+    resolved_source = timestamp_source or ("recorded" if occurred_at else None)
+    payload = {
+        "category": category,
+        "kind": kind,
+        "label": label,
+        "path": path,
+        "occurred_at": display_at,
+        "timestamp_source": resolved_source if display_at else None,
+        "recency": _activity_recency_bucket(display_at, generated_at),
+        "detail": detail,
+    }
+    if extra:
+        payload.update(extra)
+    events.append(payload)
+
+
+def _extract_structured_deletion_events(deletion: dict) -> list[dict]:
+    rows: list[dict] = []
+    evidence = deletion.get("deleted_file_evidence")
+    if not isinstance(evidence, dict):
+        return rows
+    for source_key, kind in (
+        ("security_object_deletion_events", "security_audit_delete"),
+        ("sysmon_file_delete_events", "sysmon_file_delete"),
+    ):
+        for item in evidence.get(source_key) or []:
+            if not isinstance(item, dict):
+                continue
+            occurred_at = normalize_event_time(item.get("TimeCreated"))
+            message = str(item.get("Message") or "")[:240]
+            rows.append(
+                {
+                    "kind": kind,
+                    "label": f"Event {item.get('Id', '?')}",
+                    "path": message.split("\n", 1)[0][:320] if message else kind,
+                    "occurred_at": occurred_at,
+                    "timestamp_source": "event_log" if occurred_at else None,
+                    "detail": message or "Windows event log deletion signal.",
+                }
+            )
+    return rows
+
+
+def build_user_activity_timeline(
+    *,
+    generated_at: str,
+    trash: dict,
+    bam: dict,
+    userassist: dict,
+    prefetch: dict,
+    prefetch_health: dict,
+    recent_items: dict,
+    designated: dict,
+    executor_indicators: dict,
+    persistence: dict,
+    deletion: dict,
+    command_history: dict,
+    roblox: dict,
+    forensic_bundle: dict,
+    sha_blocklist: dict,
+) -> dict:
+    events: list[dict] = []
+
+    for item in trash.get("items") or []:
+        path = str(item.get("original_path") or item.get("name") or "")
+        is_delete = bool(item.get("original_path") or str(item.get("name", "")).startswith("$I"))
+        _append_activity_event(
+            events,
+            category="deletions",
+            kind="recycle_bin" if is_delete else "recycle_bin_artifact",
+            label="Deleted to Recycle Bin" if is_delete else "Recycle Bin item",
+            path=path or str(item.get("location") or ""),
+            occurred_at=item.get("display_at") or item.get("deleted_at") or item.get("modified"),
+            timestamp_source=item.get("timestamp_source"),
+            detail=(
+                f"Original size {item.get('original_size_bytes', '?')} bytes."
+                if is_delete
+                else "Recycle Bin metadata without $I original path."
+            ),
+            generated_at=generated_at,
+            extra={"deleted_at_raw": item.get("deleted_at")},
+        )
+
+    for row in _extract_structured_deletion_events(deletion):
+        _append_activity_event(
+            events,
+            category="deletions",
+            kind=row["kind"],
+            label=row["label"],
+            path=row["path"],
+            occurred_at=row["occurred_at"],
+            timestamp_source=row["timestamp_source"],
+            detail=row["detail"],
+            generated_at=generated_at,
+        )
+
+    usn_rows = (forensic_bundle.get("usn_file_lifecycle_rows") or []) if isinstance(forensic_bundle, dict) else []
+    for row in usn_rows[:160]:
+        reasons = row.get("reasons") or []
+        if not reasons:
+            continue
+        category = "deletions" if any("DELETE" in str(r) for r in reasons) else "filesystem"
+        _append_activity_event(
+            events,
+            category=category,
+            kind="usn_journal",
+            label=", ".join(str(r) for r in reasons[:4]),
+            path=str(row.get("path") or ""),
+            occurred_at=row.get("display_at") or row.get("timestamp_utc"),
+            timestamp_source=row.get("timestamp_source"),
+            detail="NTFS USN journal change record.",
+            generated_at=generated_at,
+        )
+
+    for item in bam.get("items") or []:
+        path = str(item.get("normalized_path") or item.get("registry_path_value") or "")
+        if not path:
+            continue
+        _append_activity_event(
+            events,
+            category="execution",
+            kind="bam_execution",
+            label="Program executed",
+            path=path,
+            occurred_at=item.get("last_execution_utc"),
+            timestamp_source="bam_registry",
+            detail="Background Activity Moderator last execution timestamp.",
+            generated_at=generated_at,
+            extra={"file_exists": item.get("file_exists")},
+        )
+
+    for item in userassist.get("items") or []:
+        path = str(item.get("path") or "")
+        if not path:
+            continue
+        _append_activity_event(
+            events,
+            category="execution",
+            kind="userassist",
+            label=", ".join(item.get("matched_keywords") or []) or "GUI launch",
+            path=path,
+            occurred_at=item.get("display_at") or item.get("last_run_utc"),
+            timestamp_source=item.get("timestamp_source") or "userassist",
+            detail="Explorer UserAssist records a GUI program run.",
+            generated_at=generated_at,
+        )
+
+    pca_items = (forensic_bundle.get("pca_executed") or {}).get("items") or []
+    for item in pca_items[:120]:
+        path = str(item.get("normalized_path") or item.get("raw") or "")
+        if not path:
+            continue
+        _append_activity_event(
+            events,
+            category="execution",
+            kind="pca_compat",
+            label="Compatibility Assistant",
+            path=path,
+            occurred_at=item.get("display_at") or item.get("file_modified_utc"),
+            timestamp_source=item.get("timestamp_source"),
+            detail="PCA store references this executable path.",
+            generated_at=generated_at,
+            extra={"file_exists": item.get("file_exists")},
+        )
+
+    for item in prefetch.get("items") or []:
+        name = str(item.get("name") or "")
+        if not name:
+            continue
+        folder = str(prefetch.get("folder") or "")
+        path = f"{folder}\\{name}" if folder else name
+        _append_activity_event(
+            events,
+            category="execution",
+            kind="prefetch",
+            label="Prefetch trace",
+            path=path,
+            occurred_at=item.get("modified"),
+            timestamp_source="prefetch_mtime",
+            detail="Windows Prefetch records that this executable ran.",
+            generated_at=generated_at,
+        )
+
+    for item in prefetch_health.get("indicator_hits") or []:
+        _append_activity_event(
+            events,
+            category="execution",
+            kind="prefetch_indicator",
+            label=str(item.get("name") or "matched prefetch"),
+            path=str(item.get("name") or ""),
+            occurred_at=item.get("modified"),
+            timestamp_source="prefetch_mtime",
+            detail="Prefetch file matched an executor indicator name.",
+            generated_at=generated_at,
+        )
+
+    for item in recent_items.get("items") or []:
+        folder = str(item.get("folder") or "")
+        name = str(item.get("name") or "")
+        labels = list(item.get("matched_indicator_names") or []) + list(item.get("matched_cheat_filename_hints") or [])
+        if not labels:
+            continue
+        _append_activity_event(
+            events,
+            category="files",
+            kind="recent_download",
+            label=", ".join(labels),
+            path=f"{folder}\\{name}" if folder else name,
+            occurred_at=item.get("modified"),
+            timestamp_source="file_mtime",
+            detail="Recent file in Downloads/Desktop matched scan keywords.",
+            generated_at=generated_at,
+        )
+
+    for item in designated.get("hits") or []:
+        if item.get("path_allowlisted"):
+            continue
+        labels = list(item.get("executor_name_hits") or []) + list(item.get("cheat_filename_hints") or [])
+        if not labels:
+            continue
+        _append_activity_event(
+            events,
+            category="files",
+            kind="profile_folder",
+            label=", ".join(labels),
+            path=str(item.get("path") or ""),
+            occurred_at=item.get("modified"),
+            timestamp_source="file_mtime",
+            detail="User profile folder file matched executor or cheat filename rules.",
+            generated_at=generated_at,
+        )
+
+    for item in executor_indicators.get("file_hits") or []:
+        if item.get("path_allowlisted"):
+            continue
+        labels = list(item.get("matched_names") or []) + list(item.get("cheat_filename_hints") or [])
+        if not labels:
+            continue
+        _append_activity_event(
+            events,
+            category="files",
+            kind="filesystem_scan",
+            label=", ".join(labels),
+            path=str(item.get("path") or ""),
+            occurred_at=item.get("modified"),
+            timestamp_source="file_mtime",
+            detail="Deep filesystem scan matched executor or cheat filename rules.",
+            generated_at=generated_at,
+        )
+
+    for item in sha_blocklist.get("hits") or []:
+        _append_activity_event(
+            events,
+            category="files",
+            kind="sha256_blocklist",
+            label=str(item.get("label") or "known hash"),
+            path=str(item.get("path") or ""),
+            occurred_at=item.get("modified"),
+            timestamp_source="file_mtime",
+            detail="File hash matches a known executor blocklist entry.",
+            generated_at=generated_at,
+        )
+
+    for item in persistence.get("suspicious_entries") or []:
+        if item.get("path_allowlisted"):
+            continue
+        labels = list(item.get("executor_name_hits") or []) + list(item.get("cheat_filename_hints") or [])
+        if not labels:
+            continue
+        target = str(item.get("target") or item.get("name") or "")
+        occurred_at = None
+        timestamp_source = None
+        if target.lower().endswith(".lnk"):
+            try:
+                occurred_at = datetime.fromtimestamp(Path(target).stat().st_mtime, timezone.utc).isoformat()
+                timestamp_source = "shortcut_mtime"
+            except OSError:
+                pass
+        _append_activity_event(
+            events,
+            category="persistence",
+            kind="persistence",
+            label=", ".join(labels),
+            path=target,
+            occurred_at=occurred_at,
+            timestamp_source=timestamp_source,
+            detail=f"Persistence via {item.get('source', 'unknown')}.",
+            generated_at=generated_at,
+        )
+
+    for hit in command_history.get("hits") or []:
+        _append_activity_event(
+            events,
+            category="commands",
+            kind="shell_history",
+            label=", ".join(hit.get("matched") or []) or "keyword",
+            path=str(hit.get("path") or ""),
+            occurred_at=None,
+            timestamp_source=None,
+            detail=str(hit.get("line") or "")[:320],
+            generated_at=generated_at,
+        )
+
+    for log in roblox.get("logs") or []:
+        _append_activity_event(
+            events,
+            category="roblox",
+            kind="roblox_log",
+            label=str(log.get("name") or "Roblox log"),
+            path=str(log.get("path") or log.get("name") or ""),
+            occurred_at=log.get("modified"),
+            timestamp_source="file_mtime",
+            detail="Roblox client log file activity.",
+            generated_at=generated_at,
+        )
+
+    sqlite_pack = forensic_bundle.get("sqlite") if isinstance(forensic_bundle, dict) else {}
+    for db in (sqlite_pack or {}).get("findings") or []:
+        for hit in (db.get("keyword_hits") or [])[:20]:
+            visit = chrome_webkit_time_to_iso(hit.get("last_visit_time"))
+            _append_activity_event(
+                events,
+                category="browser",
+                kind="browser_history",
+                label=str(hit.get("term") or hit.get("group") or "visit"),
+                path=str(hit.get("url") or db.get("database") or ""),
+                occurred_at=visit,
+                timestamp_source="browser_last_visit" if visit else None,
+                detail=str(hit.get("title") or "Browser history keyword hit."),
+                generated_at=generated_at,
+            )
+
+    def _sort_key(row: dict) -> tuple[int, float]:
+        recency_rank = {
+            "last_24h": 0,
+            "last_72h": 1,
+            "last_7d": 2,
+            "older": 3,
+            "unknown": 4,
+        }.get(str(row.get("recency") or ""), 5)
+        occurred = row.get("occurred_at")
+        if not occurred:
+            return recency_rank, 0.0
+        try:
+            ts = datetime.fromisoformat(str(occurred).replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            ts = 0.0
+        return recency_rank, -ts
+
+    events.sort(key=_sort_key)
+
+    with_ts = [e for e in events if e.get("occurred_at")]
+    without_ts = [e for e in events if not e.get("occurred_at")]
+    by_category: dict[str, int] = defaultdict(int)
+    by_recency: dict[str, int] = defaultdict(int)
+    for event in events:
+        by_category[str(event.get("category") or "other")] += 1
+        by_recency[str(event.get("recency") or "unknown")] += 1
+
+    recent_deletions = [
+        e
+        for e in events
+        if e.get("category") == "deletions" and e.get("recency") in ("last_24h", "last_72h", "last_7d")
+    ]
+    recent_executions = [
+        e
+        for e in events
+        if e.get("category") == "execution" and e.get("recency") in ("last_24h", "last_72h")
+    ]
+    insights: list[str] = []
+    if without_ts:
+        insights.append(
+            f"{len(without_ts)} event(s) lack a direct timestamp — often shell history or persistence entries where only the artifact text is available."
+        )
+    if recent_deletions:
+        insights.append(
+            f"{len(recent_deletions)} deletion-related event(s) occurred within the last 7 days — review Recycle Bin, USN, and Security/Sysmon rows first."
+        )
+    if recent_executions:
+        insights.append(
+            f"{len(recent_executions)} execution trace(s) in the last 72 hours via BAM, Prefetch, UserAssist, or PCA."
+        )
+    if not events:
+        insights.append("No user-activity artifacts were collected on this host or scan build.")
+    elif not with_ts:
+        insights.append("No events carried a usable timestamp — re-run with the latest scanner on Windows as Administrator.")
+
+    return {
+        "available": True,
+        "generated_at": generated_at,
+        "event_count": len(events),
+        "timestamped_event_count": len(with_ts),
+        "missing_timestamp_count": len(without_ts),
+        "recent_deletion_count": len(recent_deletions),
+        "recent_execution_count": len(recent_executions),
+        "by_category": dict(sorted(by_category.items(), key=lambda kv: (-kv[1], kv[0]))),
+        "by_recency": dict(sorted(by_recency.items(), key=lambda kv: kv[0])),
+        "insights": insights,
+        "events": events[:250],
+        "note": "Unified, timestamp-first activity feed for reviewer triage. Times are UTC in the raw report; dashboard shows GMT+3.",
+    }
+
+
 def _executor_activity_recency_bucket(timestamp: str | None, report_end: str | None) -> str:
     event_ms = None
     end_ms = None
@@ -15151,6 +15779,10 @@ def build_report() -> dict:
         persistence = fut_persist.result()
         recent_items = fut_recent.result()
         generated_at = datetime.now(timezone.utc).isoformat()
+        trash = fut_trash.result()
+        userassist = fut_userassist.result()
+        roblox = fut_roblox.result()
+        command_history = fut_cmdhist.result()
         executor_activity = build_executor_activity_summary(
             generated_at=generated_at,
             recent_items=recent_items,
@@ -15160,6 +15792,23 @@ def build_report() -> dict:
             executor_indicators=executor_indicators,
             bam=bam_registry,
             persistence=persistence,
+        )
+        user_activity = build_user_activity_timeline(
+            generated_at=generated_at,
+            trash=trash,
+            bam=bam_registry,
+            userassist=userassist,
+            prefetch=prefetch,
+            prefetch_health=prefetch_health,
+            recent_items=recent_items,
+            designated=designated,
+            executor_indicators=executor_indicators,
+            persistence=persistence,
+            deletion=deletion_signals,
+            command_history=command_history,
+            roblox=roblox,
+            forensic_bundle=forensic_bundle,
+            sha_blocklist=sha_blocklist,
         )
 
     processes = []
@@ -15192,10 +15841,10 @@ def build_report() -> dict:
             "disk_free_gb": round(disk.free / (1024**3), 2),
             "boot_time": datetime.fromtimestamp(psutil.boot_time(), timezone.utc).isoformat(),
             "installed_applications": fut_apps.result(),
-            "trash": fut_trash.result(),
+            "trash": trash,
             "prefetch": prefetch,
         },
-        "application_diagnostics": {"roblox": fut_roblox.result()},
+        "application_diagnostics": {"roblox": roblox},
         "process_overview": {
             "count": len(processes),
             "items": sorted(processes, key=lambda item: (item["name"] or "").lower())[:250],
@@ -15203,12 +15852,12 @@ def build_report() -> dict:
         "security_integrity_signals": {
             "amcache": fut_amcache.result(),
             "bam": bam_registry,
-            "userassist": fut_userassist.result(),
+            "userassist": userassist,
             "defender": fut_defender.result(),
             "windows_event_logs": fut_events.result(),
             "xml_event_log_files": fut_xml.result(),
             "recent_items": fut_recent.result(),
-            "command_history_keyword_hits": fut_cmdhist.result(),
+            "command_history_keyword_hits": command_history,
             "services": fut_services.result(),
             "usb_events": fut_usb.result(),
             "shellbag_clear_signal": fut_shellbag.result(),
@@ -15218,6 +15867,7 @@ def build_report() -> dict:
             "designated_folder_suspicious_files": designated,
             "executor_sha256_blocklist": sha_blocklist,
             "executor_activity_summary": executor_activity,
+            "user_activity_timeline": user_activity,
             "persistence_signals": persistence,
             "roblox_runtime_integrity": fut_roblox_int.result(),
             "forensic_analysis": forensic_bundle,

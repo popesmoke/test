@@ -14,6 +14,7 @@ import {
   Gauge,
   Gamepad2,
   GitBranch,
+  History,
   KeyRound,
   LogOut,
   MessageCircle,
@@ -603,6 +604,216 @@ const EXECUTOR_KIND_LABELS = {
   persistence: "Startup / persistence",
 };
 
+  persistence: "Startup / persistence",
+};
+
+const ACTIVITY_CATEGORY_LABELS = {
+  deletions: "Deletions",
+  execution: "Execution",
+  files: "Files",
+  persistence: "Persistence",
+  commands: "Commands",
+  roblox: "Roblox",
+  browser: "Browser",
+  filesystem: "Filesystem",
+};
+
+const ACTIVITY_KIND_LABELS = {
+  recycle_bin: "Recycle Bin delete",
+  recycle_bin_artifact: "Recycle Bin item",
+  security_audit_delete: "Security audit delete",
+  sysmon_file_delete: "Sysmon file delete",
+  usn_journal: "USN journal",
+  bam_execution: "BAM execution",
+  userassist: "UserAssist launch",
+  pca_compat: "PCA compatibility",
+  prefetch: "Prefetch",
+  prefetch_indicator: "Prefetch indicator",
+  recent_download: "Recent download",
+  profile_folder: "Profile folder",
+  filesystem_scan: "Filesystem scan",
+  sha256_blocklist: "SHA256 blocklist",
+  persistence: "Persistence",
+  shell_history: "Shell history",
+  roblox_log: "Roblox log",
+  browser_history: "Browser history",
+};
+
+function userActivityFromReport(report) {
+  const bundled = report.security_integrity_signals?.user_activity_timeline;
+  if (bundled?.available) {
+    return bundled;
+  }
+  return buildClientSideUserActivity(report);
+}
+
+function buildClientSideUserActivity(report) {
+  const sec = report.security_integrity_signals ?? {};
+  const trash = report.performance_environment?.trash ?? {};
+  const events = [];
+  for (const item of trash.items ?? []) {
+    const path = item.original_path || item.name || item.location || "";
+    events.push({
+      category: "deletions",
+      kind: item.original_path ? "recycle_bin" : "recycle_bin_artifact",
+      label: item.original_path ? "Deleted to Recycle Bin" : "Recycle Bin item",
+      path,
+      occurred_at: item.display_at || item.deleted_at || item.modified || null,
+      timestamp_source: item.timestamp_source || (item.deleted_at ? "recycle_metadata" : "file_mtime"),
+      recency: recencyBucket(item.display_at || item.deleted_at || item.modified, report),
+      detail: item.original_path
+        ? "Legacy report — re-scan with latest scanner for full deletion timeline."
+        : "Recycle Bin artifact without parsed $I metadata.",
+    });
+  }
+  for (const item of sec.bam?.items ?? []) {
+    if (!item.normalized_path) continue;
+    events.push({
+      category: "execution",
+      kind: "bam_execution",
+      label: "Program executed",
+      path: item.normalized_path,
+      occurred_at: item.last_execution_utc || null,
+      timestamp_source: "bam_registry",
+      recency: recencyBucket(item.last_execution_utc, report),
+      detail: "BAM execution record from legacy report fields.",
+    });
+  }
+  events.sort((a, b) => dateMs(b.occurred_at) - dateMs(a.occurred_at));
+  const withTs = events.filter((e) => e.occurred_at);
+  return {
+    available: true,
+    event_count: events.length,
+    timestamped_event_count: withTs.length,
+    missing_timestamp_count: events.length - withTs.length,
+    recent_deletion_count: events.filter((e) => e.category === "deletions" && ["last_24h", "last_72h", "last_7d"].includes(e.recency)).length,
+    recent_execution_count: events.filter((e) => e.category === "execution" && ["last_24h", "last_72h"].includes(e.recency)).length,
+    by_category: events.reduce((acc, e) => {
+      acc[e.category] = (acc[e.category] || 0) + 1;
+      return acc;
+    }, {}),
+    by_recency: events.reduce((acc, e) => {
+      acc[e.recency || "unknown"] = (acc[e.recency || "unknown"] || 0) + 1;
+      return acc;
+    }, {}),
+    insights: [
+      events.length
+        ? "Partial timeline built from legacy report data. Install the latest scanner for UserAssist, USN, and browser history timestamps."
+        : "No activity timeline on this report — re-scan with the latest desktop client.",
+    ],
+    events: events.slice(0, 120),
+    note: "Legacy report fallback.",
+  };
+}
+
+function formatTimestampSource(source) {
+  if (!source) return "";
+  return String(source).replace(/_/g, " ");
+}
+
+function UserActivitySection({ report, query }) {
+  const activity = userActivityFromReport(report);
+  const [categoryFilter, setCategoryFilter] = useState("all");
+  const q = query.trim().toLowerCase();
+  const filtered = (activity.events ?? []).filter((event) => {
+    if (categoryFilter !== "all" && event.category !== categoryFilter) return false;
+    if (!q) return true;
+    return [event.label, event.path, event.detail, event.kind, event.category, event.timestamp_source]
+      .join(" ")
+      .toLowerCase()
+      .includes(q);
+  });
+  const categories = Object.keys(activity.by_category ?? {});
+
+  return (
+    <>
+      <Card icon={History} title="User activity timeline">
+        <div className="activity-analytics">
+          <div className="activity-stat-grid">
+            <div className="activity-stat">
+              <strong>{activity.event_count ?? 0}</strong>
+              <span>Total events</span>
+            </div>
+            <div className="activity-stat">
+              <strong>{activity.timestamped_event_count ?? 0}</strong>
+              <span>With timestamps</span>
+            </div>
+            <div className="activity-stat">
+              <strong>{activity.recent_deletion_count ?? 0}</strong>
+              <span>Deletions (7d)</span>
+            </div>
+            <div className="activity-stat">
+              <strong>{activity.recent_execution_count ?? 0}</strong>
+              <span>Executions (72h)</span>
+            </div>
+          </div>
+          {(activity.insights ?? []).length ? (
+            <div className="activity-insights">
+              <strong>Insights</strong>
+              <ul>
+                {activity.insights.map((line) => (
+                  <li key={line}>{line}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          <p className="muted activity-note">
+            Every row shows when the action happened (GMT+3). Deleted items use Recycle Bin $I metadata first, then
+            metadata or data-file fallbacks — so null timestamps are resolved when any OS trace remains.
+          </p>
+        </div>
+        <div className="activity-filters">
+          <button
+            type="button"
+            className={categoryFilter === "all" ? "active" : ""}
+            onClick={() => setCategoryFilter("all")}
+          >
+            All ({activity.event_count ?? 0})
+          </button>
+          {categories.map((cat) => (
+            <button
+              key={cat}
+              type="button"
+              className={categoryFilter === cat ? "active" : ""}
+              onClick={() => setCategoryFilter(cat)}
+            >
+              {ACTIVITY_CATEGORY_LABELS[cat] ?? cat} ({activity.by_category[cat]})
+            </button>
+          ))}
+        </div>
+        {filtered.length ? (
+          <div className="executor-event-list activity-event-list">
+            {filtered.slice(0, 80).map((event, index) => (
+              <div className="executor-event-row activity-event-row" key={`${event.path}-${event.kind}-${index}`}>
+                <div>
+                  <span className={`recency-pill ${event.recency ?? "unknown"}`}>
+                    {(event.recency ?? "unknown").replace(/_/g, " ")}
+                  </span>
+                  <span className="activity-category-pill">{ACTIVITY_CATEGORY_LABELS[event.category] ?? event.category}</span>
+                  <strong>{ACTIVITY_KIND_LABELS[event.kind] ?? event.kind}</strong>
+                  <p className="executor-event-label">{event.label}</p>
+                  <p className="executor-event-path">{event.path}</p>
+                  <small>{event.detail}</small>
+                  {event.timestamp_source ? (
+                    <small className="timestamp-source">Source: {formatTimestampSource(event.timestamp_source)}</small>
+                  ) : null}
+                </div>
+                <div className="activity-time-col">
+                  <time>{event.occurred_at ? formatGmtPlus3(event.occurred_at) : "No timestamp"}</time>
+                  {!event.occurred_at ? <span className="time-label muted">needs re-scan or Admin</span> : null}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="muted">No activity events match the current filter.</p>
+        )}
+        {activity.note ? <p className="muted small-note">{activity.note}</p> : null}
+      </Card>
+    </>
+  );
+}
+
 function executorActivityFromReport(report) {
   const sec = report.security_integrity_signals ?? {};
   const bundled = sec.executor_activity_summary;
@@ -981,29 +1192,77 @@ function CrashLogsSection({ report, query }) {
 function DeletionsSection({ report, query }) {
   const sec = report.security_integrity_signals ?? {};
   const trash = report.performance_environment?.trash ?? {};
+  const activity = userActivityFromReport(report);
+  const deletionEvents = (activity.events ?? []).filter((e) => e.category === "deletions");
+  const trashItems = (trash.items ?? []).filter((item) => item.original_path || item.name?.startsWith?.("$I"));
+
   return (
-    <Card icon={Trash2} title="File Deletions">
-      <TerminalBlock query={query}>
-        {[
-          `Report Date: ${formatGmtPlus3(report.generated_at)}`,
-          "",
-          "Recently Deleted Files From Recycle Bin Metadata:",
-          asJson(trash.items ?? trash),
-          "",
-          "Deleted / Clearing Signals:",
-          asJson(sec.deletion_and_log_clearing_signals),
-          "",
-          "Structured deletion evidence (USN multi-volume, Security 4660/4663, Sysmon 23):",
-          asJson(sec.deletion_and_log_clearing_signals?.deleted_file_evidence),
-          "",
-          "USN Delete Sample (text):",
-          sec.deletion_and_log_clearing_signals?.usn_delete_sample || "No USN delete sample available.",
-          "",
-          "Roblox Log Summary:",
-          asJson(report.application_diagnostics?.roblox),
-        ].join("\n")}
-      </TerminalBlock>
-    </Card>
+    <>
+      <Card icon={Trash2} title="Deleted files (resolved timestamps)">
+        <p className="muted opened-files-intro">
+          Times are shown in <strong>GMT+3</strong>. When Recycle Bin $I metadata is missing or zeroed, the scanner falls
+          back to metadata file mtime or companion $R data file mtime so reviewers still see an approximate delete window.
+        </p>
+        {deletionEvents.length ? (
+          <div className="executor-event-list">
+            {deletionEvents.slice(0, 40).map((event, index) => (
+              <div className="executor-event-row" key={`del-${event.path}-${index}`}>
+                <div>
+                  <span className={`recency-pill ${event.recency ?? "unknown"}`}>
+                    {(event.recency ?? "unknown").replace(/_/g, " ")}
+                  </span>
+                  <strong>{ACTIVITY_KIND_LABELS[event.kind] ?? event.kind}</strong>
+                  <p className="executor-event-path">{event.path}</p>
+                  <small>{event.detail}</small>
+                  {event.timestamp_source ? (
+                    <small className="timestamp-source">Source: {formatTimestampSource(event.timestamp_source)}</small>
+                  ) : null}
+                </div>
+                <time>{event.occurred_at ? formatGmtPlus3(event.occurred_at) : "No timestamp"}</time>
+              </div>
+            ))}
+          </div>
+        ) : trashItems.length ? (
+          <div className="executor-event-list">
+            {trashItems.slice(0, 30).map((item, index) => (
+              <div className="executor-event-row" key={`trash-${item.name}-${index}`}>
+                <div>
+                  <strong>{item.original_path || item.name}</strong>
+                  <p className="executor-event-path">{item.location}</p>
+                  {item.timestamp_source ? (
+                    <small className="timestamp-source">Source: {formatTimestampSource(item.timestamp_source)}</small>
+                  ) : null}
+                </div>
+                <time>
+                  {formatGmtPlus3(item.display_at || item.deleted_at || item.modified)}
+                </time>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="muted">No deleted-file evidence with timestamps was collected.</p>
+        )}
+      </Card>
+      <Card icon={Trash2} title="Raw deletion artifacts">
+        <TerminalBlock query={query}>
+          {[
+            `Report Date: ${formatGmtPlus3(report.generated_at)}`,
+            "",
+            "Recently Deleted Files From Recycle Bin Metadata:",
+            asJson(trash.items ?? trash),
+            "",
+            "Deleted / Clearing Signals:",
+            asJson(sec.deletion_and_log_clearing_signals),
+            "",
+            "Structured deletion evidence (USN multi-volume, Security 4660/4663, Sysmon 23):",
+            asJson(sec.deletion_and_log_clearing_signals?.deleted_file_evidence),
+            "",
+            "USN Delete Sample (text):",
+            sec.deletion_and_log_clearing_signals?.usn_delete_sample || "No USN delete sample available.",
+          ].join("\n")}
+        </TerminalBlock>
+      </Card>
+    </>
   );
 }
 
@@ -1193,6 +1452,7 @@ function ForensicArtifactsSection({ report, query }) {
 
 const resultSections = [
   { id: "starter", label: "Suspicion Score", icon: Gauge, component: StarterSection },
+  { id: "user-activity", label: "User Activity", icon: History, component: UserActivitySection },
   {
     id: "forensic-findings",
     label: "Evidence review",
