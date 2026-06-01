@@ -16483,6 +16483,598 @@ def build_executor_activity_summary(
     }
 
 
+STRING_SCAN_EXTENSIONS = frozenset({".txt", ".log", ".json", ".bat", ".ps1", ".cfg", ".xml", ".lua"})
+STRING_SCAN_MAX_FILES = 100
+STRING_SCAN_MAX_BYTES_PER_FILE = 350_000
+STRING_SCAN_CONTEXT_CHARS = 90
+
+SUSPICIOUS_STRING_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    ("executor_brand", re.compile("|".join(re.escape(n) for n in EXECUTOR_NAMES), re.IGNORECASE)),
+    (
+        "injection_language",
+        re.compile(
+            r"inject(?:or|ion)?|dll\s*hook|memory\s*scan|execute\s*script|script\s*ware|external\s*cheat|"
+            r"bypass\s*anticheat|setfflag|getrawmetatable|hookfunction|loadstring",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "cleanup_language",
+        re.compile(
+            r"wevtutil\s+cl|Clear-EventLog|fsutil\s+usn|deletejournal|vssadmin\s+delete|Remove-Item.*Prefetch|"
+            r"cipher\s+/w|cleaner|trace\s*wipe",
+            re.IGNORECASE,
+        ),
+    ),
+    ("cheat_terms", re.compile(r"aimbot|wallhack|esp\b|noclip|speedhack|triggerbot|free\s*cheat", re.IGNORECASE)),
+]
+
+
+def _digest_path_key(path: str) -> str:
+    return str(path or "").replace("/", "\\").strip().lower()
+
+
+def _digest_basename(path: str) -> str:
+    key = _digest_path_key(path)
+    if not key:
+        return ""
+    parts = [part for part in key.split("\\") if part]
+    return parts[-1] if parts else key
+
+
+def _digest_sort_ts(row: dict) -> float:
+    ts = row.get("occurred_at") or row.get("last_seen") or row.get("modified")
+    if not ts:
+        return 0.0
+    try:
+        return datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def _scan_file_for_strings(path: Path) -> list[dict]:
+    hits: list[dict] = []
+    if path.suffix.lower() not in STRING_SCAN_EXTENSIONS:
+        return hits
+    try:
+        if path.stat().st_size > STRING_SCAN_MAX_BYTES_PER_FILE:
+            return hits
+    except OSError:
+        return hits
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return hits
+    for line_no, line in enumerate(text.splitlines(), start=1):
+        if not line.strip():
+            continue
+        matched_groups: list[str] = []
+        matched_terms: list[str] = []
+        for group, pattern in SUSPICIOUS_STRING_PATTERNS:
+            found = pattern.findall(line)
+            if not found:
+                continue
+            matched_groups.append(group)
+            if isinstance(found[0], tuple):
+                matched_terms.extend([str(x) for x in found[:3]])
+            else:
+                matched_terms.extend([str(x) for x in found[:5]])
+        if not matched_groups:
+            continue
+        snippet = line.strip()
+        if len(snippet) > STRING_SCAN_CONTEXT_CHARS * 2:
+            snippet = snippet[: STRING_SCAN_CONTEXT_CHARS * 2] + "…"
+        hits.append(
+            {
+                "source": "file_content",
+                "file_path": str(path),
+                "line_number": line_no,
+                "matched_groups": sorted(set(matched_groups)),
+                "matched_terms": sorted(set(matched_terms))[:12],
+                "snippet": snippet,
+            }
+        )
+        if len(hits) >= 25:
+            break
+    return hits
+
+
+def recent_disk_executable_scan() -> dict:
+    if platform.system() != "Windows":
+        return {"available": False, "reason": "Recent executable enumeration is Windows-only"}
+    script = (
+        "$cut=(Get-Date).AddDays(-21);"
+        "$roots=@("
+        "(Join-Path $env:USERPROFILE 'Downloads'),"
+        "(Join-Path $env:USERPROFILE 'Desktop'),"
+        "(Join-Path $env:USERPROFILE 'Documents'),"
+        "$env:TEMP,"
+        "(Join-Path $env:LOCALAPPDATA 'Temp')"
+        ");"
+        "$out=@();"
+        "foreach($root in $roots){"
+        " if(-not(Test-Path -LiteralPath $root)){continue}"
+        " Get-ChildItem -LiteralPath $root -Recurse -File -ErrorAction SilentlyContinue |"
+        " Where-Object { $_.Extension -match '^\\.(exe|dll|bat|ps1)$' -and $_.LastWriteTime -ge $cut } |"
+        " Select-Object -First 120 | ForEach-Object {"
+        "  $out += [pscustomobject]@{"
+        "    Path=$_.FullName;"
+        "    Name=$_.Name;"
+        "    Modified=$_.LastWriteTimeUtc.ToString('u');"
+        "    SizeBytes=$_.Length"
+        "  }"
+        " }"
+        "};"
+        "$out | Sort-Object Modified -Descending | Select-Object -First 100 | ConvertTo-Json -Compress"
+    )
+    raw = run_command(["powershell", "-NoProfile", "-Command", script], timeout=22, max_chars=28000)
+    items: list[dict] = []
+    try:
+        if raw and not raw.startswith("Unavailable:"):
+            parsed = json.loads(raw)
+            rows = parsed if isinstance(parsed, list) else [parsed]
+            for row in rows:
+                if isinstance(row, dict) and row.get("Path"):
+                    items.append(
+                        {
+                            "path": str(row.get("Path")),
+                            "name": str(row.get("Name") or _digest_basename(str(row.get("Path")))),
+                            "modified": row.get("Modified"),
+                            "size_bytes": row.get("SizeBytes"),
+                            "source": "disk_enumeration",
+                        }
+                    )
+    except json.JSONDecodeError:
+        pass
+    return {"available": True, "count": len(items), "items": items}
+
+
+def build_executable_inventory(
+    *,
+    generated_at: str,
+    bam: dict,
+    prefetch: dict,
+    prefetch_health: dict,
+    designated: dict,
+    executor_indicators: dict,
+    sha_blocklist: dict,
+    disk_executables: dict,
+) -> dict:
+    patterns = executor_name_patterns()
+    by_path: dict[str, dict] = {}
+
+    def upsert(
+        path: str,
+        *,
+        source: str,
+        occurred_at: str | None = None,
+        labels: list[str] | None = None,
+        suspicious: bool = False,
+        extra: dict | None = None,
+    ) -> None:
+        if not path:
+            return
+        key = _digest_path_key(path)
+        name = _digest_basename(path)
+        row = by_path.get(key)
+        if not row:
+            row = {
+                "path": path.replace("/", "\\"),
+                "name": name,
+                "sources": [],
+                "labels": [],
+                "suspicious": False,
+                "last_seen": None,
+                "file_exists": None,
+            }
+            by_path[key] = row
+        if source not in row["sources"]:
+            row["sources"].append(source)
+        for label in labels or []:
+            if label and label not in row["labels"]:
+                row["labels"].append(label)
+        if suspicious:
+            row["suspicious"] = True
+        if occurred_at and (not row["last_seen"] or occurred_at > row["last_seen"]):
+            row["last_seen"] = occurred_at
+        if extra:
+            row.update({k: v for k, v in extra.items() if v is not None})
+        try:
+            row["file_exists"] = Path(path).is_file()
+        except OSError:
+            row["file_exists"] = False
+
+    for item in disk_executables.get("items") or []:
+        path = str(item.get("path") or "")
+        labels = [
+            label
+            for label, pat in patterns.items()
+            if pat.search(path) or pat.search(str(item.get("name") or ""))
+        ]
+        labels.extend(cheat_filename_hint_labels(_digest_basename(path)))
+        upsert(
+            path,
+            source="disk_scan",
+            occurred_at=item.get("modified"),
+            labels=labels,
+            suspicious=bool(labels),
+            extra={"size_bytes": item.get("size_bytes")},
+        )
+
+    for item in bam.get("items") or []:
+        path = str(item.get("normalized_path") or item.get("registry_path_value") or "")
+        labels = match_executor_labels(path, patterns)
+        labels.extend(cheat_filename_hint_labels(_digest_basename(path)))
+        upsert(
+            path,
+            source="execution_history",
+            occurred_at=item.get("last_execution_utc"),
+            labels=labels,
+            suspicious=bool(labels) or item.get("file_exists") is False,
+            extra={"file_exists": item.get("file_exists")},
+        )
+
+    pf_folder = str(prefetch.get("folder") or "")
+    for item in prefetch.get("items") or []:
+        name = str(item.get("name") or "")
+        path = f"{pf_folder}\\{name}" if pf_folder and name else name
+        stem = re.sub(r"-[0-9A-F]{8}\.pf$", "", name, flags=re.IGNORECASE)
+        stem = re.sub(r"\.pf$", "", stem, flags=re.IGNORECASE)
+        labels = [label for label, pat in patterns.items() if pat.search(stem) or pat.search(name)]
+        labels.extend(cheat_filename_hint_labels(stem))
+        upsert(
+            path,
+            source="runtime_cache",
+            occurred_at=item.get("modified"),
+            labels=labels,
+            suspicious=bool(labels),
+        )
+
+    for item in (designated.get("hits") or []) + (executor_indicators.get("file_hits") or []):
+        path = str(item.get("path") or "")
+        if item.get("path_allowlisted"):
+            continue
+        labels = list(item.get("executor_name_hits") or item.get("matched_names") or [])
+        labels.extend(item.get("cheat_filename_hints") or item.get("matched_cheat_filename_hints") or [])
+        labels.extend(item.get("name_anomaly_reasons") or [])
+        upsert(
+            path,
+            source="folder_scan",
+            occurred_at=item.get("modified"),
+            labels=labels,
+            suspicious=bool(labels),
+        )
+
+    for item in sha_blocklist.get("hits") or []:
+        path = str(item.get("path") or "")
+        upsert(
+            path,
+            source="known_hash",
+            occurred_at=item.get("modified"),
+            labels=[str(item.get("label") or "known_hash")],
+            suspicious=True,
+            extra={"sha256": item.get("sha256")},
+        )
+
+    items = sorted(by_path.values(), key=_digest_sort_ts, reverse=True)
+    suspicious_count = sum(1 for row in items if row.get("suspicious"))
+    return {
+        "available": True,
+        "generated_at": generated_at,
+        "total_count": len(items),
+        "suspicious_count": suspicious_count,
+        "items": items[:200],
+    }
+
+
+def build_execution_activity_feed(
+    *,
+    generated_at: str,
+    bam: dict,
+    userassist: dict,
+    prefetch: dict,
+    forensic_bundle: dict,
+    executor_activity: dict,
+) -> dict:
+    rows: list[dict] = []
+
+    def add(*, path: str, occurred_at: str | None, source: str, summary: str, suspicious: bool = False) -> None:
+        if not path and not summary:
+            return
+        rows.append(
+            {
+                "path": path.replace("/", "\\") if path else "",
+                "name": _digest_basename(path),
+                "occurred_at": occurred_at,
+                "source": source,
+                "summary": summary,
+                "suspicious": suspicious,
+                "recency": _executor_activity_recency_bucket(occurred_at, generated_at),
+            }
+        )
+
+    patterns = executor_name_patterns()
+    for item in bam.get("items") or []:
+        path = str(item.get("normalized_path") or "")
+        if not path:
+            continue
+        labels = match_executor_labels(path, patterns)
+        suspicious = bool(labels) or item.get("file_exists") is False
+        add(
+            path=path,
+            occurred_at=item.get("last_execution_utc"),
+            source="execution_history",
+            summary="A program was run on this PC."
+            + (" The file is no longer on disk." if item.get("file_exists") is False else ""),
+            suspicious=suspicious,
+        )
+
+    for item in userassist.get("items") or []:
+        path = str(item.get("path") or "")
+        if not path:
+            continue
+        keywords = item.get("matched_keywords") or []
+        add(
+            path=path,
+            occurred_at=item.get("display_at") or item.get("last_run_utc"),
+            source="app_launch",
+            summary="An app was opened from the desktop or Start menu.",
+            suspicious=bool(keywords),
+        )
+
+    pf_folder = str(prefetch.get("folder") or "")
+    for item in (prefetch.get("items") or [])[:80]:
+        name = str(item.get("name") or "")
+        path = f"{pf_folder}\\{name}" if pf_folder and name else name
+        stem = re.sub(r"-[0-9A-F]{8}\.pf$", "", name, flags=re.IGNORECASE)
+        stem = re.sub(r"\.pf$", "", stem, flags=re.IGNORECASE)
+        labels = [label for label, pat in patterns.items() if pat.search(stem)]
+        add(
+            path=path,
+            occurred_at=item.get("modified"),
+            source="runtime_cache",
+            summary="Windows cached evidence that a program ran recently.",
+            suspicious=bool(labels),
+        )
+
+    pca_items = (forensic_bundle.get("pca_executed") or {}).get("items") or []
+    for item in pca_items[:60]:
+        path = str(item.get("normalized_path") or item.get("raw") or "")
+        if not path:
+            continue
+        add(
+            path=path,
+            occurred_at=item.get("display_at") or item.get("last_execution_utc") or item.get("file_modified_utc"),
+            source="compatibility_trace",
+            summary="Windows recorded compatibility activity for a program.",
+            suspicious=item.get("file_exists") is False,
+        )
+
+    for event in executor_activity.get("events") or []:
+        add(
+            path=str(event.get("path") or ""),
+            occurred_at=event.get("occurred_at"),
+            source="matched_signal",
+            summary=str(event.get("detail") or "Matched a reviewed executor or cheat signal."),
+            suspicious=True,
+        )
+
+    rows.sort(key=_digest_sort_ts, reverse=True)
+    with_ts = [r for r in rows if r.get("occurred_at")]
+    return {
+        "available": True,
+        "event_count": len(rows),
+        "timestamped_count": len(with_ts),
+        "recent_count": sum(1 for r in rows if r.get("recency") in ("last_24h", "last_72h")),
+        "suspicious_count": sum(1 for r in rows if r.get("suspicious")),
+        "items": rows[:150],
+    }
+
+
+def build_string_detection_hits(
+    *,
+    command_history: dict,
+    roblox: dict,
+    designated: dict,
+    executor_indicators: dict,
+) -> dict:
+    hits: list[dict] = []
+    seen: set[str] = set()
+
+    def append_hit(row: dict) -> None:
+        key = f"{row.get('file_path')}|{row.get('line_number')}|{row.get('snippet')}"
+        if key in seen:
+            return
+        seen.add(key)
+        hits.append(row)
+
+    for item in command_history.get("hits") or []:
+        append_hit(
+            {
+                "source": "powershell_history",
+                "file_path": item.get("path"),
+                "line_number": item.get("line_number_from_tail"),
+                "matched_groups": ["command_history"],
+                "matched_terms": list(item.get("matched") or []),
+                "snippet": str(item.get("line") or "")[:400],
+                "occurred_at": item.get("occurred_at") or item.get("history_file_modified_utc"),
+            }
+        )
+
+    for log in roblox.get("logs") or []:
+        tail = str(log.get("tail") or "")
+        if not tail:
+            continue
+        path = str(log.get("path") or log.get("name") or "")
+        for line_no, line in enumerate(tail.splitlines()[-120:], start=1):
+            matched_groups: list[str] = []
+            matched_terms: list[str] = []
+            for group, pattern in SUSPICIOUS_STRING_PATTERNS:
+                if pattern.search(line):
+                    matched_groups.append(group)
+                    matched_terms.extend(pattern.findall(line)[:3])
+            if not matched_groups:
+                continue
+            append_hit(
+                {
+                    "source": "roblox_log",
+                    "file_path": path,
+                    "line_number": line_no,
+                    "matched_groups": sorted(set(matched_groups)),
+                    "matched_terms": sorted({str(t) for t in matched_terms})[:10],
+                    "snippet": line.strip()[:400],
+                    "occurred_at": log.get("modified"),
+                }
+            )
+
+    scan_paths: list[Path] = []
+    for item in (designated.get("hits") or [])[:40]:
+        p = Path(str(item.get("path") or ""))
+        if p.is_file() and p.suffix.lower() in STRING_SCAN_EXTENSIONS:
+            scan_paths.append(p)
+    for item in (executor_indicators.get("file_hits") or [])[:30]:
+        p = Path(str(item.get("path") or ""))
+        if p.is_file() and p.suffix.lower() in STRING_SCAN_EXTENSIONS:
+            scan_paths.append(p)
+
+    for path in scan_paths[:STRING_SCAN_MAX_FILES]:
+        for row in _scan_file_for_strings(path):
+            row["occurred_at"] = None
+            try:
+                row["occurred_at"] = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
+            except OSError:
+                pass
+            append_hit(row)
+
+    hits.sort(key=lambda r: _digest_sort_ts({"occurred_at": r.get("occurred_at")}), reverse=True)
+    return {
+        "available": True,
+        "hit_count": len(hits),
+        "items": hits[:120],
+        "note": "Searches logs, scripts, and history for cheat, injection, and cleanup-related words.",
+    }
+
+
+def build_last_computer_activity(
+    *,
+    generated_at: str,
+    boot_time: str | None,
+    user_activity: dict,
+    execution_activity: dict,
+) -> dict:
+    milestones: list[dict] = []
+    if boot_time:
+        milestones.append(
+            {
+                "occurred_at": boot_time,
+                "label": "PC was turned on",
+                "summary": "Last boot time for this machine.",
+            }
+        )
+    milestones.append(
+        {
+            "occurred_at": generated_at,
+            "label": "Scan finished",
+            "summary": "This report was collected.",
+        }
+    )
+
+    category_plain = {
+        "deletions": "A file was deleted or moved to the Recycle Bin.",
+        "execution": "A program was run or launched on this PC.",
+        "files": "A file in a watched folder was touched or matched.",
+        "persistence": "Something was set to start with Windows.",
+        "commands": "A command line matched reviewed words.",
+        "roblox": "Roblox log activity was recorded.",
+        "browser": "Browser history matched reviewed words.",
+        "filesystem": "A filesystem change was logged.",
+    }
+    events: list[dict] = []
+    for event in user_activity.get("events") or []:
+        if not event.get("occurred_at"):
+            continue
+        cat = str(event.get("category") or "")
+        events.append(
+            {
+                "occurred_at": event.get("occurred_at"),
+                "category": cat,
+                "summary": category_plain.get(cat) or "Activity was recorded on this PC.",
+                "path": event.get("path"),
+            }
+        )
+    events.sort(key=lambda e: _digest_sort_ts(e), reverse=True)
+
+    return {
+        "available": True,
+        "boot_time": boot_time,
+        "scan_time": generated_at,
+        "milestone_count": len(milestones),
+        "milestones": milestones,
+        "event_count": len(events),
+        "recent_event_count": user_activity.get("recent_execution_count", 0)
+        + user_activity.get("recent_deletion_count", 0),
+        "execution_count": execution_activity.get("event_count", 0),
+        "events": events[:120],
+    }
+
+
+def build_scan_review_bundle(
+    *,
+    generated_at: str,
+    boot_time: str | None,
+    bam: dict,
+    prefetch: dict,
+    prefetch_health: dict,
+    designated: dict,
+    executor_indicators: dict,
+    sha_blocklist: dict,
+    userassist: dict,
+    roblox: dict,
+    command_history: dict,
+    forensic_bundle: dict,
+    executor_activity: dict,
+    user_activity: dict,
+    disk_executables: dict,
+) -> dict:
+    execution_activity = build_execution_activity_feed(
+        generated_at=generated_at,
+        bam=bam,
+        userassist=userassist,
+        prefetch=prefetch,
+        forensic_bundle=forensic_bundle,
+        executor_activity=executor_activity,
+    )
+    executable_inventory = build_executable_inventory(
+        generated_at=generated_at,
+        bam=bam,
+        prefetch=prefetch,
+        prefetch_health=prefetch_health,
+        designated=designated,
+        executor_indicators=executor_indicators,
+        sha_blocklist=sha_blocklist,
+        disk_executables=disk_executables,
+    )
+    string_detection = build_string_detection_hits(
+        command_history=command_history,
+        roblox=roblox,
+        designated=designated,
+        executor_indicators=executor_indicators,
+    )
+    last_computer_activity = build_last_computer_activity(
+        generated_at=generated_at,
+        boot_time=boot_time,
+        user_activity=user_activity,
+        execution_activity=execution_activity,
+    )
+    return {
+        "available": True,
+        "last_computer_activity": last_computer_activity,
+        "executable_inventory": executable_inventory,
+        "string_detection": string_detection,
+        "execution_activity": execution_activity,
+    }
+
+
 def build_report() -> dict:
     scan_started_at = datetime.now(timezone.utc).isoformat()
     memory = psutil.virtual_memory()
@@ -16516,6 +17108,7 @@ def build_report() -> dict:
         fut_exec_ind = pool.submit(executor_indicator_scan)
         fut_persist = pool.submit(persistence_signals)
         fut_roblox_int = pool.submit(roblox_integrity_scan, prefetch)
+        fut_disk_exe = pool.submit(recent_disk_executable_scan)
 
         forensic_bundle = fut_forensic.result()
         bam_structured = forensic_bundle.get("bam_structured")
@@ -16611,6 +17204,25 @@ def build_report() -> dict:
             amcache=fut_amcache.result(),
             command_history=command_history,
         )
+        disk_executables = fut_disk_exe.result()
+        boot_time_iso = datetime.fromtimestamp(psutil.boot_time(), timezone.utc).isoformat()
+        scan_review = build_scan_review_bundle(
+            generated_at=generated_at,
+            boot_time=boot_time_iso,
+            bam=bam_registry,
+            prefetch=prefetch,
+            prefetch_health=prefetch_health,
+            designated=designated,
+            executor_indicators=executor_indicators,
+            sha_blocklist=sha_blocklist,
+            userassist=userassist,
+            roblox=roblox,
+            command_history=command_history,
+            forensic_bundle=forensic_bundle,
+            executor_activity=executor_activity,
+            user_activity=user_activity,
+            disk_executables=disk_executables,
+        )
 
     processes = []
     for proc in psutil.process_iter(["pid", "name", "username", "status"]):
@@ -16673,6 +17285,7 @@ def build_report() -> dict:
             "roblox_runtime_integrity": fut_roblox_int.result(),
             "forensic_analysis": forensic_bundle,
             "bypass_resilience": bypass_resilience,
+            "scan_review": scan_review,
         },
     }
 

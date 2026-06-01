@@ -1750,3 +1750,128 @@ input {
   border-style: dashed;
   color: #d4dde2;
 }
+
+.simple-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.simple-tabs button {
+  min-height: 38px;
+  padding: 0 14px;
+  font-size: 13px;
+  border-radius: 999px;
+  background: rgba(12, 10, 12, 0.8);
+  color: #b8c5cc;
+}
+
+.simple-tabs button.active {
+  background: linear-gradient(180deg, #f12b3d, #b11220);
+  border-color: #ef233c;
+  color: #fff;
+}
+
+.simple-milestones {
+  list-style: none;
+  margin: 0 0 16px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.simple-milestones li {
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid #2a2226;
+  background: rgba(8, 7, 9, 0.5);
+}
+
+.simple-milestones time {
+  display: block;
+  font-size: 11px;
+  color: #9eb7c0;
+}
+
+.simple-milestones strong {
+  display: block;
+  margin-top: 4px;
+  color: #f4f4f5;
+}
+
+.simple-milestones span {
+  display: block;
+  font-size: 13px;
+  color: #b8c5cc;
+  margin-top: 2px;
+}
+
+.simple-timeline--warn {
+  border-color: rgba(239, 35, 60, 0.35) !important;
+}
+
+.simple-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.simple-filter-row button {
+  min-height: 34px;
+  font-size: 12px;
+  border-radius: 999px;
+}
+
+.simple-filter-row button.active {
+  border-color: #ef233c;
+  color: #fff;
+}
+
+.simple-program-list,
+.simple-string-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.simple-program-list li,
+.simple-string-list li {
+  padding: 14px 16px;
+  border-radius: 12px;
+  border: 1px solid #2a2226;
+  background: rgba(8, 7, 9, 0.55);
+}
+
+.simple-program--warn,
+.simple-string-list li:has(.simple-string-snippet) {
+  border-color: rgba(239, 35, 60, 0.28);
+}
+
+.simple-program-list strong {
+  display: block;
+  font-size: 15px;
+  color: #f4f4f5;
+}
+
+.simple-tag {
+  display: inline-block;
+  margin-left: 8px;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(239, 35, 60, 0.35);
+  color: #ffb3bc;
+}
+
+.simple-string-snippet {
+  margin: 0 0 6px;
+  font-size: 14px;
+  line-height: 1.45;
+  color: #f4f4f5;
+}

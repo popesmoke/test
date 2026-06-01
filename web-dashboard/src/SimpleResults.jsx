@@ -5,11 +5,15 @@ import {
   ChevronRight,
   Clock3,
   Download,
+  FileCode2,
   HelpCircle,
   ListChecks,
+  Play,
+  Search,
   ShieldAlert,
   Sparkles,
 } from "lucide-react";
+import { scanReviewFromReport } from "./reportDigest.js";
 
 const VERDICT_META = {
   clean: {
@@ -32,6 +36,14 @@ const VERDICT_META = {
   },
 };
 
+const TABS = [
+  { id: "overview", label: "Summary", icon: Sparkles },
+  { id: "activity", label: "Last activity", icon: Clock3 },
+  { id: "execution", label: "Programs run", icon: Play },
+  { id: "programs", label: "Program list", icon: FileCode2 },
+  { id: "strings", label: "Word matches", icon: Search },
+];
+
 function simpleVerdict(score, bypassRisk) {
   const combined = Math.min(100, Math.round(score * 0.75 + (bypassRisk || 0) * 0.35));
   if (combined >= 70) return { ...VERDICT_META.bad, combined };
@@ -42,16 +54,16 @@ function simpleVerdict(score, bypassRisk) {
 function friendlyReason(label, detail) {
   const map = {
     "Known executor binary hash": "A file matched a known cheat program fingerprint.",
-    "Roblox integrity signals": "Something around Roblox looked wrong while checking the game and its files.",
-    "Executor / cheat path matches": "A file name or folder looked like a cheat or loader.",
-    "Executor / cheat-tagged recent files": "A recently touched file looked like a cheat or loader.",
-    "Prefetch execution traces": "The PC recently ran a program that matched our watch list.",
-    "Profile folder hits": "A suspicious file sat in Downloads, Desktop, or Documents.",
+    "Roblox integrity signals": "Something around Roblox looked wrong.",
+    "Executor / cheat path matches": "A file or folder looked like a cheat or loader.",
+    "Executor / cheat-tagged recent files": "A recent file looked like a cheat or loader.",
+    "Prefetch execution traces": "The PC recently ran a program on our watch list.",
+    "Profile folder hits": "A suspicious file was in Downloads, Desktop, or Documents.",
     "Cheat-like filename hints": "A file name looked like a common cheat label.",
     "Weird filename pattern": "A file name looked randomly generated or disguised.",
     "Persistence entry": "Something was set to start automatically with Windows.",
     "Cross-source stem match": "The same program name showed up in more than one place.",
-    "BAM activity": "The PC recently ran a program that matched our watch list.",
+    "BAM activity": "The PC recently ran a program on our watch list.",
     "Defender signal": "Windows security settings or history looked unusual.",
     "Deletion or log clearing": "Signs appeared that logs or traces may have been cleaned up.",
     "Bypass / cover-up signals": "Signs appeared that someone may have tried to hide activity.",
@@ -71,7 +83,6 @@ function buildSimpleProblems(report, summary) {
       severity: row.severity || "medium",
       title: row.title,
       detail: row.detail,
-      kind: "cover",
     });
   }
 
@@ -82,15 +93,13 @@ function buildSimpleProblems(report, summary) {
       severity: reason.points >= 20 ? "high" : reason.points >= 10 ? "medium" : "low",
       title: friendlyReason(reason.label, reason.detail),
       detail: reason.detail,
-      kind: "match",
     });
   }
 
   const seen = new Set();
   return problems.filter((p) => {
-    const key = p.title;
-    if (seen.has(key)) return false;
-    seen.add(key);
+    if (seen.has(p.title)) return false;
+    seen.add(p.title);
     return true;
   });
 }
@@ -131,27 +140,20 @@ function ProblemCard({ problem }) {
   );
 }
 
-export function SimpleResults({
-  detail,
-  report,
-  summary,
-  activity,
-  activityEventSummary,
-  formatGmtPlus3,
-  onExpertMode,
-  onDownload,
-}) {
-  const sec = report.security_integrity_signals ?? {};
-  const bypass = sec.bypass_resilience ?? {};
-  const verdict = useMemo(
-    () => simpleVerdict(summary.score, bypass.risk_score ?? 0),
-    [summary.score, bypass.risk_score],
-  );
-  const problems = useMemo(() => buildSimpleProblems(report, summary), [report, summary]);
-  const events = (activity.events ?? []).filter((e) => e.occurred_at).slice(0, 12);
-
+function PathFold({ path }) {
+  if (!path) return null;
   return (
-    <div className="simple-results">
+    <details className="simple-path-fold">
+      <summary>Show location on PC</summary>
+      <code>{path}</code>
+    </details>
+  );
+}
+
+function OverviewTab({ verdict, problems, review, formatGmtPlus3 }) {
+  const activity = review.last_computer_activity ?? {};
+  return (
+    <>
       <section className={`simple-hero simple-hero--${verdict.tone}`}>
         <div className="simple-hero-main">
           <span className="simple-hero-emoji" aria-hidden>
@@ -171,14 +173,10 @@ export function SimpleResults({
       </section>
 
       <section className="simple-stats-row">
-        <SimpleStat label="Warning signs" value={problems.length} hint="Things worth reading" />
-        <SimpleStat
-          label="Recent activity"
-          value={activity.recent_execution_count ?? 0}
-          hint="Last few days"
-        />
-        <SimpleStat label="Files removed" value={activity.recent_deletion_count ?? 0} hint="Last week" />
-        <SimpleStat label="Match score" value={summary.score} hint="Technical tally" />
+        <SimpleStat label="Warning signs" value={problems.length} hint="Read the list below" />
+        <SimpleStat label="Things that happened" value={activity.event_count ?? 0} hint="With a time" />
+        <SimpleStat label="Programs run" value={review.execution_activity?.event_count ?? 0} hint="Found on PC" />
+        <SimpleStat label="Word matches" value={review.string_detection?.hit_count ?? 0} hint="In logs & files" />
       </section>
 
       <section className="simple-panel">
@@ -186,12 +184,12 @@ export function SimpleResults({
           <ListChecks size={22} />
           <div>
             <h4>What stood out</h4>
-            <p>Short list in plain words. No need to know Windows jargon.</p>
+            <p>The main things a reviewer should know, in plain words.</p>
           </div>
         </header>
         {problems.length ? (
           <div className="simple-problem-list">
-            {problems.slice(0, 10).map((problem) => (
+            {problems.slice(0, 12).map((problem) => (
               <ProblemCard key={problem.id} problem={problem} />
             ))}
           </div>
@@ -203,55 +201,272 @@ export function SimpleResults({
         )}
       </section>
 
-      <section className="simple-panel">
-        <header className="simple-panel-head">
-          <Clock3 size={22} />
-          <div>
-            <h4>What happened recently</h4>
-            <p>Newest things first. Times are GMT+3.</p>
-          </div>
-        </header>
-        {events.length ? (
-          <ul className="simple-timeline">
-            {events.map((event, index) => (
-              <li key={`${event.path}-${event.kind}-${index}`}>
-                <time>{formatGmtPlus3(event.occurred_at)}</time>
-                <p>{activityEventSummary(event)}</p>
-                <details className="simple-path-fold">
-                  <summary>Show file path</summary>
-                  <code>{event.path}</code>
-                </details>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="muted">No timed activity rows on this report yet.</p>
-        )}
-      </section>
-
       <section className="simple-panel simple-panel--tips">
         <header className="simple-panel-head">
           <Sparkles size={22} />
           <div>
-            <h4>How to read this</h4>
+            <h4>Quick guide</h4>
           </div>
         </header>
         <ul className="simple-tips">
           <li>
-            <strong>Green-ish</strong> — nothing big matched. Still not a 100% guarantee someone is clean.
+            <strong>Summary</strong> — start here for the big picture.
           </li>
           <li>
-            <strong>Yellow</strong> — a few clues. Ask questions and look at the list above.
+            <strong>Last activity</strong> — what the PC did recently, in time order.
           </li>
           <li>
-            <strong>Red</strong> — many clues. Treat this as high priority.
+            <strong>Programs run</strong> — apps and files that were executed.
+          </li>
+          <li>
+            <strong>Program list</strong> — executables we found on disk.
+          </li>
+          <li>
+            <strong>Word matches</strong> — cheat or cleanup words inside files and history.
           </li>
         </ul>
+        {activity.boot_time ? (
+          <p className="muted small-note">PC last turned on: {formatGmtPlus3(activity.boot_time)}</p>
+        ) : null}
       </section>
+    </>
+  );
+}
+
+function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 }) {
+  const block = review.last_computer_activity ?? {};
+  let events = block.events ?? [];
+  if (!events.length && (activity?.events ?? []).length) {
+    events = (activity.events ?? [])
+      .filter((e) => e.occurred_at)
+      .map((e) => ({
+        occurred_at: e.occurred_at,
+        summary: activityEventSummary(e),
+        path: e.path,
+      }))
+      .sort((a, b) => new Date(b.occurred_at) - new Date(a.occurred_at));
+  }
+
+  return (
+    <section className="simple-panel">
+      <header className="simple-panel-head">
+        <Clock3 size={22} />
+        <div>
+          <h4>Last computer activity</h4>
+          <p>What this PC did lately. Newest first (GMT+3).</p>
+        </div>
+      </header>
+      {(block.milestones ?? []).length ? (
+        <ul className="simple-milestones">
+          {block.milestones.map((m) => (
+            <li key={`${m.label}-${m.occurred_at}`}>
+              <time>{formatGmtPlus3(m.occurred_at)}</time>
+              <strong>{m.label}</strong>
+              <span>{m.summary}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {events.length ? (
+        <ul className="simple-timeline">
+          {events.map((event, index) => (
+            <li key={`${event.path}-${event.occurred_at}-${index}`}>
+              <time>{formatGmtPlus3(event.occurred_at)}</time>
+              <p>{event.summary || "Activity recorded"}</p>
+              <PathFold path={event.path} />
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="muted">No timed activity on this report. Try a new scan with the latest app.</p>
+      )}
+    </section>
+  );
+}
+
+function ExecutionTab({ review, formatGmtPlus3 }) {
+  const block = review.execution_activity ?? {};
+  const items = block.items ?? [];
+
+  return (
+    <section className="simple-panel">
+      <header className="simple-panel-head">
+        <Play size={22} />
+        <div>
+          <h4>Execution activity</h4>
+          <p>Programs and files that look like they were run on this PC.</p>
+        </div>
+      </header>
+      <p className="muted panel-intro">
+        {block.suspicious_count ?? 0} flagged · {block.event_count ?? 0} total runs traced
+      </p>
+      {items.length ? (
+        <ul className="simple-timeline">
+          {items.slice(0, 40).map((row, index) => (
+            <li
+              key={`${row.path}-${row.occurred_at}-${index}`}
+              className={row.suspicious ? "simple-timeline--warn" : ""}
+            >
+              <time>{row.occurred_at ? formatGmtPlus3(row.occurred_at) : "Time unknown"}</time>
+              <p>
+                <strong>{row.name || "Program"}</strong> — {row.summary}
+              </p>
+              <PathFold path={row.path} />
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="muted">No execution traces were recorded.</p>
+      )}
+    </section>
+  );
+}
+
+function ProgramsTab({ review, formatGmtPlus3 }) {
+  const block = review.executable_inventory ?? {};
+  const items = block.items ?? [];
+  const [onlyFlagged, setOnlyFlagged] = useState(true);
+  const shown = onlyFlagged ? items.filter((i) => i.suspicious) : items;
+
+  return (
+    <section className="simple-panel">
+      <header className="simple-panel-head">
+        <FileCode2 size={22} />
+        <div>
+          <h4>Program list (executables)</h4>
+          <p>Apps and files found on this PC — especially in Downloads, Desktop, and Temp.</p>
+        </div>
+      </header>
+      <div className="simple-filter-row">
+        <button
+          type="button"
+          className={onlyFlagged ? "active" : ""}
+          onClick={() => setOnlyFlagged(true)}
+        >
+          Flagged only ({block.suspicious_count ?? 0})
+        </button>
+        <button
+          type="button"
+          className={!onlyFlagged ? "active" : ""}
+          onClick={() => setOnlyFlagged(false)}
+        >
+          All found ({block.total_count ?? 0})
+        </button>
+      </div>
+      {shown.length ? (
+        <ul className="simple-program-list">
+          {shown.slice(0, 50).map((row, index) => (
+            <li key={`${row.path}-${index}`} className={row.suspicious ? "simple-program--warn" : ""}>
+              <div>
+                <strong>{row.name || "File"}</strong>
+                {row.labels?.length ? (
+                  <span className="simple-tag">{row.labels.slice(0, 3).join(", ")}</span>
+                ) : null}
+                <p className="muted">
+                  {row.file_exists === false ? "File is gone now · " : ""}
+                  Last seen {row.last_seen ? formatGmtPlus3(row.last_seen) : "unknown"}
+                </p>
+              </div>
+              <PathFold path={row.path} />
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="muted">No programs in this filter. Try showing all found.</p>
+      )}
+    </section>
+  );
+}
+
+function StringsTab({ review, formatGmtPlus3 }) {
+  const block = review.string_detection ?? {};
+  const items = block.items ?? [];
+
+  return (
+    <section className="simple-panel">
+      <header className="simple-panel-head">
+        <Search size={22} />
+        <div>
+          <h4>Word matches (string detection)</h4>
+          <p>Cheat, injection, or cleanup words found inside files, logs, or command history.</p>
+        </div>
+      </header>
+      {items.length ? (
+        <ul className="simple-string-list">
+          {items.slice(0, 40).map((row, index) => (
+            <li key={`${row.file_path}-${index}`}>
+              <p className="simple-string-snippet">“{row.snippet}”</p>
+              <p className="muted">
+                Matched: {(row.matched_terms ?? []).slice(0, 6).join(", ") || "keywords"}
+                {row.occurred_at ? ` · ${formatGmtPlus3(row.occurred_at)}` : ""}
+              </p>
+              <PathFold path={row.file_path} />
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <div className="simple-empty">
+          <CheckCircle2 size={28} />
+          <p>No suspicious words were found in scanned text.</p>
+        </div>
+      )}
+    </section>
+  );
+}
+
+export function SimpleResults({
+  report,
+  summary,
+  activity,
+  activityEventSummary,
+  formatGmtPlus3,
+  onExpertMode,
+  onDownload,
+}) {
+  const [tab, setTab] = useState("overview");
+  const sec = report.security_integrity_signals ?? {};
+  const bypass = sec.bypass_resilience ?? {};
+  const review = useMemo(() => scanReviewFromReport(report), [report]);
+  const verdict = useMemo(
+    () => simpleVerdict(summary.score, bypass.risk_score ?? 0),
+    [summary.score, bypass.risk_score],
+  );
+  const problems = useMemo(() => buildSimpleProblems(report, summary), [report, summary]);
+
+  return (
+    <div className="simple-results">
+      <nav className="simple-tabs" aria-label="Result sections">
+        {TABS.map(({ id, label, icon: Icon }) => (
+          <button
+            key={id}
+            type="button"
+            className={tab === id ? "active" : ""}
+            onClick={() => setTab(id)}
+          >
+            <Icon size={17} />
+            {label}
+          </button>
+        ))}
+      </nav>
+
+      {tab === "overview" ? (
+        <OverviewTab verdict={verdict} problems={problems} review={review} formatGmtPlus3={formatGmtPlus3} />
+      ) : null}
+      {tab === "activity" ? (
+        <ActivityTab
+          review={review}
+          activity={activity}
+          activityEventSummary={activityEventSummary}
+          formatGmtPlus3={formatGmtPlus3}
+        />
+      ) : null}
+      {tab === "execution" ? <ExecutionTab review={review} formatGmtPlus3={formatGmtPlus3} /> : null}
+      {tab === "programs" ? <ProgramsTab review={review} formatGmtPlus3={formatGmtPlus3} /> : null}
+      {tab === "strings" ? <StringsTab review={review} formatGmtPlus3={formatGmtPlus3} /> : null}
 
       <footer className="simple-footer">
         <button type="button" className="simple-expert-btn" onClick={onExpertMode}>
-          Open advanced reviewer view
+          Advanced reviewer view
         </button>
         <button type="button" className="download-button" onClick={onDownload}>
           <Download size={15} /> Save full report

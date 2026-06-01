@@ -2021,7 +2021,9 @@ function Results({ detail }) {
             })}
           </nav>
         ) : (
-          <p className="results-nav-hint">Easy view is on. Open advanced review only if you need raw detail.</p>
+          <p className="results-nav-hint">
+            Use the tabs: Summary, Last activity, Programs run, Program list, Word matches.
+          </p>
         )}
       </aside>
       <div className="result-content">
@@ -2058,7 +2060,6 @@ function Results({ detail }) {
           </>
         ) : (
           <SimpleResults
-            detail={detail}
             report={report}
             summary={summary}
             activity={activity}
