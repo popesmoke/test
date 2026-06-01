@@ -13183,6 +13183,7 @@ def bam_registry_entries(bam_structured: dict | None = None) -> dict:
         return {
             "available": True,
             "source": "HKLM SYSTEM CurrentControlSet Services bam State UserSettings",
+            "items": items,
             "raw_sample": json.dumps(items[:120], default=str)[:12000],
             "note": "Structured BAM parse (same data as forensic_analysis.bam_structured).",
         }
@@ -13426,20 +13427,49 @@ def command_history_keyword_hits() -> dict:
     if userprofile:
         candidates.append(Path(userprofile) / "AppData" / "Roaming" / "Microsoft" / "Windows" / "PowerShell" / "PSReadLine" / "ConsoleHost_history.txt")
 
-    keywords = EXECUTOR_NAMES + ["prefetch", "usn", "fsutil", "journal", "wevtutil", "clear-log", "Clear-EventLog", "Set-MpPreference", "Add-MpPreference"]
+    keywords = EXECUTOR_NAMES + ["prefetch", "usn", "fsutil", "journal", "wevtutil", "clear-log", "Clear-EventLog", "Set-MpPreference", "Add-MpPreference", "Unblock-File", "Potassium"]
     hits = []
     for path in candidates:
         if not path.exists():
             continue
         try:
+            stat = path.stat()
+            file_mtime = datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()
+        except OSError:
+            file_mtime = None
+        try:
             lines = path.read_text(errors="replace").splitlines()[-500:]
         except Exception:
             continue
-        for index, line in enumerate(lines, start=max(1, len(lines) - 499)):
+        total = len(lines)
+        for offset, line in enumerate(lines):
             matched = [keyword for keyword in keywords if keyword.lower() in line.lower()]
-            if matched:
-                hits.append({"path": str(path), "line_number_from_tail": index, "matched": matched, "line": line[:500]})
-    return {"available": True, "hits": hits[:120], "note": "Only lines matching diagnostic keywords are included."}
+            if not matched:
+                continue
+            lines_from_end = total - offset
+            occurred_at = file_mtime
+            hits.append(
+                {
+                    "path": str(path),
+                    "line_number_from_tail": lines_from_end,
+                    "matched": matched,
+                    "line": line[:500],
+                    "history_file_modified_utc": file_mtime,
+                    "occurred_at": occurred_at,
+                    "timestamp_source": "powershell_history_file_mtime",
+                    "timeline_note": (
+                        "PSReadLine history is a plain text log without per-line UTC clocks. "
+                        "The time shown is when this history file was last updated on disk — "
+                        "usually close to when recent commands (low 'lines from end') were run."
+                    ),
+                    "lines_from_end": lines_from_end,
+                }
+            )
+    return {
+        "available": True,
+        "hits": hits[:120],
+        "note": "Matched PowerShell lines include history-file mtime as the best available activity time.",
+    }
 
 
 def windows_service_signals() -> dict:
@@ -14383,26 +14413,56 @@ def _build_recycle_timestamp_index(trash: dict) -> dict[str, str]:
     return by_path
 
 
-def enrich_pca_executed_records(
-    pca: dict[str, object],
+def _build_shell_history_correlation_index(
+    command_history: dict[str, object] | None,
+) -> tuple[dict[str, str], dict[str, str]]:
+    by_path: dict[str, str] = {}
+    by_basename: dict[str, str] = {}
+    for hit in (command_history or {}).get("hits") or []:
+        ts = normalize_event_time(hit.get("occurred_at") or hit.get("history_file_modified_utc"))
+        if not ts:
+            continue
+        line = str(hit.get("line") or "")
+        for match in re.finditer(r'([A-Za-z]:\\(?:[^"\n\r]+))', line, re.IGNORECASE):
+            key = _artifact_path_key(match.group(1))
+            if key:
+                existing = by_path.get(key)
+                if not existing or ts > existing:
+                    by_path[key] = ts
+        for match in re.finditer(r"([^\s\\/,;\"|]+\.(?:exe|dll|bat|ps1))", line, re.IGNORECASE):
+            base = match.group(1).lower()
+            existing = by_basename.get(base)
+            if not existing or ts > existing:
+                by_basename[base] = ts
+    return by_path, by_basename
+
+
+def resolve_path_activity_timestamp(
+    path: str,
     *,
-    bam: dict[str, object],
-    prefetch: dict[str, object],
-    usn_records: list[dict[str, object]],
+    bam: dict[str, object] | None = None,
+    prefetch: dict[str, object] | None = None,
+    usn_records: list[dict[str, object]] | None = None,
     trash: dict[str, object] | None = None,
     designated: dict[str, object] | None = None,
     recent_items: dict[str, object] | None = None,
     userassist: dict[str, object] | None = None,
-) -> dict[str, object]:
-    if not pca.get("available"):
-        return pca
+    command_history: dict[str, object] | None = None,
+    pca_store_key_modified: str | None = None,
+) -> tuple[str | None, str | None, dict[str, str]]:
+    norm = str(path or "")
+    if not norm:
+        return None, None, {}
+    stem = Path(norm).stem.upper() if norm else ""
+    correlated: dict[str, str] = {}
+
     bam_by_path, bam_by_base = _build_timestamp_index(
-        list(bam.get("items") or []),
+        list((bam or {}).get("items") or []),
         path_field="normalized_path",
         time_field="last_execution_utc",
     )
-    usn_by_path, usn_by_delete, usn_by_base = _build_usn_timestamp_index(list(usn_records))
-    prefetch_by_stem = _build_prefetch_timestamp_index(prefetch)
+    usn_by_path, usn_by_delete, usn_by_base = _build_usn_timestamp_index(list(usn_records or []))
+    prefetch_by_stem = _build_prefetch_timestamp_index(prefetch or {})
     recycle_by_path = _build_recycle_timestamp_index(trash or {})
     designated_by_path = _build_simple_path_timestamp_index(
         list((designated or {}).get("hits") or []),
@@ -14424,103 +14484,182 @@ def enrich_pca_executed_records(
         path_field="path",
         time_field="last_run_utc",
     )
-    store_key_modified = normalize_event_time(pca.get("store_key_modified_utc"))
+    shell_by_path, shell_by_base = _build_shell_history_correlation_index(command_history)
 
+    bam_ts = _lookup_indexed_timestamp(norm, bam_by_path, bam_by_base)
+    if bam_ts:
+        correlated["bam_execution"] = bam_ts
+    usn_delete_ts = _lookup_indexed_timestamp(norm, usn_by_delete, usn_by_base)
+    if usn_delete_ts:
+        correlated["usn_delete"] = usn_delete_ts
+    usn_ts = _lookup_indexed_timestamp(norm, usn_by_path, usn_by_base)
+    if usn_ts:
+        correlated["usn_journal"] = usn_ts
+    if stem in prefetch_by_stem:
+        correlated["prefetch_mtime"] = prefetch_by_stem[stem]
+    recycle_ts = _lookup_indexed_timestamp(norm, recycle_by_path, {})
+    if recycle_ts:
+        correlated["recycle_bin"] = recycle_ts
+    designated_ts = _lookup_indexed_timestamp(norm, designated_by_path, {})
+    if designated_ts:
+        correlated["designated_mtime"] = designated_ts
+    recent_ts = _lookup_indexed_timestamp(norm, recent_by_path, {})
+    if recent_ts:
+        correlated["recent_mtime"] = recent_ts
+    userassist_ts = _lookup_indexed_timestamp(norm, userassist_by_path, {})
+    if userassist_ts:
+        correlated["userassist"] = userassist_ts
+    shell_ts = _lookup_indexed_timestamp(norm, shell_by_path, shell_by_base)
+    if shell_ts:
+        correlated["powershell_history"] = shell_ts
+
+    fallback_order = (
+        "bam_execution",
+        "prefetch_mtime",
+        "usn_delete",
+        "powershell_history",
+        "recycle_bin",
+        "designated_mtime",
+        "recent_mtime",
+        "userassist",
+        "usn_journal",
+    )
+    fallbacks = [(name, correlated[name]) for name in fallback_order if name in correlated]
+    display_at, timestamp_source = resolve_display_timestamp(primary=None, fallbacks=fallbacks)
+    if not display_at and pca_store_key_modified:
+        display_at, timestamp_source = pca_store_key_modified, "pca_store_key_mtime"
+    return display_at, timestamp_source, correlated
+
+
+def _apply_resolved_timestamp_to_pca_item(
+    item: dict[str, object],
+    display_at: str | None,
+    timestamp_source: str | None,
+    correlated: dict[str, str],
+) -> None:
+    if correlated:
+        item["correlated_timestamps"] = correlated
+    if not display_at:
+        return
+    item["display_at"] = display_at
+    item["timestamp_source"] = timestamp_source
+    if timestamp_source == "bam_execution":
+        item["last_execution_utc"] = display_at
+    elif timestamp_source == "prefetch_mtime":
+        item["prefetch_modified_utc"] = display_at
+    elif timestamp_source in {"usn_delete", "usn_journal"}:
+        item["usn_timestamp_utc"] = display_at
+    elif timestamp_source == "recycle_bin":
+        item["recycle_deleted_at"] = display_at
+    elif timestamp_source == "powershell_history":
+        item["powershell_history_utc"] = display_at
+
+
+def enrich_pca_executed_records(
+    pca: dict[str, object],
+    *,
+    bam: dict[str, object],
+    prefetch: dict[str, object],
+    usn_records: list[dict[str, object]],
+    trash: dict[str, object] | None = None,
+    designated: dict[str, object] | None = None,
+    recent_items: dict[str, object] | None = None,
+    userassist: dict[str, object] | None = None,
+    command_history: dict[str, object] | None = None,
+) -> dict[str, object]:
+    if not pca.get("available"):
+        return pca
+    store_key_modified = normalize_event_time(pca.get("store_key_modified_utc"))
     for item in pca.get("items") or []:
         if item.get("display_at"):
             continue
         norm = str(item.get("normalized_path") or "")
         if not norm:
             continue
-        path_key = _artifact_path_key(norm)
-        stem = Path(norm).stem.upper() if norm else ""
-        correlated: dict[str, str] = {}
-
-        bam_ts = _lookup_indexed_timestamp(norm, bam_by_path, bam_by_base)
-        if bam_ts:
-            correlated["bam_execution"] = bam_ts
-
-        usn_delete_ts = _lookup_indexed_timestamp(norm, usn_by_delete, usn_by_base)
-        if usn_delete_ts:
-            correlated["usn_delete"] = usn_delete_ts
-        usn_ts = _lookup_indexed_timestamp(norm, usn_by_path, usn_by_base)
-        if usn_ts:
-            correlated["usn_journal"] = usn_ts
-
-        if stem in prefetch_by_stem:
-            correlated["prefetch_mtime"] = prefetch_by_stem[stem]
-
-        recycle_ts = _lookup_indexed_timestamp(norm, recycle_by_path, {})
-        if recycle_ts:
-            correlated["recycle_bin"] = recycle_ts
-
-        designated_ts = _lookup_indexed_timestamp(norm, designated_by_path, {})
-        if designated_ts:
-            correlated["designated_mtime"] = designated_ts
-
-        recent_ts = _lookup_indexed_timestamp(norm, recent_by_path, {})
-        if recent_ts:
-            correlated["recent_mtime"] = recent_ts
-
-        userassist_ts = _lookup_indexed_timestamp(norm, userassist_by_path, {})
-        if userassist_ts:
-            correlated["userassist"] = userassist_ts
-
-        fallback_order = (
-            "bam_execution",
-            "prefetch_mtime",
-            "usn_delete",
-            "recycle_bin",
-            "designated_mtime",
-            "recent_mtime",
-            "userassist",
-            "usn_journal",
+        display_at, timestamp_source, correlated = resolve_path_activity_timestamp(
+            norm,
+            bam=bam,
+            prefetch=prefetch,
+            usn_records=usn_records,
+            trash=trash,
+            designated=designated,
+            recent_items=recent_items,
+            userassist=userassist,
+            command_history=command_history,
+            pca_store_key_modified=store_key_modified,
         )
-        fallbacks = [(name, correlated[name]) for name in fallback_order if name in correlated]
-        display_at, timestamp_source = resolve_display_timestamp(primary=None, fallbacks=fallbacks)
-        if not display_at and store_key_modified:
-            display_at, timestamp_source = store_key_modified, "pca_store_key_mtime"
-
-        if correlated:
-            item["correlated_timestamps"] = correlated
-        if display_at:
-            item["display_at"] = display_at
-            item["timestamp_source"] = timestamp_source
-            if timestamp_source == "bam_execution":
-                item["last_execution_utc"] = display_at
-            elif timestamp_source == "prefetch_mtime":
-                item["prefetch_modified_utc"] = display_at
-            elif timestamp_source in {"usn_delete", "usn_journal"}:
-                item["usn_timestamp_utc"] = display_at
-            elif timestamp_source == "recycle_bin":
-                item["recycle_deleted_at"] = display_at
-
+        _apply_resolved_timestamp_to_pca_item(item, display_at, timestamp_source, correlated)
     return pca
 
 
-def sync_pca_timestamps_to_findings(forensic_bundle: dict[str, object]) -> None:
-    pca_items = list((forensic_bundle.get("pca_executed") or {}).get("items") or [])
-    if not pca_items:
-        return
+def sync_forensic_finding_timestamps(
+    forensic_bundle: dict[str, object],
+    *,
+    bam: dict[str, object],
+    prefetch: dict[str, object],
+    usn_records: list[dict[str, object]],
+    trash: dict[str, object] | None = None,
+    designated: dict[str, object] | None = None,
+    recent_items: dict[str, object] | None = None,
+    userassist: dict[str, object] | None = None,
+    command_history: dict[str, object] | None = None,
+) -> None:
+    pca = forensic_bundle.get("pca_executed") or {}
+    pca_items = list(pca.get("items") or [])
+    store_key_modified = normalize_event_time(pca.get("store_key_modified_utc"))
     for finding in forensic_bundle.get("detections_flat") or []:
         if not isinstance(finding, dict):
             continue
-        if "PCA" not in str(finding.get("artifact_source") or ""):
+        path = str(finding.get("file_path") or "")
+        if not path:
             continue
-        target_path = str(finding.get("file_path") or "")
-        matched = None
+        existing_ts = (finding.get("timestamps") or {}).get("display_at")
+        if existing_ts and str(existing_ts).strip() and str(existing_ts).lower() not in {"none", "null"}:
+            continue
+        display_at, timestamp_source, correlated = resolve_path_activity_timestamp(
+            path,
+            bam=bam,
+            prefetch=prefetch,
+            usn_records=usn_records,
+            trash=trash,
+            designated=designated,
+            recent_items=recent_items,
+            userassist=userassist,
+            command_history=command_history,
+            pca_store_key_modified=store_key_modified,
+        )
+        for item in pca_items:
+            if _paths_relate(path, str(item.get("normalized_path") or "")):
+                _apply_resolved_timestamp_to_pca_item(item, display_at, timestamp_source, correlated)
+                break
+        if display_at:
+            finding["timestamps"] = {
+                "display_at": display_at,
+                "timestamp_source": timestamp_source,
+                "correlated": correlated,
+            }
+
+
+def patch_unified_correlation_timeline(forensic_bundle: dict[str, object]) -> None:
+    uc = forensic_bundle.get("unified_correlation")
+    if not isinstance(uc, dict):
+        return
+    pca_items = list((forensic_bundle.get("pca_executed") or {}).get("items") or [])
+    timeline = list(uc.get("timeline") or [])
+    for row in timeline:
+        if row.get("artifact") != "pca_store":
+            continue
+        path = str(row.get("path") or "")
         for item in pca_items:
             norm = str(item.get("normalized_path") or "")
-            if _paths_relate(target_path, norm):
-                matched = item
-                break
-        if not matched or not matched.get("display_at"):
-            continue
-        timestamps = dict(finding.get("timestamps") or {})
-        timestamps["display_at"] = matched.get("display_at")
-        timestamps["timestamp_source"] = matched.get("timestamp_source")
-        timestamps["correlated"] = matched.get("correlated_timestamps") or {}
-        finding["timestamps"] = timestamps
+            if not _paths_relate(path, norm):
+                continue
+            ts = item.get("display_at") or item.get("file_modified_utc")
+            if ts:
+                row["timestamp"] = ts
+            break
+    timeline.sort(key=lambda x: (x.get("timestamp") or ""), reverse=True)
+    uc["timeline"] = timeline
 
 
 def removable_drive_letters() -> set[str]:
@@ -15726,16 +15865,18 @@ def build_user_activity_timeline(
         )
 
     for hit in command_history.get("hits") or []:
+        occurred = normalize_event_time(hit.get("occurred_at") or hit.get("history_file_modified_utc"))
         _append_activity_event(
             events,
             category="commands",
             kind="shell_history",
             label=", ".join(hit.get("matched") or []) or "keyword",
             path=str(hit.get("path") or ""),
-            occurred_at=None,
-            timestamp_source=None,
+            occurred_at=occurred,
+            timestamp_source=hit.get("timestamp_source") or ("powershell_history_file_mtime" if occurred else None),
             detail=str(hit.get("line") or "")[:320],
             generated_at=generated_at,
+            extra={"lines_from_end": hit.get("lines_from_end"), "timeline_note": hit.get("timeline_note")},
         )
 
     for log in roblox.get("logs") or []:
@@ -16107,17 +16248,30 @@ def build_report() -> dict:
         userassist = fut_userassist.result()
         roblox = fut_roblox.result()
         command_history = fut_cmdhist.result()
+        usn_rows = forensic_bundle.get("usn_file_lifecycle_rows") or []
         enrich_pca_executed_records(
             forensic_bundle.get("pca_executed") or {},
             bam=forensic_bundle.get("bam_structured") or {},
             prefetch=prefetch,
-            usn_records=forensic_bundle.get("usn_file_lifecycle_rows") or [],
+            usn_records=usn_rows,
             trash=trash,
             designated=designated,
             recent_items=recent_items,
             userassist=userassist,
+            command_history=command_history,
         )
-        sync_pca_timestamps_to_findings(forensic_bundle)
+        sync_forensic_finding_timestamps(
+            forensic_bundle,
+            bam=forensic_bundle.get("bam_structured") or {},
+            prefetch=prefetch,
+            usn_records=usn_rows,
+            trash=trash,
+            designated=designated,
+            recent_items=recent_items,
+            userassist=userassist,
+            command_history=command_history,
+        )
+        patch_unified_correlation_timeline(forensic_bundle)
         executor_activity = build_executor_activity_summary(
             generated_at=generated_at,
             recent_items=recent_items,

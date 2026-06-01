@@ -710,7 +710,26 @@ function enrichPcaItemFromReport(report, item) {
     if (pathsRelate(norm, row.path) && row.last_run_utc) add("userassist", row.last_run_utc);
   }
 
-  const order = ["bam_execution", "prefetch_mtime", "usn_delete", "recycle_bin", "designated_mtime", "recent_mtime", "userassist", "usn_journal"];
+  for (const hit of sec.command_history_keyword_hits?.hits ?? []) {
+    const ts = hit.occurred_at || hit.history_file_modified_utc;
+    const line = hit.line || "";
+    if (!ts) continue;
+    if (pathsRelate(norm, line) || line.toLowerCase().includes(basenameOf(norm).toLowerCase())) {
+      add("powershell_history", ts);
+    }
+  }
+
+  const order = [
+    "bam_execution",
+    "prefetch_mtime",
+    "usn_delete",
+    "powershell_history",
+    "recycle_bin",
+    "designated_mtime",
+    "recent_mtime",
+    "userassist",
+    "usn_journal",
+  ];
   let displayAt = null;
   let timestampSource = null;
   for (const key of order) {
@@ -734,12 +753,65 @@ function enrichedPcaItems(report) {
   return items.map((item) => enrichPcaItemFromReport(report, item));
 }
 
+function resolvePathTimestampFromReport(report, path) {
+  if (!path) return { display_at: null, timestamp_source: null, correlated: {} };
+  const sec = report.security_integrity_signals ?? {};
+  const fa = sec.forensic_analysis ?? {};
+  const perf = report.performance_environment ?? {};
+  const correlated = {};
+  const add = (source, ts) => {
+    if (ts && !correlated[source]) correlated[source] = ts;
+  };
+
+  const pca = enrichedPcaItems(report).find((item) => pathsRelate(path, item.normalized_path || item.raw));
+  if (pca?.display_at) {
+    return {
+      display_at: pca.display_at,
+      timestamp_source: pca.timestamp_source,
+      correlated: pca.correlated_timestamps || {},
+    };
+  }
+
+  for (const row of [...(fa.bam_structured?.items ?? []), ...(sec.bam?.items ?? [])]) {
+    const bp = row.normalized_path || row.registry_path_value;
+    if (pathsRelate(path, bp) && row.last_execution_utc) add("bam_execution", row.last_execution_utc);
+  }
+  for (const row of perf.prefetch?.items ?? []) {
+    const name = String(row.name || "");
+    const stem = name.replace(/-[0-9A-F]{8}\.pf$/i, "").replace(/\.pf$/i, "").toUpperCase();
+    if (stem === basenameOf(path).replace(/\.[^.]+$/, "").toUpperCase() && row.modified) {
+      add("prefetch_mtime", row.modified);
+    }
+  }
+  for (const hit of sec.command_history_keyword_hits?.hits ?? []) {
+    const ts = hit.occurred_at || hit.history_file_modified_utc;
+    const line = hit.line || "";
+    if (!ts) continue;
+    if (pathsRelate(path, line) || line.toLowerCase().includes(basenameOf(path).toLowerCase())) {
+      add("powershell_history", ts);
+    }
+  }
+
+  const order = ["bam_execution", "prefetch_mtime", "powershell_history", "usn_delete", "recycle_bin"];
+  for (const key of order) {
+    if (correlated[key]) {
+      return { display_at: correlated[key], timestamp_source: key, correlated };
+    }
+  }
+  return { display_at: null, timestamp_source: null, correlated };
+}
+
 function findingResolvedTime(report, finding) {
   const direct = finding.timestamps?.display_at;
-  if (direct && direct !== "null" && direct !== "None") return direct;
-  const path = finding.file_path || "";
-  const pca = enrichedPcaItems(report).find((item) => pathsRelate(path, item.normalized_path || item.raw));
-  return pca?.display_at ?? null;
+  if (direct && direct !== "null" && direct !== "None" && String(direct).trim()) return direct;
+  const resolved = resolvePathTimestampFromReport(report, finding.file_path || "");
+  return resolved.display_at ?? null;
+}
+
+function findingTimestampSource(report, finding) {
+  const direct = finding.timestamps?.timestamp_source;
+  if (direct && String(direct).trim()) return direct;
+  return resolvePathTimestampFromReport(report, finding.file_path || "").timestamp_source;
 }
 
 function userActivityFromReport(report) {
@@ -1170,7 +1242,43 @@ function SystemSection({ report, query }) {
         <TerminalBlock query={query}>{asJson(perf.trash)}</TerminalBlock>
       </Card>
       <Card icon={Terminal} title="Shell History">
-        <TerminalBlock query={query}>{asJson(sec.command_history_keyword_hits)}</TerminalBlock>
+        <p className="muted panel-intro">
+          PowerShell PSReadLine does not store per-command UTC. The time shown is when the history file was last
+          updated — usually when recent commands (low &quot;lines from end&quot;) were entered.
+        </p>
+        {(sec.command_history_keyword_hits?.hits ?? []).length ? (
+          <div className="evidence-list">
+            {(sec.command_history_keyword_hits.hits ?? [])
+              .filter((hit) => {
+                const q = query.trim().toLowerCase();
+                if (!q) return true;
+                return [hit.line, hit.matched, hit.path].join(" ").toLowerCase().includes(q);
+              })
+              .slice(0, 40)
+              .map((hit, index) => (
+                <div className="evidence-row evidence-row--static" key={`sh-${index}`}>
+                  <div className="evidence-row-main">
+                    <strong className="evidence-row-title">{(hit.matched ?? []).join(", ") || "keyword"}</strong>
+                    <p className="evidence-row-path">{hit.line}</p>
+                    <small className="evidence-row-meta">
+                      {hit.lines_from_end != null ? `${hit.lines_from_end} line(s) from end of history` : "history match"}
+                    </small>
+                  </div>
+                  <time className="evidence-row-time">
+                    {hit.occurred_at || hit.history_file_modified_utc
+                      ? formatGmtPlus3(hit.occurred_at || hit.history_file_modified_utc)
+                      : "No timestamp"}
+                  </time>
+                </div>
+              ))}
+          </div>
+        ) : (
+          <p className="muted">No matching shell history lines.</p>
+        )}
+        <details className="raw-fold">
+          <summary>View raw shell history JSON</summary>
+          <TerminalBlock query={query}>{asJson(sec.command_history_keyword_hits)}</TerminalBlock>
+        </details>
       </Card>
     </>
   );
@@ -1471,6 +1579,12 @@ function ForensicFindingsSection({ report, query }) {
           ) : (
             filtered.slice(0, 120).map((d, index) => {
               const when = findingResolvedTime(report, d);
+              const src = findingTimestampSource(report, d);
+              const resolved = resolvePathTimestampFromReport(report, d.file_path || "");
+              const correlated =
+                (d.timestamps?.correlated && Object.keys(d.timestamps.correlated).length
+                  ? d.timestamps.correlated
+                  : null) || resolved.correlated;
               return (
                 <details className="evidence-row" key={`${d.file_path ?? d.reason}-${index}`}>
                   <summary className="evidence-row-summary">
@@ -1480,6 +1594,7 @@ function ForensicFindingsSection({ report, query }) {
                       <p className="evidence-row-path">{d.file_path || "—"}</p>
                       <small className="evidence-row-meta">
                         {d.artifact_source ?? "—"} · risk {d.risk_score ?? 0}
+                        {src ? ` · ${formatTimestampSource(src)}` : ""}
                       </small>
                     </div>
                     <time className="evidence-row-time">
@@ -1501,13 +1616,24 @@ function ForensicFindingsSection({ report, query }) {
                           : "—"}
                       </strong>
                     </div>
-                    {(d.timestamps?.correlated && Object.keys(d.timestamps.correlated).length) ||
-                    (d.correlated_evidence ?? []).length ? (
+                    {correlated && Object.keys(correlated).length ? (
+                      <p className="muted small-note">
+                        Linked times:{" "}
+                        {Object.entries(correlated)
+                          .map(([k, v]) => `${formatTimestampSource(k)} ${formatGmtPlus3(v)}`)
+                          .join(" · ")}
+                      </p>
+                    ) : null}
+                    {(d.correlated_evidence ?? []).length ? (
                       <details className="raw-fold">
                         <summary>Technical detail</summary>
                         <pre className="terminal terminal--compact">
                           {asJson({
-                            timestamps: d.timestamps,
+                            timestamps: {
+                              display_at: when,
+                              timestamp_source: src,
+                              correlated,
+                            },
                             correlated_evidence: d.correlated_evidence,
                           })}
                         </pre>
@@ -1590,16 +1716,54 @@ function ForensicCorrelationSection({ report, query }) {
       </Card>
     );
   }
+  const pcaEnriched = enrichedPcaItems(report);
+  const timeline = (uc.timeline ?? []).map((row) => {
+    if (row.artifact !== "pca_store" || row.timestamp) return row;
+    const match = pcaEnriched.find((item) => pathsRelate(row.path || "", item.normalized_path || item.raw));
+    if (match?.display_at) return { ...row, timestamp: match.display_at };
+    return row;
+  });
+  const q = query.trim().toLowerCase();
+  const timelineFiltered = q
+    ? timeline.filter((row) =>
+        [row.artifact, row.path, row.detail, row.timestamp].join(" ").toLowerCase().includes(q),
+      )
+    : timeline;
+
   return (
     <>
       <Card icon={GitBranch} title="Cross-artifact summary">
-        <TerminalBlock query={query}>{asJson(uc.cross_artifact_summary)}</TerminalBlock>
+        <details className="raw-fold">
+          <summary>View summary JSON</summary>
+          <TerminalBlock query={query}>{asJson(uc.cross_artifact_summary)}</TerminalBlock>
+        </details>
       </Card>
       <Card icon={GitBranch} title="Execution chains">
-        <TerminalBlock query={query}>{asJson(uc.execution_chains ?? [])}</TerminalBlock>
+        <details className="raw-fold">
+          <summary>View execution chains JSON</summary>
+          <TerminalBlock query={query}>{asJson(uc.execution_chains ?? [])}</TerminalBlock>
+        </details>
       </Card>
-      <Card icon={Clock3} title="Unified timeline (sample)">
-        <TerminalBlock query={query}>{asJson((uc.timeline ?? []).slice(0, 200))}</TerminalBlock>
+      <Card icon={Clock3} title="Cross-source timeline">
+        <p className="muted panel-intro">Merged OS artifacts (newest first). PCA rows use correlated times when the file is gone.</p>
+        <div className="evidence-list">
+          {timelineFiltered.slice(0, 80).map((row, index) => (
+            <div className="evidence-row evidence-row--static" key={`tl-${row.artifact}-${index}`}>
+              <div className="evidence-row-main">
+                <strong className="evidence-row-title">{row.artifact ?? "artifact"}</strong>
+                <p className="evidence-row-path">{row.path || "—"}</p>
+                <small className="evidence-row-meta">{row.detail ?? ""}</small>
+              </div>
+              <time className="evidence-row-time">
+                {row.timestamp ? formatGmtPlus3(row.timestamp) : "No timestamp"}
+              </time>
+            </div>
+          ))}
+        </div>
+        <details className="raw-fold">
+          <summary>View raw timeline JSON</summary>
+          <TerminalBlock query={query}>{asJson(timelineFiltered.slice(0, 200))}</TerminalBlock>
+        </details>
       </Card>
     </>
   );
