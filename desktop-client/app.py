@@ -14275,24 +14275,32 @@ def _build_timestamp_index(
     return by_path, by_basename
 
 
-def _lookup_correlated_timestamp(
+def _paths_relate(left: str, right: str) -> bool:
+    a = _artifact_path_key(left)
+    b = _artifact_path_key(right)
+    if not a or not b:
+        return False
+    if a == b or a.endswith(b) or b.endswith(a):
+        return True
+    shared = basename_key(a)
+    return bool(shared) and shared == basename_key(b)
+
+
+def _lookup_indexed_timestamp(
     path: str,
-    *,
     by_path: dict[str, str],
     by_basename: dict[str, str],
-    by_suffix: dict[str, str] | None = None,
-) -> tuple[str | None, str | None]:
+) -> str | None:
     key = _artifact_path_key(path)
     if key and key in by_path:
-        return by_path[key], "bam_execution"
-    if by_suffix and key:
-        for suffix, ts in by_suffix.items():
-            if key.endswith(suffix) or suffix.endswith(key):
-                return ts, "bam_execution"
+        return by_path[key]
+    for stored_path, ts in by_path.items():
+        if _paths_relate(key, stored_path):
+            return ts
     base = basename_key(path)
     if base and base in by_basename:
-        return by_basename[base], "bam_execution"
-    return None, None
+        return by_basename[base]
+    return None
 
 
 def _build_usn_timestamp_index(usn_records: list[dict]) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
@@ -14303,21 +14311,44 @@ def _build_usn_timestamp_index(usn_records: list[dict]) -> tuple[dict[str, str],
         ts = normalize_event_time(row.get("display_at") or row.get("timestamp_utc"))
         if not ts:
             continue
-        path = _artifact_path_key(str(row.get("path") or ""))
-        if not path:
-            continue
         reasons = row.get("reasons") or []
         is_delete = any("DELETE" in str(r) for r in reasons)
         target = by_delete if is_delete else by_path
-        existing = target.get(path)
-        if not existing or ts > existing:
-            target[path] = ts
-        base = basename_key(path)
-        if base:
+        path = _artifact_path_key(str(row.get("path") or ""))
+        basenames: set[str] = set()
+        if path:
+            existing = target.get(path)
+            if not existing or ts > existing:
+                target[path] = ts
+            base = basename_key(path)
+            if base:
+                basenames.add(base)
+        raw = str(row.get("raw") or "")
+        for match in re.finditer(r"([^\s\\/,;\"|]+\.(?:exe|dll|bat|ps1))", raw, re.IGNORECASE):
+            basenames.add(match.group(1).lower())
+        for base in basenames:
             existing_base = by_basename.get(base)
             if not existing_base or ts > existing_base:
                 by_basename[base] = ts
     return by_path, by_delete, by_basename
+
+
+def _build_simple_path_timestamp_index(
+    items: list[dict],
+    *,
+    path_field: str,
+    time_field: str,
+) -> dict[str, str]:
+    by_path: dict[str, str] = {}
+    for item in items:
+        path = _artifact_path_key(str(item.get(path_field) or ""))
+        ts = normalize_event_time(item.get(time_field))
+        if not path or not ts:
+            continue
+        existing = by_path.get(path)
+        if not existing or ts > existing:
+            by_path[path] = ts
+    return by_path
 
 
 def _build_prefetch_timestamp_index(prefetch: dict) -> dict[str, str]:
@@ -14359,6 +14390,9 @@ def enrich_pca_executed_records(
     prefetch: dict[str, object],
     usn_records: list[dict[str, object]],
     trash: dict[str, object] | None = None,
+    designated: dict[str, object] | None = None,
+    recent_items: dict[str, object] | None = None,
+    userassist: dict[str, object] | None = None,
 ) -> dict[str, object]:
     if not pca.get("available"):
         return pca
@@ -14370,6 +14404,26 @@ def enrich_pca_executed_records(
     usn_by_path, usn_by_delete, usn_by_base = _build_usn_timestamp_index(list(usn_records))
     prefetch_by_stem = _build_prefetch_timestamp_index(prefetch)
     recycle_by_path = _build_recycle_timestamp_index(trash or {})
+    designated_by_path = _build_simple_path_timestamp_index(
+        list((designated or {}).get("hits") or []),
+        path_field="path",
+        time_field="modified",
+    )
+    recent_by_path: dict[str, str] = {}
+    for item in (recent_items or {}).get("items") or []:
+        folder = str(item.get("folder") or "")
+        name = str(item.get("name") or "")
+        combined = _artifact_path_key(f"{folder}\\{name}" if folder and name else name or folder)
+        ts = normalize_event_time(item.get("modified"))
+        if combined and ts:
+            existing = recent_by_path.get(combined)
+            if not existing or ts > existing:
+                recent_by_path[combined] = ts
+    userassist_by_path = _build_simple_path_timestamp_index(
+        list((userassist or {}).get("items") or []),
+        path_field="path",
+        time_field="last_run_utc",
+    )
     store_key_modified = normalize_event_time(pca.get("store_key_modified_utc"))
 
     for item in pca.get("items") or []:
@@ -14382,31 +14436,45 @@ def enrich_pca_executed_records(
         stem = Path(norm).stem.upper() if norm else ""
         correlated: dict[str, str] = {}
 
-        bam_ts, _ = _lookup_correlated_timestamp(norm, by_path=bam_by_path, by_basename=bam_by_base)
+        bam_ts = _lookup_indexed_timestamp(norm, bam_by_path, bam_by_base)
         if bam_ts:
             correlated["bam_execution"] = bam_ts
 
-        if path_key in usn_by_delete:
-            correlated["usn_delete"] = usn_by_delete[path_key]
-        if path_key in usn_by_path:
-            correlated["usn_journal"] = usn_by_path[path_key]
-        base = basename_key(norm)
-        if base in usn_by_base and "usn_delete" not in correlated:
-            correlated["usn_journal_basename"] = usn_by_base[base]
+        usn_delete_ts = _lookup_indexed_timestamp(norm, usn_by_delete, usn_by_base)
+        if usn_delete_ts:
+            correlated["usn_delete"] = usn_delete_ts
+        usn_ts = _lookup_indexed_timestamp(norm, usn_by_path, usn_by_base)
+        if usn_ts:
+            correlated["usn_journal"] = usn_ts
 
         if stem in prefetch_by_stem:
             correlated["prefetch_mtime"] = prefetch_by_stem[stem]
 
-        if path_key in recycle_by_path:
-            correlated["recycle_bin"] = recycle_by_path[path_key]
+        recycle_ts = _lookup_indexed_timestamp(norm, recycle_by_path, {})
+        if recycle_ts:
+            correlated["recycle_bin"] = recycle_ts
+
+        designated_ts = _lookup_indexed_timestamp(norm, designated_by_path, {})
+        if designated_ts:
+            correlated["designated_mtime"] = designated_ts
+
+        recent_ts = _lookup_indexed_timestamp(norm, recent_by_path, {})
+        if recent_ts:
+            correlated["recent_mtime"] = recent_ts
+
+        userassist_ts = _lookup_indexed_timestamp(norm, userassist_by_path, {})
+        if userassist_ts:
+            correlated["userassist"] = userassist_ts
 
         fallback_order = (
             "bam_execution",
             "prefetch_mtime",
             "usn_delete",
             "recycle_bin",
+            "designated_mtime",
+            "recent_mtime",
+            "userassist",
             "usn_journal",
-            "usn_journal_basename",
         )
         fallbacks = [(name, correlated[name]) for name in fallback_order if name in correlated]
         display_at, timestamp_source = resolve_display_timestamp(primary=None, fallbacks=fallbacks)
@@ -14422,12 +14490,37 @@ def enrich_pca_executed_records(
                 item["last_execution_utc"] = display_at
             elif timestamp_source == "prefetch_mtime":
                 item["prefetch_modified_utc"] = display_at
-            elif timestamp_source in {"usn_delete", "usn_journal", "usn_journal_basename"}:
+            elif timestamp_source in {"usn_delete", "usn_journal"}:
                 item["usn_timestamp_utc"] = display_at
             elif timestamp_source == "recycle_bin":
                 item["recycle_deleted_at"] = display_at
 
     return pca
+
+
+def sync_pca_timestamps_to_findings(forensic_bundle: dict[str, object]) -> None:
+    pca_items = list((forensic_bundle.get("pca_executed") or {}).get("items") or [])
+    if not pca_items:
+        return
+    for finding in forensic_bundle.get("detections_flat") or []:
+        if not isinstance(finding, dict):
+            continue
+        if "PCA" not in str(finding.get("artifact_source") or ""):
+            continue
+        target_path = str(finding.get("file_path") or "")
+        matched = None
+        for item in pca_items:
+            norm = str(item.get("normalized_path") or "")
+            if _paths_relate(target_path, norm):
+                matched = item
+                break
+        if not matched or not matched.get("display_at"):
+            continue
+        timestamps = dict(finding.get("timestamps") or {})
+        timestamps["display_at"] = matched.get("display_at")
+        timestamps["timestamp_source"] = matched.get("timestamp_source")
+        timestamps["correlated"] = matched.get("correlated_timestamps") or {}
+        finding["timestamps"] = timestamps
 
 
 def removable_drive_letters() -> set[str]:
@@ -15295,6 +15388,7 @@ def build_forensic_analysis_bundle(
         prefetch=prefetch,
         usn_records=usn_records,
         trash=trash,
+        designated=designated,
     )
     bundle = assemble_forensic_detections(
         designated=designated,
@@ -16019,7 +16113,11 @@ def build_report() -> dict:
             prefetch=prefetch,
             usn_records=forensic_bundle.get("usn_file_lifecycle_rows") or [],
             trash=trash,
+            designated=designated,
+            recent_items=recent_items,
+            userassist=userassist,
         )
+        sync_pca_timestamps_to_findings(forensic_bundle)
         executor_activity = build_executor_activity_summary(
             generated_at=generated_at,
             recent_items=recent_items,

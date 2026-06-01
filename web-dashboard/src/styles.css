@@ -14,8 +14,8 @@ body {
   min-width: 320px;
   min-height: 100vh;
   background:
-    radial-gradient(circle at 50% -20%, rgba(239, 35, 60, 0.28), transparent 34rem),
-    linear-gradient(180deg, #0c0708 0%, #050506 44%, #07080a 100%);
+    radial-gradient(ellipse 80% 50% at 50% -20%, rgba(239, 35, 60, 0.14), transparent 55%),
+    #09090b;
 }
 
 button,
@@ -350,9 +350,9 @@ input {
 .sidebar,
 .results,
 .empty-state {
-  border: 1px solid #2d171d;
-  border-radius: 8px;
-  background: rgba(13, 11, 14, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 14px;
+  background: #101012;
 }
 
 .sidebar {
@@ -592,11 +592,11 @@ input {
 }
 
 .result-card {
-  border: 1px solid #2d171d;
-  border-radius: 8px;
-  background: linear-gradient(180deg, rgba(22, 18, 21, 0.98), rgba(12, 10, 12, 0.98));
-  padding: 20px;
-  box-shadow: 0 16px 50px rgba(0, 0, 0, 0.24);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 14px;
+  background: #121214;
+  padding: 18px 20px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
 }
 
 .card-title {
@@ -1162,6 +1162,161 @@ input {
   color: #7a9199 !important;
 }
 
+.panel-intro {
+  margin-bottom: 14px;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.review-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.review-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: #121214;
+}
+
+.review-stat strong {
+  font-size: 24px;
+  font-weight: 700;
+  color: #fafafa;
+}
+
+.review-stat span {
+  font-size: 12px;
+  color: #8b9499;
+}
+
+.review-stat--warn strong {
+  color: #ef233c;
+}
+
+.evidence-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.evidence-row {
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 12px;
+  background: #0c0c0e;
+  overflow: hidden;
+}
+
+.evidence-row--static {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 12px;
+  align-items: start;
+  padding: 14px 16px;
+}
+
+.evidence-row-summary {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 12px;
+  align-items: start;
+  padding: 14px 16px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.evidence-row-summary::-webkit-details-marker {
+  display: none;
+}
+
+.evidence-row-main {
+  min-width: 0;
+}
+
+.evidence-row-title {
+  display: block;
+  font-size: 14px;
+  line-height: 1.35;
+  color: #f4f4f5;
+}
+
+.evidence-row-path {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: #8b9499;
+  word-break: break-all;
+}
+
+.evidence-row-meta {
+  display: block;
+  margin-top: 6px;
+  font-size: 11px;
+  color: #6e7c84;
+}
+
+.evidence-row-time {
+  font-size: 12px;
+  color: #9eb7c0;
+  white-space: nowrap;
+  text-align: right;
+}
+
+.evidence-row-body {
+  padding: 0 16px 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.evidence-detail-grid {
+  display: grid;
+  grid-template-columns: 100px 1fr;
+  gap: 8px 12px;
+  padding-top: 12px;
+  font-size: 13px;
+}
+
+.evidence-detail-grid span {
+  color: #6e7c84;
+}
+
+.evidence-detail-grid .mono {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 11px;
+  word-break: break-all;
+}
+
+.raw-fold {
+  margin-top: 10px;
+}
+
+.raw-fold summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: #8b9499;
+  padding: 6px 0;
+}
+
+.raw-fold summary:hover {
+  color: #ef233c;
+}
+
+.results-nav nav button.active {
+  background: rgba(239, 35, 60, 0.16);
+  border-color: rgba(239, 35, 60, 0.45);
+  color: #fff;
+}
+
+.section-search {
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: #0c0c0e;
+}
+
 .small-note {
   font-size: 12px;
 }
@@ -1187,7 +1342,17 @@ input {
   .signal-grid,
   .opened-file-row,
   .executor-event-row,
-  .activity-stat-grid {
+  .activity-stat-grid,
+  .review-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .evidence-row-summary,
+  .evidence-row--static {
     grid-template-columns: 1fr;
+  }
+
+  .evidence-row-time {
+    text-align: left;
   }
 }

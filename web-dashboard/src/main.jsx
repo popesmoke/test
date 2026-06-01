@@ -636,6 +636,112 @@ const ACTIVITY_KIND_LABELS = {
   browser_history: "Browser history",
 };
 
+function pathKey(path) {
+  return String(path || "").replace(/\//g, "\\").toLowerCase();
+}
+
+function basenameOf(path) {
+  const key = pathKey(path);
+  const slash = key.lastIndexOf("\\");
+  return slash >= 0 ? key.slice(slash + 1) : key;
+}
+
+function pathsRelate(left, right) {
+  const a = pathKey(left);
+  const b = pathKey(right);
+  if (!a || !b) return false;
+  if (a === b || a.endsWith(b) || b.endsWith(a)) return true;
+  const base = basenameOf(a);
+  return Boolean(base) && base === basenameOf(b);
+}
+
+function enrichPcaItemFromReport(report, item) {
+  if (!item) return item;
+  if (item.display_at) return item;
+  const sec = report.security_integrity_signals ?? {};
+  const fa = sec.forensic_analysis ?? {};
+  const perf = report.performance_environment ?? {};
+  const norm = item.normalized_path || item.raw || "";
+  const stem = basenameOf(norm).replace(/\.[^.]+$/, "").toUpperCase();
+  const correlated = { ...(item.correlated_timestamps || {}) };
+  const add = (source, ts) => {
+    if (ts && !correlated[source]) correlated[source] = ts;
+  };
+
+  const bamItems = [
+    ...(fa.bam_structured?.items ?? []),
+    ...(sec.bam?.items ?? []),
+  ];
+  for (const row of bamItems) {
+    const bp = row.normalized_path || row.registry_path_value;
+    if (pathsRelate(norm, bp) && row.last_execution_utc) add("bam_execution", row.last_execution_utc);
+  }
+
+  for (const row of perf.prefetch?.items ?? []) {
+    const name = String(row.name || "");
+    const pfStem = name.replace(/-[0-9A-F]{8}\.pf$/i, "").replace(/\.pf$/i, "").toUpperCase();
+    if (pfStem === stem && row.modified) add("prefetch_mtime", row.modified);
+  }
+
+  for (const row of fa.usn_file_lifecycle_rows ?? []) {
+    const ts = row.display_at || row.timestamp_utc;
+    if (!ts) continue;
+    if (pathsRelate(norm, row.path) || basenameOf(norm) === basenameOf(row.raw || row.path)) {
+      const isDelete = (row.reasons ?? []).some((r) => String(r).includes("DELETE"));
+      add(isDelete ? "usn_delete" : "usn_journal", ts);
+    }
+  }
+
+  for (const row of perf.trash?.items ?? []) {
+    const ts = row.display_at || row.deleted_at || row.modified;
+    if (pathsRelate(norm, row.original_path) && ts) add("recycle_bin", ts);
+  }
+
+  for (const row of sec.designated_folder_suspicious_files?.hits ?? []) {
+    if (pathsRelate(norm, row.path) && row.modified) add("designated_mtime", row.modified);
+  }
+
+  for (const row of sec.recent_items?.items ?? []) {
+    const combined = row.folder && row.name ? `${row.folder}\\${row.name}` : row.name || row.folder;
+    if (pathsRelate(norm, combined) && row.modified) add("recent_mtime", row.modified);
+  }
+
+  for (const row of sec.userassist?.items ?? []) {
+    if (pathsRelate(norm, row.path) && row.last_run_utc) add("userassist", row.last_run_utc);
+  }
+
+  const order = ["bam_execution", "prefetch_mtime", "usn_delete", "recycle_bin", "designated_mtime", "recent_mtime", "userassist", "usn_journal"];
+  let displayAt = null;
+  let timestampSource = null;
+  for (const key of order) {
+    if (correlated[key]) {
+      displayAt = correlated[key];
+      timestampSource = key;
+      break;
+    }
+  }
+
+  return {
+    ...item,
+    correlated_timestamps: Object.keys(correlated).length ? correlated : item.correlated_timestamps,
+    display_at: displayAt,
+    timestamp_source: timestampSource,
+  };
+}
+
+function enrichedPcaItems(report) {
+  const items = report.security_integrity_signals?.forensic_analysis?.pca_executed?.items ?? [];
+  return items.map((item) => enrichPcaItemFromReport(report, item));
+}
+
+function findingResolvedTime(report, finding) {
+  const direct = finding.timestamps?.display_at;
+  if (direct && direct !== "null" && direct !== "None") return direct;
+  const path = finding.file_path || "";
+  const pca = enrichedPcaItems(report).find((item) => pathsRelate(path, item.normalized_path || item.raw));
+  return pca?.display_at ?? null;
+}
+
 function userActivityFromReport(report) {
   const bundled = report.security_integrity_signals?.user_activity_timeline;
   if (bundled?.available) {
@@ -1310,7 +1416,7 @@ function ForensicFindingsSection({ report, query }) {
   const fa = report.security_integrity_signals?.forensic_analysis;
   if (!fa || fa.available === false) {
     return (
-      <Card icon={Fingerprint} title="Forensic findings">
+      <Card icon={Fingerprint} title="Evidence review">
         <p className="muted">
           No forensic analysis bundle on this report. Scans from older desktop builds, or non-Windows hosts, will not
           include this section.
@@ -1318,7 +1424,9 @@ function ForensicFindingsSection({ report, query }) {
       </Card>
     );
   }
-  const flat = [...(fa.detections_flat ?? [])];
+  const flat = [...(fa.detections_flat ?? [])].filter(
+    (d) => !(d.reason ?? "").includes("Unified forensic pass completed"),
+  );
   const q = query.trim().toLowerCase();
   const filtered = q
     ? flat.filter((d) =>
@@ -1328,66 +1436,147 @@ function ForensicFindingsSection({ report, query }) {
           .includes(q),
       )
     : flat;
-  const counts = Object.fromEntries(
-    Object.entries(fa.detections ?? {}).map(([key, value]) => [key, Array.isArray(value) ? value.length : 0]),
-  );
+  const highCount = filtered.filter((d) => ["critical", "high"].includes(String(d.severity ?? "").toLowerCase())).length;
+  const withTime = filtered.filter((d) => findingResolvedTime(report, d)).length;
+  const missingPca = enrichedPcaItems(report).filter((i) => !i.file_exists && !i.display_at).length;
+
   return (
     <>
-      <Card icon={Fingerprint} title="Forensic engine">
-        <p className="muted">
-          Engine <code className="inline-code">{fa.engine_version ?? "unknown"}</code>. Flattened list:{" "}
-          <strong>{filtered.length}</strong> of <strong>{flat.length}</strong> (search applies here).
+      <div className="review-stats">
+        <div className="review-stat">
+          <strong>{filtered.length}</strong>
+          <span>Findings</span>
+        </div>
+        <div className="review-stat review-stat--warn">
+          <strong>{highCount}</strong>
+          <span>High / critical</span>
+        </div>
+        <div className="review-stat">
+          <strong>{withTime}</strong>
+          <span>With timestamps</span>
+        </div>
+        <div className="review-stat">
+          <strong>{missingPca}</strong>
+          <span>PCA missing time</span>
+        </div>
+      </div>
+      <Card icon={Fingerprint} title="Evidence review">
+        <p className="muted panel-intro">
+          Reviewer-first layout — expand a row for hash and signature detail. Times are GMT+3; deleted PCA paths are
+          cross-matched against BAM, Prefetch, and USN when the scanner can.
         </p>
-      </Card>
-      <Card icon={Fingerprint} title="Findings">
-        <div className="forensic-findings">
+        <div className="evidence-list">
           {filtered.length === 0 ? (
             <p className="muted">No findings match the current search.</p>
           ) : (
-            filtered.slice(0, 150).map((d, index) => (
-              <details className="forensic-finding" key={`${d.file_path ?? d.reason}-${index}`}>
-                <summary className="forensic-finding-summary">
-                  <span className={forensicSeverityClass(d.severity)}>{d.severity ?? "?"}</span>
-                  <span className="forensic-risk">risk {d.risk_score ?? 0}</span>
-                  <span className="forensic-reason">{d.reason ?? ""}</span>
-                </summary>
-                <div className="forensic-finding-body">
-                  <p>
-                    <strong>Source:</strong> {d.artifact_source ?? "—"}
-                  </p>
-                  <p>
-                    <strong>Path:</strong> {d.file_path || "—"}
-                  </p>
-                  <p>
-                    <strong>Confidence:</strong> {d.confidence ?? "—"}
-                  </p>
-                  <p>
-                    <strong>SHA256:</strong>{" "}
-                    <code className="inline-code">{d.sha256 || "—"}</code>
-                  </p>
-                  <p>
-                    <strong>Signature:</strong> {d.signature_status ?? "—"}
-                  </p>
-                  <p>
-                    <strong>Entropy:</strong>{" "}
-                    {d.entropy_score != null && typeof d.entropy_score === "number" ? d.entropy_score.toFixed(2) : "—"}
-                  </p>
-                  <p>
-                    <strong>YARA:</strong> {(d.yara_matches ?? []).join(", ") || "—"}
-                  </p>
-                  <pre className="terminal terminal--compact">
-                    {asJson({ timestamps: d.timestamps, correlated_evidence: d.correlated_evidence })}
-                  </pre>
-                </div>
-              </details>
-            ))
+            filtered.slice(0, 120).map((d, index) => {
+              const when = findingResolvedTime(report, d);
+              return (
+                <details className="evidence-row" key={`${d.file_path ?? d.reason}-${index}`}>
+                  <summary className="evidence-row-summary">
+                    <span className={forensicSeverityClass(d.severity)}>{d.severity ?? "?"}</span>
+                    <div className="evidence-row-main">
+                      <strong className="evidence-row-title">{d.reason ?? "Finding"}</strong>
+                      <p className="evidence-row-path">{d.file_path || "—"}</p>
+                      <small className="evidence-row-meta">
+                        {d.artifact_source ?? "—"} · risk {d.risk_score ?? 0}
+                      </small>
+                    </div>
+                    <time className="evidence-row-time">
+                      {when ? formatGmtPlus3(when) : "No timestamp"}
+                    </time>
+                  </summary>
+                  <div className="evidence-row-body">
+                    <div className="evidence-detail-grid">
+                      <span>Confidence</span>
+                      <strong>{d.confidence ?? "—"}</strong>
+                      <span>Signature</span>
+                      <strong>{d.signature_status ?? "—"}</strong>
+                      <span>SHA256</span>
+                      <strong className="mono">{d.sha256 || "—"}</strong>
+                      <span>Entropy</span>
+                      <strong>
+                        {d.entropy_score != null && typeof d.entropy_score === "number"
+                          ? d.entropy_score.toFixed(2)
+                          : "—"}
+                      </strong>
+                    </div>
+                    {(d.timestamps?.correlated && Object.keys(d.timestamps.correlated).length) ||
+                    (d.correlated_evidence ?? []).length ? (
+                      <details className="raw-fold">
+                        <summary>Technical detail</summary>
+                        <pre className="terminal terminal--compact">
+                          {asJson({
+                            timestamps: d.timestamps,
+                            correlated_evidence: d.correlated_evidence,
+                          })}
+                        </pre>
+                      </details>
+                    ) : null}
+                  </div>
+                </details>
+              );
+            })
           )}
         </div>
       </Card>
-      <Card icon={Fingerprint} title="Counts by category">
-        <TerminalBlock query={query}>{asJson(counts)}</TerminalBlock>
-      </Card>
+      <PcaExecutedCard report={report} query={query} />
     </>
+  );
+}
+
+function PcaExecutedCard({ report, query }) {
+  const items = enrichedPcaItems(report).filter((item) => item.normalized_path || item.raw);
+  const q = query.trim().toLowerCase();
+  const filtered = q
+    ? items.filter((item) =>
+        [item.normalized_path, item.raw, item.timestamp_source, JSON.stringify(item.correlated_timestamps ?? {})]
+          .join(" ")
+          .toLowerCase()
+          .includes(q),
+      )
+    : items;
+  const missing = filtered.filter((item) => !item.file_exists && !item.display_at);
+
+  return (
+    <Card icon={Boxes} title="PCA executed programs">
+      <p className="muted panel-intro">
+        Programs Windows Compatibility Assistant recorded. Deleted files show the best available time from linked
+        artifacts — not raw null fields.
+      </p>
+      {missing.length ? (
+        <p className="muted small-note">
+          {missing.length} deleted path(s) still have no correlated time — run as Administrator or check if BAM/Prefetch
+          was cleared.
+        </p>
+      ) : null}
+      <div className="evidence-list">
+        {filtered.length === 0 ? (
+          <p className="muted">No PCA records match the current search.</p>
+        ) : (
+          filtered.slice(0, 50).map((item, index) => (
+            <div className="evidence-row evidence-row--static" key={`pca-${item.normalized_path}-${index}`}>
+              <div className="evidence-row-main">
+                <strong className="evidence-row-title">{basenameOf(item.normalized_path || item.raw)}</strong>
+                <p className="evidence-row-path">{item.normalized_path || item.raw}</p>
+                <small className="evidence-row-meta">
+                  {item.file_exists ? "On disk" : "Missing on disk"}
+                  {item.timestamp_source ? ` · ${formatTimestampSource(item.timestamp_source)}` : ""}
+                </small>
+                {item.correlated_timestamps ? (
+                  <small className="timestamp-source">
+                    Linked: {Object.keys(item.correlated_timestamps).join(", ")}
+                  </small>
+                ) : null}
+              </div>
+              <time className="evidence-row-time">
+                {item.display_at ? formatGmtPlus3(item.display_at) : "No timestamp"}
+              </time>
+            </div>
+          ))
+        )}
+      </div>
+    </Card>
   );
 }
 
@@ -1429,48 +1618,22 @@ function ForensicArtifactsSection({ report, query }) {
   return (
     <>
       <Card icon={Boxes} title="Structured BAM">
-        <TerminalBlock query={query}>{asJson(fa.bam_structured)}</TerminalBlock>
-      </Card>
-      <Card icon={Boxes} title="PCA executed (store)">
-        <p className="muted opened-files-intro">
-          When the executable is deleted, timestamps are resolved from <strong>BAM</strong>, <strong>Prefetch</strong>,{" "}
-          <strong>USN</strong>, or <strong>Recycle Bin</strong> — see <code className="inline-code">display_at</code> and{" "}
-          <code className="inline-code">correlated_timestamps</code> per row.
-        </p>
-        {(fa.pca_executed?.items ?? []).some((item) => item.display_at) ? (
-          <div className="executor-event-list">
-            {(fa.pca_executed.items ?? [])
-              .filter((item) => item.normalized_path)
-              .slice(0, 40)
-              .map((item, index) => (
-                <div className="executor-event-row" key={`pca-${item.normalized_path}-${index}`}>
-                  <div>
-                    <strong>{item.normalized_path}</strong>
-                    <p className="executor-event-path">
-                      {item.file_exists ? "On disk" : "Missing on disk"}
-                      {item.timestamp_source ? ` · ${formatTimestampSource(item.timestamp_source)}` : ""}
-                    </p>
-                    {item.correlated_timestamps ? (
-                      <small className="timestamp-source">
-                        Correlated: {Object.keys(item.correlated_timestamps).join(", ")}
-                      </small>
-                    ) : null}
-                  </div>
-                  <time>{item.display_at ? formatGmtPlus3(item.display_at) : "No timestamp"}</time>
-                </div>
-              ))}
-          </div>
-        ) : null}
-        <TerminalBlock query={query}>{asJson(fa.pca_executed)}</TerminalBlock>
+        <details className="raw-fold">
+          <summary>View BAM JSON</summary>
+          <TerminalBlock query={query}>{asJson(fa.bam_structured)}</TerminalBlock>
+        </details>
       </Card>
       <Card icon={Boxes} title="Browser SQLite probe">
-        <TerminalBlock query={query}>{asJson(fa.sqlite)}</TerminalBlock>
+        <details className="raw-fold">
+          <summary>View browser SQLite JSON</summary>
+          <TerminalBlock query={query}>{asJson(fa.sqlite)}</TerminalBlock>
+        </details>
       </Card>
-      <Card icon={Boxes} title="USN lifecycle rows (parsed sample)">
-        <TerminalBlock query={query}>{asJson(usnRows)}</TerminalBlock>
-      </Card>
-      <Card icon={Boxes} title="USN enriched sample meta">
-        <TerminalBlock query={query}>{asJson(fa.usn_enriched_sample)}</TerminalBlock>
+      <Card icon={Boxes} title="USN lifecycle sample">
+        <details className="raw-fold">
+          <summary>View USN rows JSON</summary>
+          <TerminalBlock query={query}>{asJson(usnRows)}</TerminalBlock>
+        </details>
       </Card>
     </>
   );
@@ -1481,7 +1644,7 @@ const resultSections = [
   { id: "user-activity", label: "User Activity", icon: History, component: UserActivitySection },
   {
     id: "forensic-findings",
-    label: "Evidence review",
+    label: "Evidence",
     icon: Fingerprint,
     component: ForensicFindingsSection,
   },
