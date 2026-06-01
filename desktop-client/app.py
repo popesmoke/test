@@ -14659,9 +14659,6 @@ def patch_unified_correlation_timeline(forensic_bundle: dict[str, object]) -> No
                 row["timestamp"] = ts
             break
     timeline.sort(key=lambda x: (x.get("timestamp") or ""), reverse=True)
-    for row in timeline:
-        if isinstance(row, dict):
-            enrich_timeline_row_readability(row)
     uc["timeline"] = timeline
 
 
@@ -14890,50 +14887,50 @@ class UnifiedCorrelationEngine:
     ) -> dict[str, object]:
         timeline: list[dict[str, object]] = []
         for item in designated.get("hits", [])[:120]:
-            row = {
-                "artifact": "designated_folder_scan",
-                "path": item.get("path"),
-                "timestamp": item.get("modified"),
-                "detail": "user_profile_hit",
-            }
-            enrich_timeline_row_readability(row)
-            timeline.append(row)
+            timeline.append(
+                {
+                    "artifact": "designated_folder_scan",
+                    "path": item.get("path"),
+                    "timestamp": item.get("modified"),
+                    "detail": "user_profile_hit",
+                }
+            )
         for it in bam.get("items", [])[:200]:
-            row = {
-                "artifact": "bam",
-                "path": it.get("normalized_path"),
-                "timestamp": it.get("last_execution_utc"),
-                "detail": "bam_execution",
-            }
-            enrich_timeline_row_readability(row)
-            timeline.append(row)
+            timeline.append(
+                {
+                    "artifact": "bam",
+                    "path": it.get("normalized_path"),
+                    "timestamp": it.get("last_execution_utc"),
+                    "detail": "bam_execution",
+                }
+            )
         for it in pca.get("items", [])[:200]:
-            row = {
-                "artifact": "pca_store",
-                "path": it.get("normalized_path"),
-                "timestamp": it.get("display_at") or it.get("file_modified_utc"),
-                "detail": "pca_record",
-            }
-            enrich_timeline_row_readability(row)
-            timeline.append(row)
+            timeline.append(
+                {
+                    "artifact": "pca_store",
+                    "path": it.get("normalized_path"),
+                    "timestamp": it.get("display_at") or it.get("file_modified_utc"),
+                    "detail": "pca_record",
+                }
+            )
         for row in usn_records[:180]:
-            entry = {
-                "artifact": "usn",
-                "path": row.get("path"),
-                "timestamp": row.get("display_at") or row.get("timestamp_utc"),
-                "detail": ",".join(row.get("reasons") or []) or "usn_row",
-            }
-            enrich_timeline_row_readability(entry)
-            timeline.append(entry)
+            timeline.append(
+                {
+                    "artifact": "usn",
+                    "path": row.get("path"),
+                    "timestamp": row.get("display_at") or row.get("timestamp_utc"),
+                    "detail": ",".join(row.get("reasons") or []) or "usn_row",
+                }
+            )
         for pf in prefetch.get("items", [])[:120]:
-            row = {
-                "artifact": "prefetch",
-                "path": str(Path(str(prefetch.get("folder", ""))) / str(pf.get("name", ""))) if prefetch.get("folder") else pf.get("name"),
-                "timestamp": pf.get("modified"),
-                "detail": "prefetch_trace",
-            }
-            enrich_timeline_row_readability(row)
-            timeline.append(row)
+            timeline.append(
+                {
+                    "artifact": "prefetch",
+                    "path": str(Path(str(prefetch.get("folder", ""))) / str(pf.get("name", ""))) if prefetch.get("folder") else pf.get("name"),
+                    "timestamp": pf.get("modified"),
+                    "detail": "prefetch_trace",
+                }
+            )
         timeline.sort(key=lambda x: (x.get("timestamp") or ""), reverse=True)
 
         prefetch_basenames = {prefetch_extract_stem(x.get("name", "")) for x in prefetch.get("items", []) if x.get("name")}
@@ -15553,135 +15550,6 @@ def _activity_recency_bucket(timestamp: str | None, report_end: str | None) -> s
     return _executor_activity_recency_bucket(timestamp, report_end)
 
 
-def _path_basename(path: str) -> str:
-    normalized = str(path or "").replace("/", "\\").strip()
-    if not normalized:
-        return ""
-    parts = [part for part in normalized.split("\\") if part]
-    return parts[-1] if parts else normalized
-
-
-_ARTIFACT_FRIENDLY_NAMES: dict[str, str] = {
-    "pca_store": "Program Compatibility Assistant (PCA) database",
-    "bam": "Background Activity Moderator (BAM)",
-    "prefetch": "Windows Prefetch cache",
-    "usn": "NTFS change journal (USN)",
-    "designated_folder_scan": "Downloads / Desktop / Documents scan",
-}
-
-_TIMESTAMP_SOURCE_EXPLANATIONS: dict[str, str] = {
-    "bam_registry": "Windows BAM recorded when this program last ran.",
-    "bam_execution": "Windows BAM recorded when this program last ran.",
-    "prefetch_mtime": "Taken from the Prefetch file’s last-modified time (when Windows logged the program run).",
-    "file_mtime": "Taken from the file’s last-modified time on disk (save or update, not necessarily “opened in Explorer”).",
-    "pca_store_key_mtime": "Taken from when Windows last updated the PCA compatibility database.",
-    "userassist": "Taken from UserAssist, which logs GUI program launches from Explorer.",
-    "recycle_metadata": "Taken from Recycle Bin metadata ($I) when the file was deleted.",
-    "powershell_history_file_mtime": "PSReadLine does not store per-command times; this is when the history file was last updated.",
-    "event_log": "Taken from a Windows Security or Sysmon event timestamp.",
-    "browser_last_visit": "Taken from the browser history database last-visit field.",
-    "shortcut_mtime": "Taken from the shortcut (.lnk) file’s last-modified time.",
-    "recorded": "Timestamp recorded directly on this artifact.",
-}
-
-
-def explain_timestamp_source(source: str | None) -> str | None:
-    if not source:
-        return None
-    key = str(source).strip()
-    if not key:
-        return None
-    if key in _TIMESTAMP_SOURCE_EXPLANATIONS:
-        return _TIMESTAMP_SOURCE_EXPLANATIONS[key]
-    return f"Time estimated from {key.replace('_', ' ')}."
-
-
-def build_activity_plain_summary(*, category: str, kind: str, label: str, path: str) -> str:
-    name = _path_basename(path)
-    quoted = f"“{name}”" if name else "a file"
-    summaries: dict[str, str] = {
-        "recycle_bin": f"The user deleted {quoted} and Windows moved it to the Recycle Bin.",
-        "recycle_bin_artifact": f"Recycle Bin still holds metadata for {quoted} (original path may be missing).",
-        "security_audit_delete": f"Windows Security log recorded a delete involving {quoted}.",
-        "sysmon_file_delete": f"Sysmon logged that {quoted} was deleted from disk.",
-        "usn_journal": f"Windows logged a filesystem change for {quoted} in the NTFS change journal.",
-        "bam_execution": f"Windows recorded that {quoted} was executed (Background Activity Moderator).",
-        "userassist": f"Windows recorded that {quoted} was launched from the desktop or Start menu (UserAssist).",
-        "pca_compat": (
-            f"Windows Compatibility Assistant (PCA) recorded activity for {quoted} — "
-            "often after a program ran or crashed."
-        ),
-        "prefetch": f"Windows Prefetch shows {quoted} was run recently on this PC.",
-        "prefetch_indicator": f"Prefetch data for {quoted} matched a reviewed executor name.",
-        "recent_download": f"A file in Downloads or Desktop matched review keywords: {quoted}.",
-        "profile_folder": f"A file in the user’s profile folders matched review keywords: {quoted}.",
-        "filesystem_scan": f"A deep filesystem scan flagged {quoted} for review.",
-        "sha256_blocklist": f"The file hash of {quoted} matches a known executor on the blocklist.",
-        "persistence": f"Startup or persistence data references {quoted} (Run keys, tasks, or shortcuts).",
-        "shell_history": f"A PowerShell history line mentioned reviewed keywords (see path for context).",
-        "roblox_log": f"Roblox client log activity involved {quoted}.",
-        "browser_history": f"Browser history included a visit related to {quoted}.",
-    }
-    summary = summaries.get(
-        kind,
-        f"{category.replace('_', ' ').title()} activity involving {quoted}.",
-    )
-    clean_label = str(label or "").strip()
-    if clean_label and clean_label not in {"GUI launch", "keyword", "Compatibility Assistant", "Prefetch trace"}:
-        summary += f" Matched: {clean_label}."
-    return summary
-
-
-def build_timeline_plain_summary(artifact: str, path: str | None, detail: str | None) -> str:
-    name = _path_basename(str(path or ""))
-    quoted = f"“{name}”" if name else "a file"
-    artifact_key = str(artifact or "").strip()
-    detail_key = str(detail or "").strip()
-    if artifact_key == "pca_store":
-        return (
-            f"Windows stored {quoted} in the PCA (Program Compatibility Assistant) database — "
-            "a log of programs Windows has seen run or check for compatibility."
-        )
-    if artifact_key == "bam" or detail_key == "bam_execution":
-        return f"Windows BAM recorded that {quoted} was executed."
-    if artifact_key == "prefetch" or detail_key == "prefetch_trace":
-        return f"Windows Prefetch shows {quoted} ran on this PC."
-    if artifact_key == "usn":
-        reason = detail_key.replace(",", ", ") if detail_key else "filesystem change"
-        return f"NTFS journal: {reason} for {quoted}."
-    if artifact_key == "designated_folder_scan" or detail_key == "user_profile_hit":
-        return f"Downloads / Desktop / Documents scan flagged {quoted} for review."
-    friendly = _ARTIFACT_FRIENDLY_NAMES.get(artifact_key, artifact_key.replace("_", " ") or "system trace")
-    return f"{friendly}: activity involving {quoted}."
-
-
-def enrich_timeline_row_readability(row: dict[str, object]) -> None:
-    artifact = str(row.get("artifact") or "")
-    if not row.get("artifact_label"):
-        row["artifact_label"] = _ARTIFACT_FRIENDLY_NAMES.get(artifact, artifact.replace("_", " ").title() or "System trace")
-    if not row.get("summary"):
-        row["summary"] = build_timeline_plain_summary(artifact, str(row.get("path") or ""), str(row.get("detail") or ""))
-
-
-def build_executor_event_plain_summary(*, kind: str, label: str, path: str) -> str:
-    name = _path_basename(path)
-    quoted = f"“{name}”" if name else "a file"
-    summaries: dict[str, str] = {
-        "sha256_blocklist": f"Known executor hash match for {quoted} (still detected if renamed).",
-        "recent_file": f"Recent Downloads/Desktop file {quoted} matched a reviewed executor or cheat name.",
-        "prefetch_execution": f"Prefetch shows {quoted} ran recently and matched a reviewed name.",
-        "profile_folder": f"Profile folder file {quoted} matched executor or cheat filename rules.",
-        "filesystem_indicator": f"Filesystem scan flagged {quoted} for executor-related names.",
-        "bam_execution": f"Windows recorded execution of {quoted} (BAM) with a reviewed name match.",
-        "persistence": f"Startup or persistence entry references {quoted} with a reviewed name match.",
-    }
-    summary = summaries.get(kind, f"Executor-related activity involving {quoted}.")
-    clean_label = str(label or "").strip()
-    if clean_label:
-        summary += f" Matched: {clean_label}."
-    return summary
-
-
 def _append_activity_event(
     events: list[dict],
     *,
@@ -15706,8 +15574,6 @@ def _append_activity_event(
         "timestamp_source": resolved_source if display_at else None,
         "recency": _activity_recency_bucket(display_at, generated_at),
         "detail": detail,
-        "summary": build_activity_plain_summary(category=category, kind=kind, label=label, path=path),
-        "source_explanation": explain_timestamp_source(resolved_source) if display_at else None,
     }
     if extra:
         payload.update(extra)
@@ -16168,7 +16034,6 @@ def build_executor_activity_summary(
             "occurred_at": occurred_at,
             "recency": _executor_activity_recency_bucket(occurred_at, generated_at),
             "detail": detail,
-            "summary": build_executor_event_plain_summary(kind=kind, label=label, path=path),
         }
         if extra:
             payload.update(extra)

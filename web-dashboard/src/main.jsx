@@ -636,36 +636,9 @@ const ACTIVITY_KIND_LABELS = {
   browser_history: "Browser history",
 };
 
-const ARTIFACT_GLOSSARY = {
-  pca_store:
-    "Program Compatibility Assistant (PCA) store — a Windows database of programs it has seen run or check for compatibility, often after crashes or first launch.",
-  bam: "Background Activity Moderator — records when executables last ran, even if the file was later deleted.",
-  prefetch: "Prefetch — Windows cache files that prove a program ran recently on this PC.",
-  usn: "USN journal — NTFS change log (create, modify, delete) used to reconstruct file activity.",
-  designated_folder_scan: "Scan of Downloads, Desktop, and Documents for files matching review rules.",
-};
-
-const TIMESTAMP_SOURCE_GLOSSARY = {
-  bam_registry: "Windows BAM recorded when this program last ran.",
-  bam_execution: "Windows BAM recorded when this program last ran.",
-  prefetch_mtime: "From the Prefetch file’s last-modified time (when Windows logged the run).",
-  file_mtime: "From the file’s last-modified time (save/update — not always “opened in Explorer”).",
-  pca_store_key_mtime: "From when Windows last updated the PCA compatibility database.",
-  userassist: "From UserAssist, which logs GUI launches from Explorer.",
-  recycle_metadata: "From Recycle Bin $I metadata when the file was deleted.",
-  powershell_history_file_mtime:
-    "PSReadLine has no per-command clock; this is when the history file was last updated.",
-  event_log: "From a Windows Security or Sysmon event timestamp.",
-  browser_last_visit: "From the browser history “last visit” field.",
-  shortcut_mtime: "From the shortcut (.lnk) file’s last-modified time.",
-  recorded: "Timestamp stored directly on this artifact.",
-};
-
 function explainTimestampSource(source) {
   if (!source) return "";
-  const key = String(source).trim();
-  if (TIMESTAMP_SOURCE_GLOSSARY[key]) return TIMESTAMP_SOURCE_GLOSSARY[key];
-  return `Time estimated from ${key.replace(/_/g, " ")}.`;
+  return "Timestamp inferred from available system metadata in this scan.";
 }
 
 function activityEventSummary(event) {
@@ -675,14 +648,14 @@ function activityEventSummary(event) {
   const byKind = {
     recycle_bin: `The user deleted ${quoted} and Windows moved it to the Recycle Bin.`,
     recycle_bin_artifact: `Recycle Bin still holds metadata for ${quoted}.`,
-    security_audit_delete: `Windows Security log recorded a delete involving ${quoted}.`,
-    sysmon_file_delete: `Sysmon logged that ${quoted} was deleted.`,
+    security_audit_delete: `A system log recorded delete-related activity for ${quoted}.`,
+    sysmon_file_delete: `A system trace indicates ${quoted} was deleted.`,
     usn_journal: `Windows logged a filesystem change for ${quoted}.`,
-    bam_execution: `Windows recorded that ${quoted} was executed.`,
-    userassist: `Windows recorded that ${quoted} was launched from the desktop or Start menu.`,
-    pca_compat: `Windows Compatibility Assistant recorded activity for ${quoted} (often after a program ran).`,
-    prefetch: `Windows Prefetch shows ${quoted} was run recently.`,
-    prefetch_indicator: `Prefetch for ${quoted} matched a reviewed executor name.`,
+    bam_execution: `A system execution trace was recorded for ${quoted}.`,
+    userassist: `A user-launch trace was recorded for ${quoted}.`,
+    pca_compat: `A compatibility trace was recorded for ${quoted}.`,
+    prefetch: `A system runtime trace was recorded for ${quoted}.`,
+    prefetch_indicator: `A runtime trace for ${quoted} matched a reviewed signal.`,
     recent_download: `A file in Downloads or Desktop matched review keywords: ${quoted}.`,
     profile_folder: `A profile-folder file matched review keywords: ${quoted}.`,
     filesystem_scan: `A filesystem scan flagged ${quoted} for review.`,
@@ -707,10 +680,10 @@ function executorEventSummary(event) {
   const byKind = {
     sha256_blocklist: `Known executor hash match for ${quoted}.`,
     recent_file: `Recent file ${quoted} matched a reviewed executor or cheat name.`,
-    prefetch_execution: `Prefetch shows ${quoted} ran and matched a reviewed name.`,
+    prefetch_execution: `A runtime trace shows ${quoted} ran and matched a reviewed name.`,
     profile_folder: `Profile folder file ${quoted} matched review rules.`,
     filesystem_indicator: `Filesystem scan flagged ${quoted}.`,
-    bam_execution: `Windows recorded execution of ${quoted} with a name match.`,
+    bam_execution: `A system execution trace was recorded for ${quoted} with a name match.`,
     persistence: `Startup or persistence references ${quoted}.`,
   };
   let summary = byKind[event?.kind] || `Executor-related activity involving ${quoted}.`;
@@ -723,36 +696,12 @@ function timelineRowSummary(row) {
   if (row?.summary) return row.summary;
   const name = basenameOf(row?.path || "") || "a file";
   const quoted = name ? `“${name}”` : "a file";
-  const artifact = String(row?.artifact || "");
-  if (artifact === "pca_store") {
-    return (
-      `Windows stored ${quoted} in the PCA database — programs Windows has seen run or check for compatibility.`
-    );
-  }
-  if (artifact === "bam") return `Windows BAM recorded that ${quoted} was executed.`;
-  if (artifact === "prefetch") return `Windows Prefetch shows ${quoted} ran on this PC.`;
-  if (artifact === "usn") {
-    const reason = String(row?.detail || "filesystem change").replace(/,/g, ", ");
-    return `NTFS journal: ${reason} for ${quoted}.`;
-  }
-  if (artifact === "designated_folder_scan") {
-    return `Downloads / Desktop / Documents scan flagged ${quoted} for review.`;
-  }
-  const friendly = ARTIFACT_GLOSSARY[artifact] || artifact.replace(/_/g, " ") || "system trace";
-  return `${friendly}: activity involving ${quoted}.`;
+  return `System activity record involving ${quoted}.`;
 }
 
 function artifactFriendlyLabel(artifact) {
   if (!artifact) return "System trace";
-  const key = String(artifact);
-  const labels = {
-    pca_store: "PCA (Program Compatibility Assistant)",
-    bam: "BAM (program execution)",
-    prefetch: "Prefetch",
-    usn: "NTFS change journal",
-    designated_folder_scan: "Profile folder scan",
-  };
-  return labels[key] || key.replace(/_/g, " ");
+  return "System trace";
 }
 
 function openedFilePlainSummary(item) {
@@ -770,32 +719,6 @@ function openedFilePlainSummary(item) {
   }
   if (matched) parts.push(`Matched review signals: ${matched}.`);
   return parts.join(" ");
-}
-
-function TermsGlossary() {
-  const entries = [
-    ...Object.entries(ARTIFACT_GLOSSARY).map(([term, text]) => ({
-      term: term.replace(/_/g, " "),
-      text,
-    })),
-    ...Object.entries(TIMESTAMP_SOURCE_GLOSSARY).slice(0, 6).map(([term, text]) => ({
-      term: term.replace(/_/g, " "),
-      text,
-    })),
-  ];
-  return (
-    <details className="readability-glossary">
-      <summary>What do these technical terms mean?</summary>
-      <dl className="glossary-list">
-        {entries.map(({ term, text }) => (
-          <div key={term}>
-            <dt>{term}</dt>
-            <dd>{text}</dd>
-          </div>
-        ))}
-      </dl>
-    </details>
-  );
 }
 
 function pathKey(path) {
@@ -1071,7 +994,6 @@ function UserActivitySection({ report, query }) {
   return (
     <>
       <Card icon={History} title="User activity timeline">
-        <TermsGlossary />
         <div className="activity-analytics">
           <div className="activity-stat-grid">
             <div className="activity-stat">
@@ -1139,7 +1061,7 @@ function UserActivitySection({ report, query }) {
                   <small className="muted">{event.detail}</small>
                   {event.timestamp_source ? (
                     <small className="timestamp-source">
-                      How we know the time: {formatTimestampSourceWithHint(event.timestamp_source, event)}
+                      Time reference: {formatTimestampSourceWithHint(event.timestamp_source, event)}
                     </small>
                   ) : null}
                 </div>
@@ -1596,7 +1518,7 @@ function DeletionsSection({ report, query }) {
                   <small className="muted">{event.detail}</small>
                   {event.timestamp_source ? (
                     <small className="timestamp-source">
-                      How we know the time: {formatTimestampSourceWithHint(event.timestamp_source, event)}
+                      Time reference: {formatTimestampSourceWithHint(event.timestamp_source, event)}
                     </small>
                   ) : null}
                 </div>
@@ -1736,13 +1658,13 @@ function ForensicFindingsSection({ report, query }) {
         </div>
         <div className="review-stat">
           <strong>{missingPca}</strong>
-          <span>PCA missing time</span>
+          <span>Missing time</span>
         </div>
       </div>
       <Card icon={Fingerprint} title="Evidence review">
         <p className="muted panel-intro">
-          Reviewer-first layout — expand a row for hash and signature detail. Times are GMT+3; deleted PCA paths are
-          cross-matched against BAM, Prefetch, and USN when the scanner can.
+          Reviewer-first layout — expand a row for hash and signature detail. Times are GMT+3; deleted paths are
+          cross-matched across available system traces when the scanner can.
         </p>
         <div className="evidence-list">
           {filtered.length === 0 ? (
@@ -1770,7 +1692,7 @@ function ForensicFindingsSection({ report, query }) {
                       <p className="evidence-row-path">{d.file_path || "—"}</p>
                       <small className="evidence-row-meta">
                         {d.artifact_source ?? "—"} · risk {d.risk_score ?? 0}
-                        {src ? ` · ${formatTimestampSourceWithHint(src)}` : ""}
+                        {src ? ` · ${formatTimestampSource(src)}` : ""}
                       </small>
                     </div>
                     <time className="evidence-row-time">
@@ -1841,7 +1763,7 @@ function PcaExecutedCard({ report, query }) {
   const missing = filtered.filter((item) => !item.file_exists && !item.display_at);
 
   return (
-    <Card icon={Boxes} title="PCA executed programs">
+    <Card icon={Boxes} title="Compatibility trace programs">
       <p className="muted panel-intro">
         Programs Windows Compatibility Assistant recorded. Deleted files show the best available time from linked
         artifacts — not raw null fields.
@@ -1854,15 +1776,14 @@ function PcaExecutedCard({ report, query }) {
       ) : null}
       <div className="evidence-list">
         {filtered.length === 0 ? (
-          <p className="muted">No PCA records match the current search.</p>
+          <p className="muted">No compatibility records match the current search.</p>
         ) : (
           filtered.slice(0, 50).map((item, index) => (
             <div className="evidence-row evidence-row--static" key={`pca-${item.normalized_path}-${index}`}>
               <div className="evidence-row-main">
                 <p className="plain-summary">
-                  Windows PCA (Program Compatibility Assistant) recorded{" "}
-                  <strong>{basenameOf(item.normalized_path || item.raw)}</strong> — a log of programs Windows has seen
-                  run or check for compatibility.
+                  A compatibility-related system trace exists for{" "}
+                  <strong>{basenameOf(item.normalized_path || item.raw)}</strong>.
                 </p>
                 <p className="evidence-row-path">{item.normalized_path || item.raw}</p>
                 <small className="evidence-row-meta">
@@ -1930,7 +1851,6 @@ function ForensicCorrelationSection({ report, query }) {
         </details>
       </Card>
       <Card icon={Clock3} title="Cross-source timeline">
-        <TermsGlossary />
         <p className="muted panel-intro">
           Merged Windows traces in plain language (newest first). Each row explains what happened; technical artifact
           names are expanded in the glossary above.
@@ -1941,10 +1861,7 @@ function ForensicCorrelationSection({ report, query }) {
               <div className="evidence-row-main">
                 <p className="plain-summary">{timelineRowSummary(row)}</p>
                 <p className="evidence-row-path">{row.path || "—"}</p>
-                <small className="evidence-row-meta">
-                  Trace type: {row.artifact_label || artifactFriendlyLabel(row.artifact)}
-                  {row.artifact && ARTIFACT_GLOSSARY[row.artifact] ? ` — ${ARTIFACT_GLOSSARY[row.artifact]}` : ""}
-                </small>
+                <small className="evidence-row-meta">Trace type: {row.artifact_label || artifactFriendlyLabel(row.artifact)}</small>
               </div>
               <time className="evidence-row-time">
                 {row.timestamp ? formatGmtPlus3(row.timestamp) : "No timestamp"}
