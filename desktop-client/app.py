@@ -13614,6 +13614,307 @@ def deletion_and_log_clearing_signals() -> dict:
     }
 
 
+def bypass_resilience_signals(
+    *,
+    prefetch: dict,
+    deletion: dict,
+    defender: dict,
+    shellbag: dict,
+    bam: dict,
+    forensic_bundle: dict,
+    prefetch_health: dict,
+    amcache: dict,
+    command_history: dict,
+) -> dict:
+    """Correlate tamper, cover-up, and anti-forensics patterns across multiple independent sources."""
+    if platform.system() != "Windows":
+        return {"available": False, "reason": "Bypass resilience scan is Windows-only"}
+
+    findings: list[dict] = []
+    risk_score = 0
+
+    def add(
+        *,
+        severity: str,
+        title: str,
+        detail: str,
+        category: str,
+        weight: int,
+    ) -> None:
+        nonlocal risk_score
+        findings.append(
+            {
+                "severity": severity,
+                "title": title,
+                "detail": detail,
+                "category": category,
+            }
+        )
+        risk_score += weight
+
+    reg_script = (
+        "$out=[ordered]@{};"
+        "try{$out.Prefetcher=(Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management\\PrefetchParameters' -Name EnablePrefetcher -ErrorAction SilentlyContinue).EnablePrefetcher}catch{};"
+        "try{$out.TrackedPrefetch=(Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management\\PrefetchParameters' -Name EnablePrefetcher -ErrorAction SilentlyContinue).EnablePrefetcher}catch{};"
+        "try{$out.BamDisabled=(Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\bam\\State' -Name Start -ErrorAction SilentlyContinue).Start}catch{};"
+        "try{$vss=Get-Service -Name VSS -ErrorAction SilentlyContinue;if($vss){$out.VssStatus=$vss.Status.ToString()}}catch{};"
+        "try{$out.EventLogSvc=(Get-Service -Name EventLog -ErrorAction SilentlyContinue).Status.ToString()}catch{};"
+        "$out | ConvertTo-Json -Compress"
+    )
+    reg_raw = run_command(["powershell", "-NoProfile", "-Command", reg_script], timeout=12, max_chars=4000)
+    reg_data: dict = {}
+    try:
+        if reg_raw and not reg_raw.startswith("Unavailable:"):
+            parsed = json.loads(reg_raw)
+            if isinstance(parsed, dict):
+                reg_data = parsed
+    except json.JSONDecodeError:
+        reg_data = {}
+
+    prefetcher = reg_data.get("Prefetcher")
+    if prefetcher == 0:
+        add(
+            severity="high",
+            title="Runtime logging appears turned off",
+            detail="Windows prefetching is disabled in the registry — a common way to hide which programs ran.",
+            category="tamper",
+            weight=18,
+        )
+    elif prefetch.get("available") and not (prefetch.get("items") or []):
+        add(
+            severity="medium",
+            title="No runtime traces in the usual cache",
+            detail="Prefetch folder is empty or unreadable while the feature should normally retain recent program traces.",
+            category="cover_up",
+            weight=12,
+        )
+
+    if str(reg_data.get("EventLogSvc") or "").lower() == "stopped":
+        add(
+            severity="high",
+            title="System event logging is stopped",
+            detail="The Windows Event Log service is not running, which reduces visibility into deletes and security events.",
+            category="tamper",
+            weight=20,
+        )
+
+    if str(reg_data.get("VssStatus") or "").lower() == "stopped":
+        add(
+            severity="medium",
+            title="Shadow-copy service is stopped",
+            detail="Volume Shadow Copy (restore points) is not running — sometimes disabled before cleanup or tampering.",
+            category="tamper",
+            weight=10,
+        )
+
+    defender_text = f"{defender.get('settings') or ''}\n{defender.get('protection_history') or ''}"
+    if re.search(r"DisableRealtimeMonitoring\s*:\s*True", defender_text, re.I):
+        add(
+            severity="high",
+            title="Real-time protection is off",
+            detail="Windows Defender real-time monitoring is disabled on this machine.",
+            category="defender",
+            weight=22,
+        )
+    if re.search(r"ExclusionPath|ExclusionProcess|Add-MpPreference", defender_text, re.I):
+        add(
+            severity="medium",
+            title="Defender exclusions are configured",
+            detail="Antivirus exclusions can hide folders or programs from scanning — verify they are legitimate.",
+            category="defender",
+            weight=8,
+        )
+
+    clearing_blob = f"{deletion.get('raw_sample') or ''}\n{deletion.get('usn_delete_sample') or ''}"
+    if re.search(
+        r"wevtutil\s+cl|Clear-EventLog|fsutil\s+usn\s+deletejournal|vssadmin\s+delete\s+shadows|"
+        r"Remove-Item.*Prefetch|del\s+/f.*\.pf|cipher\s+/w",
+        clearing_blob,
+        re.I,
+    ):
+        add(
+            severity="high",
+            title="Signs of log or trace cleanup",
+            detail="Recent system events mention journal clears, log wipes, shadow-copy deletes, or prefetch cleanup language.",
+            category="cover_up",
+            weight=24,
+        )
+    if re.search(r"\b(104|1102|1100)\b", clearing_blob) and re.search(
+        r"cleared|audit|log.*clear", clearing_blob, re.I
+    ):
+        add(
+            severity="medium",
+            title="Security or system logs were cleared recently",
+            detail="Event IDs associated with log clearing appeared in the sampled Windows event history.",
+            category="cover_up",
+            weight=14,
+        )
+
+    shell_raw = str(shellbag.get("raw") or "")
+    low_shellbag = False
+    try:
+        shell_parsed = json.loads(shell_raw) if shell_raw.strip().startswith("[") else json.loads(shell_raw)
+        rows = shell_parsed if isinstance(shell_parsed, list) else [shell_parsed]
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            count = int(row.get("KeyCount") or 0)
+            if row.get("Exists") and count < 8:
+                low_shellbag = True
+    except (json.JSONDecodeError, TypeError, ValueError):
+        if re.search(r'KeyCount["\s:]*[0-3]\b', shell_raw):
+            low_shellbag = True
+    if low_shellbag:
+        add(
+            severity="medium",
+            title="Very little folder history remains",
+            detail="Shell history registry keys are unusually empty — can happen after privacy cleaners or manual clearing.",
+            category="cover_up",
+            weight=11,
+        )
+
+    bam_items = list(bam.get("items") or [])
+    if not bam_items and bam.get("available"):
+        add(
+            severity="medium",
+            title="No recent program-run records found",
+            detail="Execution history that Windows normally keeps was missing or empty on this scan.",
+            category="ghost_trace",
+            weight=10,
+        )
+    ghost_runs = [
+        it
+        for it in bam_items
+        if it.get("last_execution_utc") and it.get("file_exists") is False and not it.get("path_allowlisted")
+    ]
+    if len(ghost_runs) >= 3:
+        add(
+            severity="high",
+            title="Programs ran but files are gone",
+            detail=f"{len(ghost_runs)} execution record(s) point to files that no longer exist on disk (possible delete-after-run).",
+            category="ghost_trace",
+            weight=16,
+        )
+
+    if amcache.get("available") and amcache.get("size_bytes", 1) == 0:
+        add(
+            severity="medium",
+            title="Program inventory database looks empty",
+            detail="The Amcache hive exists but has zero size — unusual on an active Windows install.",
+            category="tamper",
+            weight=9,
+        )
+
+    for hit in (command_history.get("hits") or [])[:40]:
+        line = str(hit.get("line") or "")
+        if re.search(
+            r"wevtutil\s+cl|Clear-EventLog|fsutil\s+usn|vssadmin\s+delete|Remove-Item.*Prefetch|"
+            r"Set-MpPreference.*DisableRealtimeMonitoring|Unblock-File|del\s+/[fq]",
+            line,
+            re.I,
+        ):
+            add(
+                severity="high",
+                title="Shell history mentions cleanup or disable commands",
+                detail=f"PowerShell history contains a suspicious maintenance command: {line[:220]}",
+                category="cover_up",
+                weight=20,
+            )
+            break
+
+    wmi_script = (
+        "Get-CimInstance -Namespace root\\subscription -ClassName __EventFilter -ErrorAction SilentlyContinue | "
+        "Select-Object -First 20 Name, Query | ConvertTo-Json -Compress"
+    )
+    wmi_raw = run_command(["powershell", "-NoProfile", "-Command", wmi_script], timeout=14, max_chars=8000)
+    if wmi_raw and not wmi_raw.startswith("Unavailable:"):
+        if re.search(r"CommandLineEventConsumer|ActiveScriptEventConsumer|FROM\s+__Instance", wmi_raw, re.I):
+            add(
+                severity="high",
+                title="Hidden auto-run hooks in WMI",
+                detail="WMI event subscription filters were found — a stealth persistence method sometimes used by bypass tools.",
+                category="persistence",
+                weight=18,
+            )
+
+    motw_script = (
+        "$root=Join-Path $env:USERPROFILE 'Downloads';"
+        "if(-not(Test-Path $root)){ '[]' } else {"
+        "Get-ChildItem $root -File -Include *.exe,*.dll,*.bat,*.ps1 -ErrorAction SilentlyContinue | "
+        "Sort-Object LastWriteTime -Descending | Select-Object -First 25 | ForEach-Object {"
+        "$z=$_.FullName+':Zone.Identifier';"
+        "[pscustomobject]@{Path=$_.FullName;HasZone=(Test-Path -LiteralPath $z);Modified=$_.LastWriteTimeUtc.ToString('u')}"
+        "} | Where-Object { -not $_.HasZone } | Select-Object -First 8 | ConvertTo-Json -Compress"
+        "}"
+    )
+    motw_raw = run_command(["powershell", "-NoProfile", "-Command", motw_script], timeout=14, max_chars=6000)
+    try:
+        motw_rows = json.loads(motw_raw) if motw_raw and motw_raw.strip().startswith("[") else []
+        if isinstance(motw_rows, dict):
+            motw_rows = [motw_rows]
+        if isinstance(motw_rows, list) and len(motw_rows) >= 3:
+            add(
+                severity="medium",
+                title="Recent downloads missing safety markers",
+                detail=f"{len(motw_rows)} recent executable(s) in Downloads have no Zone.Identifier (mark-of-the-web) — can indicate manual unblocking or copying.",
+                category="tamper",
+                weight=10,
+            )
+    except json.JSONDecodeError:
+        pass
+
+    if isinstance(forensic_bundle, dict) and forensic_bundle.get("available"):
+        flat = list(forensic_bundle.get("detections_flat") or [])
+        for det in flat[:80]:
+            reason = str(det.get("reason") or "")
+            if not reason or "Unified forensic pass completed" in reason:
+                continue
+            lower = reason.lower()
+            if any(
+                token in lower
+                for token in (
+                    "timestomp",
+                    "alternate data stream",
+                    "log clearing",
+                    "delete event",
+                    "rename-away",
+                    "unsigned executable",
+                    "crash loop",
+                )
+            ):
+                sev = str(det.get("severity") or "medium").lower()
+                weight = {"critical": 20, "high": 14, "medium": 8}.get(sev, 6)
+                add(
+                    severity=sev if sev in {"critical", "high", "medium", "low"} else "medium",
+                    title="Cross-check found suspicious behavior",
+                    detail=reason[:320],
+                    category="correlation",
+                    weight=weight,
+                )
+        chains = (forensic_bundle.get("unified_correlation") or {}).get("execution_chains") or []
+        if len(chains) >= 2:
+            add(
+                severity="high",
+                title="Multiple traces line up for the same program",
+                detail=f"{len(chains)} independent trace chains matched the same program name — harder to fake than a single artifact.",
+                category="correlation",
+                weight=15,
+            )
+
+    severity_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    findings.sort(key=lambda row: (severity_rank.get(str(row.get("severity")), 9), row.get("title") or ""))
+    capped = min(100, risk_score)
+    risk_level = "high" if capped >= 45 else "medium" if capped >= 20 else "low"
+    return {
+        "available": True,
+        "finding_count": len(findings),
+        "findings": findings[:40],
+        "risk_score": capped,
+        "risk_level": risk_level,
+        "note": "Combines registry, defender, shell history, execution ghosts, WMI, downloads, and cross-artifact correlation.",
+    }
+
+
 def prefetch_health_signals(prefetch: dict) -> dict:
     if platform.system() != "Windows" or not prefetch.get("available"):
         return {"available": False, "reason": "Prefetch health signals require available Windows Prefetch metadata"}
@@ -14690,7 +14991,7 @@ foreach ($d in (Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | ForEac
   try {
     fsutil usn readjournal $d csv 2>$null |
       Select-String -Pattern 'RENAME_|FILE_CREATE|FILE_DELETE|CLOSE|DATA_EXTEND|BASIC_INFO_CHANGE|STREAM_CHANGE|\.EXE|\.DLL|\.PS1|\.BAT|:|TEMP|TMP|Downloads' |
-      Select-Object -First 95 |
+      Select-Object -First 160 |
       ForEach-Object { [void]$usnList.Add(($d + [char]9 + $_.Line)) }
   } catch {}
 }
@@ -16299,6 +16600,17 @@ def build_report() -> dict:
             forensic_bundle=forensic_bundle,
             sha_blocklist=sha_blocklist,
         )
+        bypass_resilience = bypass_resilience_signals(
+            prefetch=prefetch,
+            deletion=deletion_signals,
+            defender=fut_defender.result(),
+            shellbag=fut_shellbag.result(),
+            bam=bam_registry,
+            forensic_bundle=forensic_bundle,
+            prefetch_health=prefetch_health,
+            amcache=fut_amcache.result(),
+            command_history=command_history,
+        )
 
     processes = []
     for proc in psutil.process_iter(["pid", "name", "username", "status"]):
@@ -16360,6 +16672,7 @@ def build_report() -> dict:
             "persistence_signals": persistence,
             "roblox_runtime_integrity": fut_roblox_int.result(),
             "forensic_analysis": forensic_bundle,
+            "bypass_resilience": bypass_resilience,
         },
     }
 

@@ -26,6 +26,7 @@ import {
   Trash2,
 } from "lucide-react";
 import "./styles.css";
+import { SimpleResults } from "./SimpleResults.jsx";
 
 const API_URL = import.meta.env.VITE_API_URL || "https://test-v7a8.onrender.com";
 const BRAND_LOGO = "/assets/dangerouscity-logo.png";
@@ -81,7 +82,7 @@ function Login({ loginError }) {
         <div className="brand-row">
           <div>
             <h1>DangerousCity</h1>
-            <p>Sign in with Discord to open the reviewer dashboard.</p>
+            <p>Sign in with Discord to check scan results in plain, simple language.</p>
           </div>
         </div>
         <div className="form-stack login-discord-stack">
@@ -336,6 +337,7 @@ function buildSuspicionSummary(report) {
   const clearingText = sec.deletion_and_log_clearing_signals?.raw_sample ?? "";
   const userAssistText = sec.userassist?.raw_sample ?? "";
   const bamText = sec.bam?.raw_sample ?? "";
+  const bypass = sec.bypass_resilience ?? {};
 
   const stemMap = new Map();
   for (const item of fileHits) registerStem(stemMap, pathStemKey(item.path), "file");
@@ -520,6 +522,17 @@ function buildSuspicionSummary(report) {
       points: 7,
       detail: "Event log or deletion-clearing signals were present for reviewer triage.",
     });
+  }
+  if (bypass.available && (bypass.findings?.length ?? 0) > 0) {
+    const points = Math.min(32, Math.round((bypass.risk_score ?? 0) * 0.4));
+    if (points > 0) {
+      score += points;
+      reasons.push({
+        label: "Bypass / cover-up signals",
+        points,
+        detail: `${bypass.finding_count ?? bypass.findings.length} anti-tamper check(s) fired (registry, defender, ghosts, WMI, downloads, correlation).`,
+      });
+    }
   }
 
   if (!reasons.length) {
@@ -1947,6 +1960,7 @@ const resultSections = [
 function Results({ detail }) {
   const [sectionId, setSectionId] = useState("starter");
   const [query, setQuery] = useState("");
+  const [expertMode, setExpertMode] = useState(false);
 
   useEffect(() => {
     if (!detail?.id) {
@@ -1954,6 +1968,7 @@ function Results({ detail }) {
     }
     setSectionId("starter");
     setQuery("");
+    setExpertMode(false);
   }, [detail?.id]);
 
   if (!detail) {
@@ -1962,15 +1977,22 @@ function Results({ detail }) {
 
   const report = detail.report ?? {};
   const summary = buildSuspicionSummary(report);
+  const activity = userActivityFromReport(report);
   const activeSection = resultSections.find((section) => section.id === sectionId) ?? resultSections[0];
   const ActiveComponent = activeSection.component;
   const showSectionContent = detail.status === "completed";
 
   return (
-    <section className="scan-results">
+    <section className={`scan-results ${expertMode ? "scan-results--expert" : "scan-results--simple"}`}>
       <aside className="results-nav">
-        <button className="back-link">← My Pins</button>
-        <h2>Scan results</h2>
+        {expertMode ? (
+          <button className="back-link" type="button" onClick={() => setExpertMode(false)}>
+            ← Simple view
+          </button>
+        ) : (
+          <p className="back-link back-link--static">Easy results</p>
+        )}
+        <h2>{expertMode ? "Advanced review" : "Scan results"}</h2>
         <p>
           {detail.completed_at
             ? `Submitted ${formatGmtPlus3(detail.completed_at)}`
@@ -1979,24 +2001,28 @@ function Results({ detail }) {
         <button className="download-button" onClick={() => downloadReport(detail)}>
           <Download size={15} /> Download report
         </button>
-        <nav>
-          {resultSections.map((section) => {
-            const Icon = section.icon;
-            return (
-              <button
-                key={section.id}
-                className={sectionId === section.id ? "active" : ""}
-                onClick={() => setSectionId(section.id)}
-                type="button"
-              >
-                <Icon size={18} className="nav-tab-icon" />
-                <span className="nav-tab-labels">
-                  <span className="nav-tab-primary">{section.label}</span>
-                </span>
-              </button>
-            );
-          })}
-        </nav>
+        {expertMode ? (
+          <nav>
+            {resultSections.map((section) => {
+              const Icon = section.icon;
+              return (
+                <button
+                  key={section.id}
+                  className={sectionId === section.id ? "active" : ""}
+                  onClick={() => setSectionId(section.id)}
+                  type="button"
+                >
+                  <Icon size={18} className="nav-tab-icon" />
+                  <span className="nav-tab-labels">
+                    <span className="nav-tab-primary">{section.label}</span>
+                  </span>
+                </button>
+              );
+            })}
+          </nav>
+        ) : (
+          <p className="results-nav-hint">Easy view is on. Open advanced review only if you need raw detail.</p>
+        )}
       </aside>
       <div className="result-content">
         <div className="result-header">
@@ -2005,13 +2031,22 @@ function Results({ detail }) {
           <h2>{detail.pin}</h2>
         </div>
         <div className="header-badges">
-          {detail.status === "completed" && <span className="score-badge">Suspicion {summary.score}/100</span>}
+          {detail.status === "completed" && (
+            <span className="score-badge">
+              {expertMode ? `Suspicion ${summary.score}/100` : `Concern ${Math.min(100, Math.round(summary.score * 0.75 + ((report.security_integrity_signals?.bypass_resilience?.risk_score ?? 0) * 0.35)))}/100`}
+            </span>
+          )}
           <span className={`status large ${detail.status}`}>{detail.status}</span>
+          {showSectionContent && !expertMode ? (
+            <button type="button" className="text-button header-expert-link" onClick={() => setExpertMode(true)}>
+              Advanced review
+            </button>
+          ) : null}
         </div>
         </div>
         {!showSectionContent ? (
           <div className="empty-state">Waiting for the desktop client to submit results.</div>
-        ) : (
+        ) : expertMode ? (
           <>
             <input
               className="section-search"
@@ -2021,6 +2056,17 @@ function Results({ detail }) {
             />
             <ActiveComponent report={report} query={query} />
           </>
+        ) : (
+          <SimpleResults
+            detail={detail}
+            report={report}
+            summary={summary}
+            activity={activity}
+            activityEventSummary={activityEventSummary}
+            formatGmtPlus3={formatGmtPlus3}
+            onExpertMode={() => setExpertMode(true)}
+            onDownload={() => downloadReport(detail)}
+          />
         )}
       </div>
     </section>
