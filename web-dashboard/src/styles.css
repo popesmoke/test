@@ -1031,6 +1031,55 @@ input {
   font-weight: 600;
 }
 
+.plain-summary {
+  margin: 6px 0 4px;
+  color: #f4f4f5;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.plain-summary strong {
+  font-weight: 600;
+}
+
+.evidence-plain-summary {
+  font-size: 13px;
+}
+
+.readability-glossary {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border: 1px solid #2a2226;
+  border-radius: 8px;
+  background: rgba(12, 10, 12, 0.5);
+  font-size: 13px;
+}
+
+.readability-glossary summary {
+  cursor: pointer;
+  color: #d4dde2;
+  font-weight: 600;
+}
+
+.glossary-list {
+  margin: 10px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.glossary-list dt {
+  font-weight: 600;
+  color: #f4f4f5;
+  text-transform: capitalize;
+}
+
+.glossary-list dd {
+  margin: 4px 0 0;
+  color: #9eb7c0;
+  line-height: 1.4;
+}
+
 .executor-event-path {
   margin: 2px 0;
   font-size: 12px;
