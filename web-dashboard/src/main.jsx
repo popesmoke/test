@@ -647,6 +647,7 @@ const ACTIVITY_KIND_LABELS = {
   shell_history: "Shell history",
   roblox_log: "Roblox log",
   browser_history: "Browser history",
+  browser_download: "Browser download",
 };
 
 function explainTimestampSource(source) {
@@ -677,6 +678,7 @@ function activityEventSummary(event) {
     shell_history: "A PowerShell history line matched reviewed keywords.",
     roblox_log: `Roblox log activity involved ${quoted}.`,
     browser_history: `Browser history included a visit related to ${quoted}.`,
+    browser_download: `A file was downloaded in the browser: ${quoted}.`,
   };
   let summary = byKind[event?.kind] || `${ACTIVITY_KIND_LABELS[event?.kind] ?? event?.kind ?? "Activity"} involving ${quoted}.`;
   const label = String(event?.label || "").trim();
@@ -2022,7 +2024,7 @@ function Results({ detail }) {
           </nav>
         ) : (
           <p className="results-nav-hint">
-            Use the tabs: Summary, Last activity, Programs run, Program list, Word matches.
+            Use the tabs: Summary, Last activity, Download history, Programs run, Program list, Word matches.
           </p>
         )}
       </aside>

@@ -11,8 +11,15 @@ function tsMs(value) {
 }
 
 export function scanReviewFromReport(report) {
-  const bundled = report.security_integrity_signals?.scan_review;
-  if (bundled?.available) return bundled;
+  const sec = report.security_integrity_signals ?? {};
+  const bundled = sec.scan_review;
+  const downloads = sec.browser_download_history;
+  if (bundled?.available) {
+    if (downloads?.available && !bundled.download_history?.items?.length) {
+      return { ...bundled, download_history: downloads };
+    }
+    return bundled;
+  }
   return buildClientScanReview(report);
 }
 
@@ -94,6 +101,19 @@ function buildClientScanReview(report) {
     }))
     .sort((a, b) => tsMs(b.occurred_at) - tsMs(a.occurred_at));
 
+  const downloadItems = (sec.browser_download_history?.items ?? []).map((dl) => ({
+    browser: dl.browser,
+    profile: dl.profile,
+    url: dl.url,
+    target_path: dl.target_path,
+    file_name: pathBasename(dl.target_path || dl.url),
+    started_at: dl.started_at,
+    ended_at: dl.ended_at,
+    state: dl.state,
+    suspicious: dl.suspicious,
+    matched_labels: dl.matched_labels ?? [],
+  }));
+
   return {
     available: true,
     last_computer_activity: {
@@ -123,6 +143,12 @@ function buildClientScanReview(report) {
       event_count: executionItems.length,
       suspicious_count: executionItems.filter((i) => i.suspicious).length,
       items: executionItems.slice(0, 100),
+    },
+    download_history: {
+      available: Boolean(sec.browser_download_history?.available || downloadItems.length),
+      download_count: downloadItems.length,
+      suspicious_count: downloadItems.filter((i) => i.suspicious).length,
+      items: downloadItems.slice(0, 120),
     },
   };
 }

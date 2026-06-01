@@ -15050,29 +15050,262 @@ def usn_parse_records(lines: list[str]) -> list[dict[str, object]]:
     return rows
 
 
+CHROMIUM_DOWNLOAD_STATE_LABELS: dict[int, str] = {
+    0: "in_progress",
+    1: "complete",
+    2: "cancelled",
+    3: "interrupted",
+    4: "dangerous",
+}
+
+
+def _download_basename(path: str) -> str:
+    normalized = str(path or "").replace("/", "\\").strip()
+    if not normalized:
+        return ""
+    parts = [part for part in normalized.split("\\") if part]
+    return parts[-1] if parts else normalized
+
+
+def _download_sort_ms(row: dict) -> float:
+    ts = row.get("started_at") or row.get("ended_at")
+    if not ts:
+        return 0.0
+    try:
+        return datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def _chromium_user_data_roots() -> list[tuple[str, Path]]:
+    roots: list[tuple[str, Path]] = []
+    la = os.getenv("LOCALAPPDATA")
+    if not la:
+        return roots
+    mapping = (
+        ("Chrome", Path(la) / "Google" / "Chrome" / "User Data"),
+        ("Edge", Path(la) / "Microsoft" / "Edge" / "User Data"),
+        ("Brave", Path(la) / "BraveSoftware" / "Brave-Browser" / "User Data"),
+    )
+    for label, base in mapping:
+        if base.is_dir():
+            roots.append((label, base))
+    return roots
+
+
+def _chromium_history_database_paths() -> list[tuple[str, str, Path]]:
+    paths: list[tuple[str, str, Path]] = []
+    for browser, base in _chromium_user_data_roots():
+        for prof in ("Default", "Profile 1", "Profile 2", "Profile 3"):
+            hp = base / prof / "History"
+            if hp.is_file():
+                paths.append((browser, prof, hp))
+    return paths
+
+
+def _firefox_profile_download_databases() -> list[tuple[str, Path]]:
+    rows: list[tuple[str, Path]] = []
+    appdata = os.getenv("APPDATA")
+    if not appdata:
+        return rows
+    profiles_root = Path(appdata) / "Mozilla" / "Firefox" / "Profiles"
+    if not profiles_root.is_dir():
+        return rows
+    try:
+        for entry in profiles_root.iterdir():
+            if not entry.is_dir():
+                continue
+            db = entry / "downloads.sqlite"
+            if db.is_file():
+                rows.append((entry.name, db))
+    except OSError:
+        pass
+    return rows
+
+
+def _download_row_matches(path: str, url: str, patterns: dict[str, re.Pattern[str]]) -> tuple[bool, list[str]]:
+    labels = sorted(set(match_executor_labels(f"{path} {url}", patterns)))
+    labels.extend(cheat_filename_hint_labels(_download_basename(path)))
+    if not labels and url:
+        lower = url.lower()
+        if any(ext in lower for ext in (".exe", ".dll", ".bat", ".ps1", ".msi", ".zip", ".rar", ".7z")):
+            labels.append("download_url_extension")
+    return bool(labels), labels
+
+
+def _read_chromium_downloads(browser: str, profile: str, history_db: Path, patterns: dict[str, re.Pattern[str]]) -> list[dict]:
+    items: list[dict] = []
+    uri = f"file:{history_db.as_posix()}?mode=ro"
+    try:
+        conn = sqlite3.connect(uri, uri=True, timeout=2.5)
+    except sqlite3.Error:
+        try:
+            conn = sqlite3.connect(str(history_db), timeout=2.5)
+        except sqlite3.Error:
+            return items
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='downloads'"
+        )
+        if not cur.fetchone():
+            return items
+        cur.execute(
+            """
+            SELECT target_path, tab_url, start_time, end_time, received_bytes, total_bytes, state, danger_type, mime_type
+            FROM downloads
+            WHERE start_time IS NOT NULL AND start_time > 0
+            ORDER BY start_time DESC
+            LIMIT 180
+            """
+        )
+        for target_path, tab_url, start_time, end_time, received, total, state, danger_type, mime_type in cur.fetchall():
+            path = str(target_path or "")
+            url = str(tab_url or "")
+            started = chrome_webkit_time_to_iso(start_time)
+            ended = chrome_webkit_time_to_iso(end_time)
+            suspicious, labels = _download_row_matches(path, url, patterns)
+            state_code = int(state) if state is not None else -1
+            items.append(
+                {
+                    "browser": browser,
+                    "profile": profile,
+                    "url": url[:520],
+                    "target_path": path[:520],
+                    "file_name": _download_basename(path) or _download_basename(url),
+                    "started_at": started,
+                    "ended_at": ended,
+                    "received_bytes": received,
+                    "total_bytes": total,
+                    "state": CHROMIUM_DOWNLOAD_STATE_LABELS.get(state_code, str(state_code)),
+                    "state_code": state_code,
+                    "danger_type": danger_type,
+                    "mime_type": str(mime_type or "")[:120],
+                    "suspicious": suspicious,
+                    "matched_labels": labels,
+                    "source": "chromium_downloads_table",
+                }
+            )
+    except sqlite3.Error:
+        pass
+    finally:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+    return items
+
+
+def _read_firefox_downloads(profile_name: str, db_path: Path, patterns: dict[str, re.Pattern[str]]) -> list[dict]:
+    items: list[dict] = []
+    uri = f"file:{db_path.as_posix()}?mode=ro"
+    try:
+        conn = sqlite3.connect(uri, uri=True, timeout=2.5)
+    except sqlite3.Error:
+        try:
+            conn = sqlite3.connect(str(db_path), timeout=2.5)
+        except sqlite3.Error:
+            return items
+    queries = (
+        """
+        SELECT content, source, start_time, end_time, state, total_bytes, fileSize
+        FROM moz_downloads
+        WHERE start_time IS NOT NULL AND start_time > 0
+        ORDER BY start_time DESC
+        LIMIT 150
+        """,
+        """
+        SELECT target, source, start_time, end_time, state, total_bytes, fileSize
+        FROM moz_downloads
+        WHERE start_time IS NOT NULL AND start_time > 0
+        ORDER BY start_time DESC
+        LIMIT 150
+        """,
+    )
+    try:
+        cur = conn.cursor()
+        rows: list[tuple] = []
+        for sql in queries:
+            try:
+                cur.execute(sql)
+                rows = cur.fetchall()
+                if rows:
+                    break
+            except sqlite3.Error:
+                continue
+        for row in rows:
+            path = str(row[0] or "")
+            source_field = str(row[1] or "") if len(row) > 1 else ""
+            start_time = row[2] if len(row) > 2 else None
+            end_time = row[3] if len(row) > 3 else None
+            started = chrome_webkit_time_to_iso(start_time)
+            ended = chrome_webkit_time_to_iso(end_time)
+            url = source_field if source_field.startswith("http") else ""
+            suspicious, labels = _download_row_matches(path, url, patterns)
+            items.append(
+                {
+                    "browser": "Firefox",
+                    "profile": profile_name,
+                    "url": url[:520],
+                    "target_path": path[:520],
+                    "file_name": _download_basename(path),
+                    "started_at": started,
+                    "ended_at": ended,
+                    "received_bytes": row[6] if len(row) > 6 else None,
+                    "total_bytes": row[5] if len(row) > 5 else None,
+                    "state": str(row[4]) if len(row) > 4 else "unknown",
+                    "state_code": row[4] if len(row) > 4 else None,
+                    "danger_type": None,
+                    "mime_type": "",
+                    "suspicious": suspicious,
+                    "matched_labels": labels,
+                    "source": "firefox_downloads_sqlite",
+                }
+            )
+    except sqlite3.Error:
+        pass
+    finally:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+    return items
+
+
+def browser_download_history_scan() -> dict[str, object]:
+    if platform.system() != "Windows":
+        return {"available": False, "reason": "Browser download history is Windows-focused in this build"}
+
+    patterns = executor_name_patterns()
+    items: list[dict] = []
+    browsers_probed: list[str] = []
+
+    for browser, profile, history_db in _chromium_history_database_paths():
+        browsers_probed.append(f"{browser}/{profile}")
+        items.extend(_read_chromium_downloads(browser, profile, history_db, patterns))
+
+    for profile_name, db_path in _firefox_profile_download_databases():
+        browsers_probed.append(f"Firefox/{profile_name}")
+        items.extend(_read_firefox_downloads(profile_name, db_path, patterns))
+
+    items.sort(key=_download_sort_ms, reverse=True)
+    suspicious_count = sum(1 for row in items if row.get("suspicious"))
+    return {
+        "available": True,
+        "download_count": len(items),
+        "suspicious_count": suspicious_count,
+        "browsers_probed": browsers_probed[:20],
+        "items": items[:250],
+        "note": "Reads Chrome, Edge, Brave (History downloads table) and Firefox (downloads.sqlite). "
+        "Includes completed and interrupted downloads when the browser database is accessible.",
+    }
+
+
 def sqlite_forensic_probe() -> dict[str, object]:
     findings: list[dict[str, object]] = []
     if platform.system() != "Windows":
         return {"available": False, "findings": findings}
-    roots: list[Path] = []
-    la = os.getenv("LOCALAPPDATA")
-    if la:
-        roots.extend(
-            [
-                Path(la) / "Google" / "Chrome" / "User Data",
-                Path(la) / "Microsoft" / "Edge" / "User Data",
-                Path(la) / "BraveSoftware" / "Brave-Browser" / "User Data",
-            ]
-        )
-    profiles = ("Default", "Profile 1", "Profile 2")
-    history_paths: list[Path] = []
-    for base in roots:
-        if not base.is_dir():
-            continue
-        for prof in profiles:
-            hp = base / prof / "History"
-            if hp.is_file():
-                history_paths.append(hp)
+    history_paths: list[Path] = [hp for _, _, hp in _chromium_history_database_paths()]
     keywords_sql = []
     for group_name, terms in (
         ("cheat_terms", _CHEAT_QUERY_TERMS),
@@ -15925,8 +16158,26 @@ def build_user_activity_timeline(
     roblox: dict,
     forensic_bundle: dict,
     sha_blocklist: dict,
+    browser_download_history: dict | None = None,
 ) -> dict:
     events: list[dict] = []
+
+    for item in (browser_download_history or {}).get("items") or []:
+        fname = str(item.get("file_name") or _download_basename(str(item.get("target_path") or "")))
+        browser = str(item.get("browser") or "Browser")
+        labels = list(item.get("matched_labels") or [])
+        _append_activity_event(
+            events,
+            category="browser",
+            kind="browser_download",
+            label=", ".join(labels) if labels else f"{browser} download",
+            path=str(item.get("target_path") or item.get("url") or ""),
+            occurred_at=item.get("started_at") or item.get("ended_at"),
+            timestamp_source="browser_download_start" if item.get("started_at") else "browser_download_end",
+            detail=f"Downloaded via {browser} ({item.get('state', 'unknown')}).",
+            generated_at=generated_at,
+            extra={"url": item.get("url"), "browser": browser, "suspicious": item.get("suspicious")},
+        )
 
     for item in trash.get("items") or []:
         path = str(item.get("original_path") or item.get("name") or "")
@@ -16961,6 +17212,7 @@ def build_last_computer_activity(
     boot_time: str | None,
     user_activity: dict,
     execution_activity: dict,
+    download_history: dict | None = None,
 ) -> dict:
     milestones: list[dict] = []
     if boot_time:
@@ -16990,6 +17242,19 @@ def build_last_computer_activity(
         "filesystem": "A filesystem change was logged.",
     }
     events: list[dict] = []
+    for dl in (download_history or {}).get("items") or []:
+        started = dl.get("started_at") or dl.get("ended_at")
+        if not started:
+            continue
+        fname = str(dl.get("file_name") or "a file")
+        events.append(
+            {
+                "occurred_at": started,
+                "category": "browser",
+                "summary": f"A file was downloaded in {dl.get('browser', 'a browser')}: {fname}.",
+                "path": dl.get("target_path") or dl.get("url"),
+            }
+        )
     for event in user_activity.get("events") or []:
         if not event.get("occurred_at"):
             continue
@@ -17035,6 +17300,7 @@ def build_scan_review_bundle(
     executor_activity: dict,
     user_activity: dict,
     disk_executables: dict,
+    browser_download_history: dict | None = None,
 ) -> dict:
     execution_activity = build_execution_activity_feed(
         generated_at=generated_at,
@@ -17065,6 +17331,7 @@ def build_scan_review_bundle(
         boot_time=boot_time,
         user_activity=user_activity,
         execution_activity=execution_activity,
+        download_history=browser_download_history,
     )
     return {
         "available": True,
@@ -17072,6 +17339,7 @@ def build_scan_review_bundle(
         "executable_inventory": executable_inventory,
         "string_detection": string_detection,
         "execution_activity": execution_activity,
+        "download_history": browser_download_history or {"available": False, "items": []},
     }
 
 
@@ -17109,6 +17377,7 @@ def build_report() -> dict:
         fut_persist = pool.submit(persistence_signals)
         fut_roblox_int = pool.submit(roblox_integrity_scan, prefetch)
         fut_disk_exe = pool.submit(recent_disk_executable_scan)
+        fut_browser_downloads = pool.submit(browser_download_history_scan)
 
         forensic_bundle = fut_forensic.result()
         bam_structured = forensic_bundle.get("bam_structured")
@@ -17142,6 +17411,7 @@ def build_report() -> dict:
         userassist = fut_userassist.result()
         roblox = fut_roblox.result()
         command_history = fut_cmdhist.result()
+        browser_download_history = fut_browser_downloads.result()
         usn_rows = forensic_bundle.get("usn_file_lifecycle_rows") or []
         enrich_pca_executed_records(
             forensic_bundle.get("pca_executed") or {},
@@ -17192,6 +17462,7 @@ def build_report() -> dict:
             roblox=roblox,
             forensic_bundle=forensic_bundle,
             sha_blocklist=sha_blocklist,
+            browser_download_history=browser_download_history,
         )
         bypass_resilience = bypass_resilience_signals(
             prefetch=prefetch,
@@ -17222,6 +17493,7 @@ def build_report() -> dict:
             executor_activity=executor_activity,
             user_activity=user_activity,
             disk_executables=disk_executables,
+            browser_download_history=browser_download_history,
         )
 
     processes = []
@@ -17286,6 +17558,7 @@ def build_report() -> dict:
             "forensic_analysis": forensic_bundle,
             "bypass_resilience": bypass_resilience,
             "scan_review": scan_review,
+            "browser_download_history": browser_download_history,
         },
     }
 

@@ -5,6 +5,7 @@ import {
   ChevronRight,
   Clock3,
   Download,
+  FileDown,
   FileCode2,
   HelpCircle,
   ListChecks,
@@ -39,6 +40,7 @@ const VERDICT_META = {
 const TABS = [
   { id: "overview", label: "Summary", icon: Sparkles },
   { id: "activity", label: "Last activity", icon: Clock3 },
+  { id: "downloads", label: "Download history", icon: FileDown },
   { id: "execution", label: "Programs run", icon: Play },
   { id: "programs", label: "Program list", icon: FileCode2 },
   { id: "strings", label: "Word matches", icon: Search },
@@ -216,6 +218,9 @@ function OverviewTab({ verdict, problems, review, formatGmtPlus3 }) {
             <strong>Last activity</strong> — what the PC did recently, in time order.
           </li>
           <li>
+            <strong>Download history</strong> — files downloaded in Chrome, Edge, Brave, or Firefox.
+          </li>
+          <li>
             <strong>Programs run</strong> — apps and files that were executed.
           </li>
           <li>
@@ -243,9 +248,19 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
         occurred_at: e.occurred_at,
         summary: activityEventSummary(e),
         path: e.path,
-      }))
-      .sort((a, b) => new Date(b.occurred_at) - new Date(a.occurred_at));
+      }));
   }
+  const downloads = review.download_history?.items ?? [];
+  for (const dl of downloads) {
+    const when = dl.started_at || dl.ended_at;
+    if (!when) continue;
+    events.push({
+      occurred_at: when,
+      summary: `A file was downloaded in ${dl.browser || "a browser"}: ${dl.file_name || "a file"}.`,
+      path: dl.target_path || dl.url,
+    });
+  }
+  events.sort((a, b) => new Date(b.occurred_at) - new Date(a.occurred_at));
 
   return (
     <section className="simple-panel">
@@ -279,6 +294,63 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
         </ul>
       ) : (
         <p className="muted">No timed activity on this report. Try a new scan with the latest app.</p>
+      )}
+    </section>
+  );
+}
+
+function DownloadsTab({ review, formatGmtPlus3 }) {
+  const block = review.download_history ?? {};
+  const items = block.items ?? [];
+  const [onlyFlagged, setOnlyFlagged] = useState(false);
+  const shown = onlyFlagged ? items.filter((i) => i.suspicious) : items;
+
+  return (
+    <section className="simple-panel">
+      <header className="simple-panel-head">
+        <FileDown size={22} />
+        <div>
+          <h4>Browser download history</h4>
+          <p>Files downloaded through Chrome, Edge, Brave, or Firefox — like the browser’s own download list.</p>
+        </div>
+      </header>
+      <div className="simple-filter-row">
+        <button type="button" className={!onlyFlagged ? "active" : ""} onClick={() => setOnlyFlagged(false)}>
+          All downloads ({block.download_count ?? 0})
+        </button>
+        <button type="button" className={onlyFlagged ? "active" : ""} onClick={() => setOnlyFlagged(true)}>
+          Flagged ({block.suspicious_count ?? 0})
+        </button>
+      </div>
+      {shown.length ? (
+        <ul className="simple-timeline">
+          {shown.slice(0, 50).map((row, index) => (
+            <li
+              key={`${row.target_path}-${row.started_at}-${index}`}
+              className={row.suspicious ? "simple-timeline--warn" : ""}
+            >
+              <time>{row.started_at ? formatGmtPlus3(row.started_at) : "Time unknown"}</time>
+              <p>
+                <strong>{row.file_name || "Download"}</strong> — via {row.browser || "browser"}
+                {row.state ? ` (${row.state})` : ""}
+              </p>
+              {row.matched_labels?.length ? (
+                <p className="muted">Matched: {row.matched_labels.join(", ")}</p>
+              ) : null}
+              {row.url ? (
+                <details className="simple-path-fold">
+                  <summary>Show download page link</summary>
+                  <code>{row.url}</code>
+                </details>
+              ) : null}
+              <PathFold path={row.target_path} />
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="muted">
+          No browser download records were read. The browser may be closed, profiles encrypted, or history cleared.
+        </p>
       )}
     </section>
   );
@@ -460,6 +532,7 @@ export function SimpleResults({
           formatGmtPlus3={formatGmtPlus3}
         />
       ) : null}
+      {tab === "downloads" ? <DownloadsTab review={review} formatGmtPlus3={formatGmtPlus3} /> : null}
       {tab === "execution" ? <ExecutionTab review={review} formatGmtPlus3={formatGmtPlus3} /> : null}
       {tab === "programs" ? <ProgramsTab review={review} formatGmtPlus3={formatGmtPlus3} /> : null}
       {tab === "strings" ? <StringsTab review={review} formatGmtPlus3={formatGmtPlus3} /> : null}
