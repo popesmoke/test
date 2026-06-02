@@ -12715,6 +12715,12 @@ def weird_filename_reasons(stem: str, full_name: str) -> list[str]:
     return reasons
 
 
+def _is_authenticode_valid(status: str) -> bool:
+    """Treat explicit 'Valid' signature results as trusted for name-only checks."""
+    norm = (status or "").strip().upper()
+    return norm == "VALID"
+
+
 def match_executor_labels(text: str, patterns: dict[str, re.Pattern[str]]) -> list[str]:
     return [name for name, pattern in patterns.items() if pattern.search(text)]
 
@@ -12751,6 +12757,17 @@ def combined_user_folder_security_scans(max_hashes: int = EXECUTOR_HASH_SCAN_MAX
                 executor_labels = sorted(set(match_executor_labels(full_name, patterns)))
                 weird = weird_filename_reasons(stem, full_name)
                 cheat_hints = cheat_filename_hint_labels(full_name)
+                trusted_name_only = (
+                    weird == ["trusted_app_name_in_user_folder_context"] and not executor_labels and not cheat_hints
+                )
+                if trusted_name_only and ext in {".exe", ".dll"}:
+                    try:
+                        sig_status = forensic_authenticode_status(str(path))
+                    except Exception:
+                        sig_status = "unknown"
+                    # Reduce false positives for genuine apps copied outside default install dirs.
+                    if _is_authenticode_valid(sig_status):
+                        continue
                 if not executor_labels and not weird and not cheat_hints:
                     continue
                 try:
