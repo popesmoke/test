@@ -12008,8 +12008,6 @@ USER_FOLDER_SCAN_SUBDIRS = ("Downloads", "Desktop", "Documents")
 USER_FOLDER_SCAN_MAX_DEPTH = 8
 USER_FOLDER_SCAN_MAX_ENUMERATED = 200_000
 USER_FOLDER_SCAN_MAX_HITS = 500
-LIFECYCLE_TRACK_MAX_HASHED = 1800
-LIFECYCLE_TRACK_MAX_CHANGES = 200
 USER_FOLDER_TRUSTED_APP_STEMS = frozenset(
     {
         # Executables often used as disguises when dropped into user folders.
@@ -12067,163 +12065,6 @@ def file_sha256_full(path: Path, max_bytes: int = EXECUTOR_HASH_MAX_FILE_BYTES) 
         return digest.hexdigest()
     except OSError:
         return ""
-
-
-def lifecycle_tracking_state_path() -> Path:
-    base = Path(os.getenv("LOCALAPPDATA", "")) if platform.system() == "Windows" else (Path.home() / ".cache")
-    root = base / "DangerousCityScanner"
-    return root / "binary_lifecycle_state.json"
-
-
-def _load_lifecycle_tracking_state() -> dict[str, object]:
-    path = lifecycle_tracking_state_path()
-    try:
-        if path.is_file():
-            data = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                return data
-    except Exception:
-        pass
-    return {}
-
-
-def _save_lifecycle_tracking_state(state: dict[str, object]) -> None:
-    path = lifecycle_tracking_state_path()
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(state, ensure_ascii=True), encoding="utf-8")
-    except Exception:
-        # State persistence should never break a scan.
-        return
-
-
-def binary_lifecycle_tracking(max_hashed: int = LIFECYCLE_TRACK_MAX_HASHED) -> dict[str, object]:
-    """
-    Track executable lifecycle across scans (new files, renamed/moved paths, disappeared paths).
-    This is scan-to-scan persistence, not real-time kernel monitoring.
-    """
-    previous = _load_lifecycle_tracking_state()
-    prev_items = previous.get("items") if isinstance(previous, dict) else []
-    prev_by_sha: dict[str, list[dict[str, object]]] = defaultdict(list)
-    if isinstance(prev_items, list):
-        for item in prev_items:
-            if not isinstance(item, dict):
-                continue
-            sha = str(item.get("sha256") or "").strip().lower()
-            if len(sha) != 64:
-                continue
-            prev_by_sha[sha].append(item)
-
-    current_items: list[dict[str, object]] = []
-    by_sha_current: dict[str, list[dict[str, object]]] = defaultdict(list)
-    hashed = 0
-    scanned_exec_candidates = 0
-    seen_paths: set[str] = set()
-    for root, max_depth in executor_user_hash_scan_roots():
-        try:
-            for path in walk_files_depth_limited(root, max_depth):
-                if hashed >= max_hashed:
-                    break
-                try:
-                    if not path.is_file() or path.suffix.lower() not in {".exe", ".dll"}:
-                        continue
-                except OSError:
-                    continue
-                path_str = str(path)
-                key = path_str.lower()
-                if key in seen_paths:
-                    continue
-                seen_paths.add(key)
-                scanned_exec_candidates += 1
-                sha = file_sha256_full(path)
-                if len(sha) != 64:
-                    continue
-                try:
-                    stat = path.stat()
-                    modified = datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()
-                    size = int(stat.st_size)
-                except OSError:
-                    modified = ""
-                    size = 0
-                item = {
-                    "sha256": sha.lower(),
-                    "path": path_str,
-                    "size_bytes": size,
-                    "modified": modified,
-                }
-                current_items.append(item)
-                by_sha_current[sha.lower()].append(item)
-                hashed += 1
-        except (OSError, PermissionError):
-            continue
-
-    new_files: list[dict[str, object]] = []
-    moved_or_renamed: list[dict[str, object]] = []
-    disappeared: list[dict[str, object]] = []
-
-    for sha, now_items in by_sha_current.items():
-        prev_for_sha = prev_by_sha.get(sha, [])
-        prev_paths = {str(i.get("path") or "") for i in prev_for_sha}
-        now_paths = {str(i.get("path") or "") for i in now_items}
-        if not prev_for_sha:
-            # First time this binary hash appears.
-            sample = now_items[0]
-            new_files.append(
-                {
-                    "sha256": sha,
-                    "path": sample.get("path"),
-                    "size_bytes": sample.get("size_bytes"),
-                    "modified": sample.get("modified"),
-                }
-            )
-        elif prev_paths != now_paths:
-            moved_or_renamed.append(
-                {
-                    "sha256": sha,
-                    "previous_paths": sorted(prev_paths)[:12],
-                    "current_paths": sorted(now_paths)[:12],
-                    "path_count_delta": len(now_paths) - len(prev_paths),
-                }
-            )
-
-    for sha, prev_for_sha in prev_by_sha.items():
-        if sha in by_sha_current:
-            continue
-        sample = prev_for_sha[0]
-        disappeared.append(
-            {
-                "sha256": sha,
-                "last_seen_path": sample.get("path"),
-                "last_seen_modified": sample.get("modified"),
-            }
-        )
-
-    new_files.sort(key=lambda x: str(x.get("modified") or ""), reverse=True)
-    moved_or_renamed.sort(key=lambda x: str(x.get("sha256") or ""))
-    disappeared.sort(key=lambda x: str(x.get("last_seen_modified") or ""), reverse=True)
-
-    now_iso = datetime.now(timezone.utc).isoformat()
-    _save_lifecycle_tracking_state(
-        {
-            "updated_at": now_iso,
-            "items": current_items[:max_hashed],
-            "hashed_count": hashed,
-            "scan_candidate_count": scanned_exec_candidates,
-        }
-    )
-
-    return {
-        "available": True,
-        "updated_at": now_iso,
-        "max_hashed": max_hashed,
-        "hashed_count": hashed,
-        "scan_candidate_count": scanned_exec_candidates,
-        "first_run": not bool(prev_by_sha),
-        "new_files": new_files[:LIFECYCLE_TRACK_MAX_CHANGES],
-        "moved_or_renamed": moved_or_renamed[:LIFECYCLE_TRACK_MAX_CHANGES],
-        "disappeared_files": disappeared[:LIFECYCLE_TRACK_MAX_CHANGES],
-        "note": "Tracks changes between scans using SHA256 identity. Not a real-time file-system watcher.",
-    }
 
 
 def executor_user_hash_scan_roots() -> list[tuple[Path, int]]:
@@ -12874,12 +12715,6 @@ def weird_filename_reasons(stem: str, full_name: str) -> list[str]:
     return reasons
 
 
-def _is_authenticode_valid(status: str) -> bool:
-    """Treat explicit 'Valid' signature results as trusted for name-only checks."""
-    norm = (status or "").strip().upper()
-    return norm == "VALID"
-
-
 def match_executor_labels(text: str, patterns: dict[str, re.Pattern[str]]) -> list[str]:
     return [name for name, pattern in patterns.items() if pattern.search(text)]
 
@@ -12916,17 +12751,6 @@ def combined_user_folder_security_scans(max_hashes: int = EXECUTOR_HASH_SCAN_MAX
                 executor_labels = sorted(set(match_executor_labels(full_name, patterns)))
                 weird = weird_filename_reasons(stem, full_name)
                 cheat_hints = cheat_filename_hint_labels(full_name)
-                trusted_name_only = (
-                    weird == ["trusted_app_name_in_user_folder_context"] and not executor_labels and not cheat_hints
-                )
-                if trusted_name_only and ext in {".exe", ".dll"}:
-                    try:
-                        sig_status = forensic_authenticode_status(str(path))
-                    except Exception:
-                        sig_status = "unknown"
-                    # Reduce false positives for genuine apps copied outside default install dirs.
-                    if _is_authenticode_valid(sig_status):
-                        continue
                 if not executor_labels and not weird and not cheat_hints:
                     continue
                 try:
@@ -17527,6 +17351,39 @@ def build_scan_review_bundle(
     }
 
 
+def in_scan_binary_change_signals(usn_rows: list[dict], bam_items: list[dict]) -> dict:
+    """
+    Summarize install/rename/move-related evidence from the current scan only.
+    """
+    creates: list[dict] = []
+    renames: list[dict] = []
+    deletes: list[dict] = []
+    for row in usn_rows[:500]:
+        path = str(row.get("path") or "")
+        if not re.search(r"\.(exe|dll|bat|ps1)\Z", path, re.IGNORECASE):
+            continue
+        reasons = [str(x).upper() for x in (row.get("reasons") or [])]
+        if any("FILE_CREATE" in reason for reason in reasons):
+            creates.append(row)
+        if any("RENAME_" in reason for reason in reasons):
+            renames.append(row)
+        if any("DELETE" in reason for reason in reasons):
+            deletes.append(row)
+    bam_exec = [
+        str(item.get("normalized_path") or "")
+        for item in bam_items[:350]
+        if re.search(r"\.(exe|dll)\Z", str(item.get("normalized_path") or ""), re.IGNORECASE)
+    ]
+    return {
+        "available": True,
+        "note": "Same-scan artifact signals only (USN + BAM), no previous scan baseline used.",
+        "install_like_events": {"count": len(creates), "examples": [str(r.get("path") or "") for r in creates[:25]]},
+        "rename_or_move_events": {"count": len(renames), "examples": [str(r.get("path") or "") for r in renames[:25]]},
+        "delete_or_disappear_events": {"count": len(deletes), "examples": [str(r.get("path") or "") for r in deletes[:25]]},
+        "bam_executed_binary_paths": {"count": len(bam_exec), "examples": bam_exec[:40]},
+    }
+
+
 def build_report() -> dict:
     scan_started_at = datetime.now(timezone.utc).isoformat()
     memory = psutil.virtual_memory()
@@ -17562,7 +17419,6 @@ def build_report() -> dict:
         fut_roblox_int = pool.submit(roblox_integrity_scan, prefetch)
         fut_disk_exe = pool.submit(recent_disk_executable_scan)
         fut_browser_downloads = pool.submit(browser_download_history_scan)
-        fut_lifecycle = pool.submit(binary_lifecycle_tracking)
 
         forensic_bundle = fut_forensic.result()
         bam_structured = forensic_bundle.get("bam_structured")
@@ -17597,7 +17453,6 @@ def build_report() -> dict:
         roblox = fut_roblox.result()
         command_history = fut_cmdhist.result()
         browser_download_history = fut_browser_downloads.result()
-        lifecycle_tracking = fut_lifecycle.result()
         usn_rows = forensic_bundle.get("usn_file_lifecycle_rows") or []
         enrich_pca_executed_records(
             forensic_bundle.get("pca_executed") or {},
@@ -17660,6 +17515,10 @@ def build_report() -> dict:
             prefetch_health=prefetch_health,
             amcache=fut_amcache.result(),
             command_history=command_history,
+        )
+        in_scan_changes = in_scan_binary_change_signals(
+            usn_rows=usn_rows if isinstance(usn_rows, list) else [],
+            bam_items=bam_registry.get("items") or [],
         )
         disk_executables = fut_disk_exe.result()
         boot_time_iso = datetime.fromtimestamp(psutil.boot_time(), timezone.utc).isoformat()
@@ -17745,7 +17604,7 @@ def build_report() -> dict:
             "bypass_resilience": bypass_resilience,
             "scan_review": scan_review,
             "browser_download_history": browser_download_history,
-            "binary_lifecycle_tracking": lifecycle_tracking,
+            "binary_change_signals_in_scan": in_scan_changes,
         },
     }
 
