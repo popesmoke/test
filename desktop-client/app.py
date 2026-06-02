@@ -12003,10 +12003,11 @@ CHEAT_FILENAME_HINT_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 ]
 
 USER_FOLDER_SCAN_EXTENSIONS = frozenset({".exe", ".dll", ".txt", ".json", ".log", ".bat", ".ps1"})
+# Kept for backwards reference only; the actual scan now covers the full home directory.
 USER_FOLDER_SCAN_SUBDIRS = ("Downloads", "Desktop", "Documents")
-USER_FOLDER_SCAN_MAX_DEPTH = 4
-USER_FOLDER_SCAN_MAX_ENUMERATED = 50_000
-USER_FOLDER_SCAN_MAX_HITS = 350
+USER_FOLDER_SCAN_MAX_DEPTH = 8
+USER_FOLDER_SCAN_MAX_ENUMERATED = 200_000
+USER_FOLDER_SCAN_MAX_HITS = 500
 USER_FOLDER_TRUSTED_APP_STEMS = frozenset(
     {
         # Executables often used as disguises when dropped into user folders.
@@ -12067,16 +12068,21 @@ def file_sha256_full(path: Path, max_bytes: int = EXECUTOR_HASH_MAX_FILE_BYTES) 
 
 
 def executor_user_hash_scan_roots() -> list[tuple[Path, int]]:
+    """Cover the full user home (includes AppData, Temp, etc.) so no subfolder escapes hashing."""
     roots: list[tuple[Path, int]] = []
+    seen: set[Path] = set()
     for folder in designated_user_folder_roots():
-        roots.append((folder, USER_FOLDER_SCAN_MAX_DEPTH))
+        if folder not in seen:
+            seen.add(folder)
+            roots.append((folder, USER_FOLDER_SCAN_MAX_DEPTH))
+    # Also scan system Temp in case the executor was staged outside the user profile.
     if platform.system() == "Windows":
-        for env_name, depth in (("LOCALAPPDATA", 7), ("APPDATA", 6), ("TEMP", 5)):
-            env_val = os.getenv(env_name)
-            if env_val:
-                candidate = Path(env_val)
-                if candidate.is_dir():
-                    roots.append((candidate, depth))
+        tmp = os.getenv("TEMP") or os.getenv("TMP")
+        if tmp:
+            candidate = Path(tmp)
+            if candidate.is_dir() and candidate not in seen:
+                seen.add(candidate)
+                roots.append((candidate, 6))
     return roots
 
 
@@ -12325,10 +12331,8 @@ def persistence_signals() -> dict:
 
     cutoff = datetime.now(timezone.utc).timestamp() - 14 * 86400
     for root in designated_user_folder_roots():
-        if root.name.lower() not in ("desktop", "downloads"):
-            continue
         try:
-            for lnk in root.glob("*.lnk"):
+            for lnk in root.rglob("*.lnk"):
                 try:
                     if lnk.stat().st_mtime < cutoff:
                         continue
@@ -12638,20 +12642,18 @@ def roblox_runtime_module_scan(prefetch: dict | None = None) -> dict:
 
 
 def designated_user_folder_roots() -> list[Path]:
+    """Return the entire user home directory so no subfolder can be used as a hiding spot."""
     roots: list[Path] = []
     if platform.system() == "Windows":
         base = os.getenv("USERPROFILE")
         if base:
-            for sub in USER_FOLDER_SCAN_SUBDIRS:
-                path = Path(base) / sub
-                if path.is_dir():
-                    roots.append(path)
+            home = Path(base)
+            if home.is_dir():
+                roots.append(home)
     else:
         home = Path.home()
-        for sub in USER_FOLDER_SCAN_SUBDIRS:
-            path = home / sub
-            if path.is_dir():
-                roots.append(path)
+        if home.is_dir():
+            roots.append(home)
     return roots
 
 
@@ -13965,11 +13967,9 @@ def executor_indicator_scan() -> dict:
             roots_spec.append((Path(tmp), 4))
         up = os.getenv("USERPROFILE")
         if up:
-            base = Path(up)
-            for sub in USER_FOLDER_SCAN_SUBDIRS:
-                p = base / sub
-                if p.is_dir():
-                    roots_spec.append((p, USER_FOLDER_SCAN_MAX_DEPTH))
+            home_root = Path(up)
+            if home_root.is_dir():
+                roots_spec.append((home_root, USER_FOLDER_SCAN_MAX_DEPTH))
         roots_spec.append((Path(os.getenv("SystemRoot", "C:\\Windows")) / "Prefetch", None))
     elif platform.system() == "Darwin":
         roots_spec.extend(
