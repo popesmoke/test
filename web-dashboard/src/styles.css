@@ -309,8 +309,9 @@ input {
 }
 
 .topbar-brand img {
-  width: 74px;
+  width: auto;
   height: 74px;
+  max-width: 220px;
   object-fit: contain;
   filter: drop-shadow(0 8px 18px rgba(239, 35, 60, 0.35));
 }
@@ -370,9 +371,11 @@ input {
 }
 
 .sidebar-brand img {
-  width: 64px;
+  width: auto;
   height: 64px;
+  max-width: 180px;
   object-fit: contain;
+  filter: drop-shadow(0 6px 14px rgba(239, 35, 60, 0.28));
 }
 
 .sidebar-brand h2 {

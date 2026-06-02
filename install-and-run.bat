@@ -7,7 +7,7 @@ set "CLIENT=%ROOT%desktop-client"
 set "DASHBOARD=%ROOT%web-dashboard"
 
 echo.
-echo Secure Remote Diagnostic - install and run
+echo Virello Scanner - install and run
 echo Root: %ROOT%
 echo.
 
@@ -62,13 +62,13 @@ echo.
 echo Starting backend, dashboard, and desktop client...
 echo.
 
-start "Diagnostic Backend" "%ROOT%start-backend.bat"
+start "Virello Scanner Backend" "%ROOT%start-backend.bat"
 timeout /t 3 /nobreak >nul
 
 start "Checker Dashboard" "%ROOT%start-dashboard.bat"
 timeout /t 2 /nobreak >nul
 
-start "Desktop Diagnostic Client" "%ROOT%start-desktop-app.bat"
+start "Virello Scanner" "%ROOT%start-desktop-app.bat"
 
 echo Backend:   http://localhost:8000
 echo Dashboard: http://localhost:3000

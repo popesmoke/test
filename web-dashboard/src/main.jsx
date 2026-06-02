@@ -29,7 +29,8 @@ import "./styles.css";
 import { SimpleResults } from "./SimpleResults.jsx";
 
 const API_URL = import.meta.env.VITE_API_URL || "https://virello-secure.onrender.com";
-const BRAND_LOGO = "/assets/dangerouscity-logo.png";
+const BRAND_LOGO = "/assets/virello-scanner-logo.png";
+const BRAND_NAME = "Virello Scanner";
 const DISCORD_INVITE_URL = import.meta.env.VITE_DISCORD_INVITE_URL || "https://discord.gg/wPZXKaPyWY";
 const GMT_PLUS3_FORMATTER = new Intl.DateTimeFormat("en-GB", {
   timeZone: "Etc/GMT-3",
@@ -87,11 +88,10 @@ function Login({ loginError }) {
     <main className="login-shell">
       <section className="login-panel">
         <div className="login-logo-wrap">
-          <img src={BRAND_LOGO} alt="DangerousCity" className="login-logo" />
+          <img src={BRAND_LOGO} alt={BRAND_NAME} className="login-logo" />
         </div>
         <div className="brand-row">
           <div>
-            <h1>DangerousCity</h1>
             <p>Sign in with Discord to check scan results in plain, simple language.</p>
           </div>
         </div>
@@ -120,7 +120,7 @@ function SessionList({ sessions, selectedId, onSelect, onDelete }) {
       <div className="sidebar-brand">
         <img src={BRAND_LOGO} alt="" />
         <div>
-          <h2>DangerousCity</h2>
+          <h2>{BRAND_NAME}</h2>
           <span>PIN Sessions</span>
         </div>
       </div>
@@ -735,7 +735,7 @@ function openedFilePlainSummary(item) {
       "Windows also recorded OS-level read access at the secondary time — any program (game, antivirus, search) can update that, so it is not proof the user opened it in Explorer.",
     );
   } else if (item.filteredScanAccess) {
-    parts.push("Access time during the scan window was hidden because the scanner itself touched the file.");
+    parts.push(`Access time during the scan window was hidden because ${BRAND_NAME} touched the file.`);
   }
   if (matched) parts.push(`Matched review signals: ${matched}.`);
   return parts.join(" ");
@@ -956,7 +956,7 @@ function buildClientSideUserActivity(report) {
       timestamp_source: item.timestamp_source || (item.deleted_at ? "recycle_metadata" : "file_mtime"),
       recency: recencyBucket(item.display_at || item.deleted_at || item.modified, report),
       detail: item.original_path
-        ? "Legacy report — re-scan with latest scanner for full deletion timeline."
+        ? `Legacy report — re-scan with the latest ${BRAND_NAME} for full deletion timeline.`
         : "Recycle Bin artifact without parsed $I metadata.",
     });
   }
@@ -992,7 +992,7 @@ function buildClientSideUserActivity(report) {
     }, {}),
     insights: [
       events.length
-        ? "Partial timeline built from legacy report data. Install the latest scanner for UserAssist, USN, and browser history timestamps."
+        ? `Partial timeline built from legacy report data. Install the latest ${BRAND_NAME} for UserAssist, USN, and browser history timestamps.`
         : "No activity timeline on this report — re-scan with the latest desktop client.",
     ],
     events: events.slice(0, 120),
@@ -1132,7 +1132,7 @@ function buildClientSideExecutorActivity(report) {
     path: item.path,
     occurred_at: item.displayAt,
     recency: recencyBucket(item.displayAt, report),
-    detail: "Derived from legacy report fields (re-scan with latest scanner for full timeline).",
+    detail: `Derived from legacy report fields (re-scan with the latest ${BRAND_NAME} for full timeline).`,
   }));
   return {
     available: true,
@@ -1141,7 +1141,7 @@ function buildClientSideExecutorActivity(report) {
     recent_event_count: events.filter((e) => e.recency === "last_24h" || e.recency === "last_72h").length,
     hash_hit_count: 0,
     events,
-    note: "Legacy report; install the latest scanner build for hash and BAM correlation.",
+    note: `Legacy report; install the latest ${BRAND_NAME} build for hash and BAM correlation.`,
   };
 }
 
@@ -1272,7 +1272,7 @@ function StarterSection({ report }) {
           <p className="muted">
             No matching executor or cheat-hint files with usable timestamps were listed in this report.
             {summary.scanAccessFiltered
-              ? ` ${summary.scanAccessFiltered} OS access time(s) were hidden because they fell during the scanner run.`
+              ? ` ${summary.scanAccessFiltered} OS access time(s) were hidden because they fell during the ${BRAND_NAME} run.`
               : ""}
           </p>
         )}
@@ -1326,7 +1326,7 @@ function RobloxSection({ report, query }) {
                 opened.displayAt && !opened.filteredScanAccess
                   ? `mtime ${formatGmtPlus3(opened.displayAt)}` +
                     (opened.accessedAt ? `; atime ${formatGmtPlus3(opened.accessedAt)}` : "")
-                  : "not shown because OS access fell during the scanner run or timestamps were unavailable"
+                  : `not shown because OS access fell during the ${BRAND_NAME} run or timestamps were unavailable`
               }`,
               `Usernames: ${(signals.usernames ?? []).join(", ") || "none"}`,
               `User IDs: ${(signals.user_ids ?? []).join(", ") || "none"}`,
@@ -1536,7 +1536,7 @@ function DeletionsSection({ report, query }) {
     <>
       <Card icon={Trash2} title="Deleted files (resolved timestamps)">
         <p className="muted opened-files-intro">
-          Times are shown in <strong>GMT+3</strong>. When Recycle Bin $I metadata is missing or zeroed, the scanner falls
+          Times are shown in <strong>GMT+3</strong>. When Recycle Bin $I metadata is missing or zeroed, {BRAND_NAME} falls
           back to metadata file mtime or companion $R data file mtime so reviewers still see an approximate delete window.
         </p>
         {deletionEvents.length ? (
@@ -1738,7 +1738,7 @@ function ForensicFindingsSection({ report, query }) {
       <Card icon={Fingerprint} title="Evidence review">
         <p className="muted panel-intro">
           Reviewer-first layout — expand a row for hash and signature detail. Times are GMT+3; deleted paths are
-          cross-matched across available system traces when the scanner can.
+          cross-matched across available system traces when {BRAND_NAME} can.
           {filtered.length > 40 ? ` Showing the first 40 of ${filtered.length} findings (use search to narrow).` : ""}
         </p>
         <div className="evidence-list">
@@ -2370,7 +2370,7 @@ function Dashboard({ token, onLogout }) {
         <div className="topbar-brand">
           <img src={BRAND_LOGO} alt="" />
           <div>
-            <p className="eyebrow">DangerousCity Reborn V2</p>
+            <p className="eyebrow">{BRAND_NAME}</p>
             <h1>Hi, {greetingName}</h1>
             <p className="topbar-subtitle">
               {hasAccess
@@ -2449,6 +2449,10 @@ function Dashboard({ token, onLogout }) {
 function App() {
   const [token, setToken] = useState(localStorage.getItem("checkerToken") ?? "");
   const [loginError, setLoginError] = useState("");
+
+  useEffect(() => {
+    document.title = BRAND_NAME;
+  }, []);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);

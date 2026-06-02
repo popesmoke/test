@@ -22,7 +22,7 @@ def main() -> int:
         print(f"No *.dist folder under {DIST}", file=sys.stderr)
         return 1
 
-    zip_base = DIST / "dngscanner-portable"
+    zip_base = DIST / "virello-scanner-portable"
     if zip_base.with_suffix(".zip").exists():
         zip_base.with_suffix(".zip").unlink()
     archive = shutil.make_archive(str(zip_base), "zip", root_dir=app_dist)

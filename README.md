@@ -1,6 +1,6 @@
-# Secure Remote System Diagnostic System
+# Virello Scanner
 
-A consent-first diagnostic sharing prototype with:
+A consent-first diagnostic sharing system with:
 
 - `desktop-client/` - cross-platform Python Tkinter app for PIN entry, scan consent, progress, and upload.
 - `backend/` - FastAPI API for checker auth, PIN sessions, report upload, and session results.
@@ -93,7 +93,7 @@ To build a Windows EXE:
 .\build-desktop-exe.bat
 ```
 
-The EXE is created at `desktop-client\dist\SecureRemoteDiagnostic.exe`.
+The EXE is created at `desktop-client\dist-secure\virello-scanner.exe`.
 
 ## Privacy Model
 

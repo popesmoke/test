@@ -62,7 +62,8 @@ RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
 RESEND_FROM = os.getenv("RESEND_FROM", "onboarding@resend.dev")
 BREVO_API_KEY = os.getenv("BREVO_API_KEY", "")
 BREVO_FROM_EMAIL = os.getenv("BREVO_FROM_EMAIL", "")
-BREVO_FROM_NAME = os.getenv("BREVO_FROM_NAME", "DangerousCity")
+BRAND_NAME = "Virello Scanner"
+BREVO_FROM_NAME = os.getenv("BREVO_FROM_NAME", BRAND_NAME)
 
 
 def utc_now() -> datetime:
@@ -272,7 +273,7 @@ def otp_email_body(username: str, otp: str) -> str:
         [
             f"Hi {username},",
             "",
-            f"Your DangerousCity verification code is: {otp}",
+            f"Your {BRAND_NAME} verification code is: {otp}",
             "",
             f"This code expires in {OTP_TTL_MINUTES} minutes.",
         ]
@@ -295,7 +296,7 @@ def resend_error_detail(status: int, body: str) -> str:
         return (
             "Resend test mode only allows sending to the email on your Resend account. "
             "Verify a domain at resend.com/domains, then set RESEND_FROM to something like "
-            "DangerousCity <noreply@yourdomain.com>."
+            f"{BRAND_NAME} <noreply@yourdomain.com>."
         )
     if message:
         return message
@@ -307,7 +308,7 @@ def send_otp_email_via_brevo(email: str, username: str, otp: str) -> None:
         {
             "sender": {"name": BREVO_FROM_NAME, "email": BREVO_FROM_EMAIL},
             "to": [{"email": email}],
-            "subject": "Your DangerousCity verification code",
+            "subject": f"Your {BRAND_NAME} verification code",
             "textContent": otp_email_body(username, otp),
         }
     ).encode("utf-8")
@@ -359,7 +360,7 @@ def send_otp_email_via_resend(email: str, username: str, otp: str) -> None:
         {
             "from": RESEND_FROM,
             "to": [email],
-            "subject": "Your DangerousCity verification code",
+            "subject": f"Your {BRAND_NAME} verification code",
             "text": otp_email_body(username, otp),
         }
     ).encode("utf-8")
@@ -386,7 +387,7 @@ def send_otp_email_via_resend(email: str, username: str, otp: str) -> None:
 
 def send_otp_email_via_smtp(email: str, username: str, otp: str) -> None:
     message = EmailMessage()
-    message["Subject"] = "Your DangerousCity verification code"
+    message["Subject"] = f"Your {BRAND_NAME} verification code"
     message["From"] = SMTP_FROM
     message["To"] = email
     message.set_content(otp_email_body(username, otp))
@@ -510,7 +511,7 @@ def discord_json_request(path: str, bearer_token: str) -> dict:
         headers={
             "Authorization": f"Bearer {bearer_token}",
             "Accept": "application/json",
-            "User-Agent": "DangerousCityDashboard/1.0",
+            "User-Agent": "VirelloScannerDashboard/1.0",
         },
     )
     with urlrequest.urlopen(req, timeout=12) as response:
@@ -533,7 +534,7 @@ def exchange_discord_code(code: str) -> dict:
         headers={
             "Content-Type": "application/x-www-form-urlencoded",
             "Accept": "application/json",
-            "User-Agent": "DangerousCityDashboard/1.0",
+            "User-Agent": "VirelloScannerDashboard/1.0",
         },
         method="POST",
     )
@@ -681,7 +682,7 @@ def row_to_summary(row: sqlite3.Row) -> dict:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "DiagnosticBackend/0.1"
+    server_version = "VirelloScannerBackend/0.1"
 
     def end_headers(self) -> None:
         request_origin = self.headers.get("Origin", "").rstrip("/")
@@ -944,7 +945,7 @@ def main() -> None:
     init_db()
     host = os.getenv("HOST", "127.0.0.1")
     port = int(os.getenv("PORT", "8000"))
-    print(f"Diagnostic backend running at http://{host}:{port}")
+    print(f"Virello Scanner backend running at http://{host}:{port}")
     ThreadingHTTPServer((host, port), Handler).serve_forever()
 
 

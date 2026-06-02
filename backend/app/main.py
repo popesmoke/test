@@ -21,7 +21,7 @@ CHECKER_EMAIL = os.getenv("CHECKER_EMAIL", "checker@example.com")
 CHECKER_PASSWORD = os.getenv("CHECKER_PASSWORD", "change-me")
 PIN_TTL_MINUTES = int(os.getenv("PIN_TTL_MINUTES", "30"))
 
-app = FastAPI(title="Secure Remote Diagnostic API", version="0.1.0")
+app = FastAPI(title="Virello Scanner API", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
