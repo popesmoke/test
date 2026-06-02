@@ -1,4 +1,4 @@
-"""Build logo from source art: transparent background, blue icon recolored to red, original wordmark kept."""
+"""Strip solid background from the Virello logo source PNG and publish app/dashboard assets."""
 from __future__ import annotations
 
 import base64
@@ -21,12 +21,7 @@ def resolve_source() -> Path:
     for folder in search_dirs:
         if not folder.is_dir():
             continue
-        candidates.extend(folder.glob("imagevir*.png"))
-        candidates.extend(folder.glob("*virello*.png"))
-    if not candidates:
-        for folder in search_dirs:
-            if folder.is_dir():
-                candidates.extend(folder.glob("*.png"))
+        candidates.extend(folder.glob("*.png"))
     if candidates:
         return max(candidates, key=lambda path: path.stat().st_mtime)
     raise FileNotFoundError("Virello source logo not found")
@@ -35,40 +30,20 @@ def resolve_source() -> Path:
 def is_background(r: int, g: int, b: int, a: int) -> bool:
     if a < 8:
         return True
-    return max(r, g, b) < 28 and abs(r - g) < 12 and abs(g - b) < 12
-
-
-def is_blue_accent(r: int, g: int, b: int, a: int) -> bool:
-    if a < 16:
-        return False
-    if b > 90 and b > r + 20 and b > g + 8:
+    if max(r, g, b) < 32 and abs(r - g) < 14 and abs(g - b) < 14:
         return True
-    return b > 55 and b >= max(r, g) + 10
+    return False
 
 
-def blue_to_red(r: int, g: int, b: int) -> tuple[int, int, int]:
-    """Map blue gradient tones to a matching red gradient."""
-    red = min(255, int(b * 0.98 + r * 0.35))
-    green = min(g, max(12, int(g * 0.32 + b * 0.04)))
-    blue_out = min(b, max(18, int(b * 0.22 + r * 0.08)))
-    return red, green, blue_out
-
-
-def process_logo(source: Path) -> Image.Image:
+def remove_background(source: Path) -> Image.Image:
     img = Image.open(source).convert("RGBA")
     pixels = img.load()
     width, height = img.size
-
     for y in range(height):
         for x in range(width):
             r, g, b, a = pixels[x, y]
             if is_background(r, g, b, a):
                 pixels[x, y] = (0, 0, 0, 0)
-            elif is_blue_accent(r, g, b, a):
-                nr, ng, nb = blue_to_red(r, g, b)
-                pixels[x, y] = (nr, ng, nb, a)
-            # else: keep original pixels (white VIRELLO wordmark, anti-aliasing, etc.)
-
     return img
 
 
@@ -97,7 +72,7 @@ def patch_app_py(app_path: Path, b85: str) -> None:
 
 def main() -> int:
     source = resolve_source()
-    logo = process_logo(source)
+    logo = remove_background(source)
 
     web_assets = REPO / "web-dashboard" / "public" / "assets"
     web_assets.mkdir(parents=True, exist_ok=True)
@@ -113,8 +88,7 @@ def main() -> int:
     icon = logo.copy()
     icon.save(ico_path, format="ICO", sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
 
-    png_bytes = png_path.read_bytes()
-    b85 = embed_logo_b85(png_bytes)
+    b85 = embed_logo_b85(png_path.read_bytes())
     patch_app_py(ROOT / "app.py", b85)
 
     print(f"Source: {source}")
