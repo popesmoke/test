@@ -31,6 +31,16 @@ import { SimpleResults } from "./SimpleResults.jsx";
 const API_URL = import.meta.env.VITE_API_URL || "https://test-v7a8.onrender.com";
 const BRAND_LOGO = "/assets/dangerouscity-logo.png";
 const DISCORD_INVITE_URL = import.meta.env.VITE_DISCORD_INVITE_URL || "https://discord.gg/wPZXKaPyWY";
+const GMT_PLUS3_FORMATTER = new Intl.DateTimeFormat("en-GB", {
+  timeZone: "Etc/GMT-3",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hour12: false,
+});
 
 function authHeaders(token) {
   return { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
@@ -209,16 +219,7 @@ function formatGmtPlus3(value) {
   if (!value) return "unknown";
   const date = new Date(normalizeIsoDateString(value));
   if (Number.isNaN(date.getTime())) return String(value);
-  const formatted = new Intl.DateTimeFormat("en-GB", {
-    timeZone: "Etc/GMT-3",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  }).format(date);
+  const formatted = GMT_PLUS3_FORMATTER.format(date);
   return `${formatted.replace(",", "")} GMT+3`;
 }
 
@@ -1632,6 +1633,17 @@ function forensicSeverityClass(severity) {
 function ForensicFindingsSection({ report, query }) {
   const fa = report.security_integrity_signals?.forensic_analysis;
   const q = query.trim().toLowerCase();
+  const resolvePathTimestampCached = useMemo(() => {
+    const cache = new Map();
+    return (path) => {
+      const key = pathKey(path);
+      if (!key) return { display_at: null, timestamp_source: null, correlated: {} };
+      if (!cache.has(key)) {
+        cache.set(key, resolvePathTimestampFromReport(report, path));
+      }
+      return cache.get(key);
+    };
+  }, [report]);
   const flat = useMemo(
     () =>
       safeArray(fa?.detections_flat).filter(
@@ -1663,23 +1675,35 @@ function ForensicFindingsSection({ report, query }) {
     () => filtered.filter((d) => ["critical", "high"].includes(String(d.severity ?? "").toLowerCase())).length,
     [filtered],
   );
-  const withTime = useMemo(() => filtered.filter((d) => findingResolvedTime(report, d)).length, [filtered, report]);
+  const withTime = useMemo(
+    () =>
+      filtered.filter((d) => {
+        const direct = d.timestamps?.display_at;
+        if (direct && direct !== "null" && direct !== "None" && String(direct).trim()) return true;
+        return Boolean(resolvePathTimestampCached(d.file_path || "").display_at);
+      }).length,
+    [filtered, resolvePathTimestampCached],
+  );
   const missingPca = useMemo(
     () => enrichedPcaItems(report).filter((i) => !i.file_exists && !i.display_at).length,
     [report],
   );
   const visibleFindings = useMemo(
     () =>
-      filtered.slice(0, 80).map((d) => {
-        const when = findingResolvedTime(report, d);
-        const src = findingTimestampSource(report, d);
-        const resolved = resolvePathTimestampFromReport(report, d.file_path || "");
+      filtered.slice(0, 40).map((d) => {
+        const directWhen = d.timestamps?.display_at;
+        const hasDirectWhen =
+          directWhen && directWhen !== "null" && directWhen !== "None" && String(directWhen).trim();
+        const directSrc = d.timestamps?.timestamp_source;
+        const resolved = resolvePathTimestampCached(d.file_path || "");
+        const when = hasDirectWhen ? directWhen : resolved.display_at ?? null;
+        const src = directSrc && String(directSrc).trim() ? directSrc : resolved.timestamp_source;
         const correlated =
           (d.timestamps?.correlated && Object.keys(d.timestamps.correlated).length ? d.timestamps.correlated : null) ||
           resolved.correlated;
         return { d, when, src, correlated };
       }),
-    [filtered, report],
+    [filtered, resolvePathTimestampCached],
   );
   if (!fa || fa.available === false) {
     return (
