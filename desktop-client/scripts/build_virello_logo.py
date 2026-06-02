@@ -93,8 +93,7 @@ def process_logo(source: Path) -> Image.Image:
     text_h = bbox[3] - bbox[1]
     text_x = (width - text_w) // 2
     text_y = text_top + (height - text_top - text_h) // 2 - 8
-    draw.text((text_x + 2, text_y + 2), label, font=font, fill=(40, 40, 40, 180))
-    draw.text((text_x, text_y), label, font=font, fill=(245, 245, 248, 255))
+    draw.text((text_x, text_y), label, font=font, fill=(255, 255, 255, 255))
     return img
 
 
