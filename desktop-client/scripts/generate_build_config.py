@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "embedded_build_config.py"
 
 
-DEFAULT_API_URL = "https://test-v7a8.onrender.com"
+DEFAULT_API_URL = "https://virello-secure.onrender.com"
 
 
 def main() -> int:

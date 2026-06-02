@@ -19,7 +19,7 @@ def get_api_url() -> str:
             return value.rstrip("/")
 
     # Local development only — not used when embedded_build_config exists.
-    return "https://test-v7a8.onrender.com"
+    return "https://virello-secure.onrender.com"
 
 
 def is_protected_build() -> bool:

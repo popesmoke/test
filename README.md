@@ -36,7 +36,7 @@ The dashboard supports normal email/password accounts, but the backend only issu
 Create an app in the Discord Developer Portal, then add this redirect URL to the app's OAuth2 redirects:
 
 ```text
-https://test-v7a8.onrender.com/auth/discord/callback
+https://virello-secure.onrender.com/auth/discord/callback
 ```
 
 Set these backend environment variables:
@@ -45,11 +45,11 @@ Set these backend environment variables:
 DATABASE_URL=your Render PostgreSQL internal database URL
 DISCORD_CLIENT_ID=1510615702103392327
 DISCORD_CLIENT_SECRET=your Discord application client secret
-DISCORD_REDIRECT_URI=https://test-v7a8.onrender.com/auth/discord/callback
+DISCORD_REDIRECT_URI=https://virello-secure.onrender.com/auth/discord/callback
 DISCORD_GUILD_ID=1510614253508493373
 DISCORD_ACCESS_ROLE_ID=1510614274299531334
-FRONTEND_URL=https://joyful-torte-157157.netlify.app
-CORS_ORIGINS=http://localhost:3000,https://joyful-torte-157157.netlify.app
+FRONTEND_URL=https://virello-secure.pages.dev
+CORS_ORIGINS=http://localhost:3000,https://virello-secure.pages.dev
 API_TOKEN_SECRET=a long random secret
 ```
 

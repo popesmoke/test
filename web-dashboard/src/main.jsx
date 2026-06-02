@@ -28,7 +28,7 @@ import {
 import "./styles.css";
 import { SimpleResults } from "./SimpleResults.jsx";
 
-const API_URL = import.meta.env.VITE_API_URL || "https://test-v7a8.onrender.com";
+const API_URL = import.meta.env.VITE_API_URL || "https://virello-secure.onrender.com";
 const BRAND_LOGO = "/assets/dangerouscity-logo.png";
 const DISCORD_INVITE_URL = import.meta.env.VITE_DISCORD_INVITE_URL || "https://discord.gg/wPZXKaPyWY";
 const GMT_PLUS3_FORMATTER = new Intl.DateTimeFormat("en-GB", {

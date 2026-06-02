@@ -24,7 +24,7 @@ TOKEN_SECRET = os.getenv("API_TOKEN_SECRET", "local-dev-secret-change-me")
 CHECKER_EMAIL = os.getenv("CHECKER_EMAIL", "checker@example.com")
 CHECKER_PASSWORD = os.getenv("CHECKER_PASSWORD", "change-me")
 PIN_TTL_MINUTES = int(os.getenv("PIN_TTL_MINUTES", "30"))
-DEFAULT_FRONTEND_URL = "https://joyful-torte-157157.netlify.app"
+DEFAULT_FRONTEND_URL = "https://virello-secure.pages.dev"
 LOCAL_FRONTEND_URL = "http://localhost:3000"
 FRONTEND_URL = os.getenv("FRONTEND_URL", DEFAULT_FRONTEND_URL)
 
@@ -45,7 +45,7 @@ CORS_ORIGINS = build_cors_origins()
 DISCORD_API_BASE = "https://discord.com/api/v10"
 DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID", "1510615702103392327")
 DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET", "")
-DISCORD_REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI", "https://test-v7a8.onrender.com/auth/discord/callback")
+DISCORD_REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI", "https://virello-secure.onrender.com/auth/discord/callback")
 DISCORD_GUILD_ID = os.getenv("DISCORD_GUILD_ID", "1510614253508493373")
 DISCORD_ACCESS_ROLE_ID = os.getenv("DISCORD_ACCESS_ROLE_ID", "1510614274299531334")
 DISCORD_AUTH_SCOPES = "identify guilds.members.read"
