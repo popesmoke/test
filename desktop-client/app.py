@@ -12007,6 +12007,12 @@ USER_FOLDER_SCAN_SUBDIRS = ("Downloads", "Desktop", "Documents")
 USER_FOLDER_SCAN_MAX_DEPTH = 4
 USER_FOLDER_SCAN_MAX_ENUMERATED = 50_000
 USER_FOLDER_SCAN_MAX_HITS = 350
+USER_FOLDER_TRUSTED_APP_STEMS = frozenset(
+    {
+        # Executables often used as disguises when dropped into user folders.
+        "discord",
+    }
+)
 SCAN_WORKERS = min(10, (os.cpu_count() or 4) + 2)
 
 
@@ -12696,6 +12702,8 @@ def weird_filename_reasons(stem: str, full_name: str) -> list[str]:
     non_word = sum(1 for c in stem if not (c.isalnum() or c in "._- "))
     if non_word >= 3:
         reasons.append("unusual_symbols")
+    if stem.lower() in USER_FOLDER_TRUSTED_APP_STEMS:
+        reasons.append("trusted_app_name_in_user_folder_context")
     if len(letters) >= 14:
         transitions = sum(1 for i in range(len(letters) - 1) if letters[i].islower() != letters[i + 1].islower())
         if transitions >= min(10, max(6, len(letters) // 3)):
