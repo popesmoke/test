@@ -1968,16 +1968,15 @@ function Results({ detail }) {
     setExpertMode(false);
   }, [detail?.id]);
 
-  if (!detail) {
-    return <section className="empty-state">Select or generate a PIN session.</section>;
-  }
-
-  const report = detail.report ?? {};
+  const report = detail?.report ?? {};
   // Large reports can make tab switches feel sluggish if recomputed on every render.
   const summary = useMemo(() => buildSuspicionSummary(report), [report]);
   const activity = useMemo(() => userActivityFromReport(report), [report]);
   const activeSection = resultSectionById[sectionId] ?? resultSections[0];
   const ActiveComponent = activeSection.component;
+  if (!detail) {
+    return <section className="empty-state">Select or generate a PIN session.</section>;
+  }
   const showSectionContent = detail.status === "completed";
 
   return (
