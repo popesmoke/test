@@ -1468,7 +1468,7 @@ function FileAnalysisSection({ report, query }) {
             "Prefetch Indicator Hits:",
             asJson(sec.prefetch_health?.indicator_hits),
             "",
-            "Downloads / Desktop / Documents (exe, dll, txt, json, log, bat, ps1):",
+            "Detected file indicators:",
             asJson(sec.designated_folder_suspicious_files),
           ].join("\n")}
         </TerminalBlock>
@@ -1562,7 +1562,7 @@ function DeletionsSection({ report, query }) {
           <p className="muted">No deleted-file evidence with timestamps was collected.</p>
         )}
       </Card>
-      <Card icon={Trash2} title="Raw deletion artifacts">
+      <Card icon={Trash2} title="Deletion evidence">
         <TerminalBlock query={query}>
           {[
             `Report Date: ${formatGmtPlus3(report.generated_at)}`,
@@ -1573,11 +1573,8 @@ function DeletionsSection({ report, query }) {
             "Deleted / Clearing Signals:",
             asJson(sec.deletion_and_log_clearing_signals),
             "",
-            "Structured deletion evidence (USN multi-volume, Security 4660/4663, Sysmon 23):",
+            "Structured deletion evidence:",
             asJson(sec.deletion_and_log_clearing_signals?.deleted_file_evidence),
-            "",
-            "USN Delete Sample (text):",
-            sec.deletion_and_log_clearing_signals?.usn_delete_sample || "No USN delete sample available.",
           ].join("\n")}
         </TerminalBlock>
       </Card>
@@ -1599,7 +1596,7 @@ function MemorySection({ report, query }) {
             ? runtime.reason ?? "Roblox integrity scan not available on this host."
             : runtime.suspicious_modules?.length
               ? asJson(runtime)
-              : "[OK] No suspicious Roblox integrity signals in live modules or offline artifacts (logs, BAM, Prefetch, folders)."}
+              : "[OK] No suspicious Roblox integrity signals were found in available artifacts."}
         </TerminalBlock>
       </Card>
       <Card icon={MemoryStick} title="Persistence signals">
@@ -1609,7 +1606,7 @@ function MemorySection({ report, query }) {
             : asJson(persistence)}
         </TerminalBlock>
       </Card>
-      <Card icon={MemoryStick} title="SHA256 blocklist">
+      <Card icon={MemoryStick} title="Known binary fingerprint matches">
         <TerminalBlock query={query}>{asJson(shaBlocklist)}</TerminalBlock>
       </Card>
       <Card icon={MemoryStick} title="Process Snapshot">
@@ -1784,10 +1781,7 @@ function PcaExecutedCard({ report, query }) {
         artifacts — not raw null fields.
       </p>
       {missing.length ? (
-        <p className="muted small-note">
-          {missing.length} deleted path(s) still have no correlated time — run as Administrator or check if BAM/Prefetch
-          was cleared.
-        </p>
+        <p className="muted small-note">{missing.length} deleted path(s) still have no correlated time.</p>
       ) : null}
       <div className="evidence-list">
         {filtered.length === 0 ? (
@@ -1802,7 +1796,7 @@ function PcaExecutedCard({ report, query }) {
                 </p>
                 <p className="evidence-row-path">{item.normalized_path || item.raw}</p>
                 <small className="evidence-row-meta">
-                  {item.file_exists ? "File still on disk" : "File no longer on disk (time may come from BAM/Prefetch/USN)"}
+                  {item.file_exists ? "File still on disk" : "File no longer on disk"}
                   {item.timestamp_source
                     ? ` · ${formatTimestampSourceWithHint(item.timestamp_source)}`
                     : ""}
@@ -1905,9 +1899,9 @@ function ForensicArtifactsSection({ report, query }) {
   const usnRows = (fa.usn_file_lifecycle_rows ?? []).slice(0, 100);
   return (
     <>
-      <Card icon={Boxes} title="Structured BAM">
+      <Card icon={Boxes} title="Structured execution traces">
         <details className="raw-fold">
-          <summary>View BAM JSON</summary>
+          <summary>View execution trace JSON</summary>
           <TerminalBlock query={query}>{asJson(fa.bam_structured)}</TerminalBlock>
         </details>
       </Card>
@@ -1917,9 +1911,9 @@ function ForensicArtifactsSection({ report, query }) {
           <TerminalBlock query={query}>{asJson(fa.sqlite)}</TerminalBlock>
         </details>
       </Card>
-      <Card icon={Boxes} title="USN lifecycle sample">
+      <Card icon={Boxes} title="File lifecycle sample">
         <details className="raw-fold">
-          <summary>View USN rows JSON</summary>
+          <summary>View lifecycle rows JSON</summary>
           <TerminalBlock query={query}>{asJson(usnRows)}</TerminalBlock>
         </details>
       </Card>

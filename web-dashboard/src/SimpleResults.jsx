@@ -406,7 +406,7 @@ function ProgramsTab({ review, formatGmtPlus3 }) {
         <FileCode2 size={22} />
         <div>
           <h4>Program list (executables)</h4>
-          <p>Apps and files found on this PC — especially in Downloads, Desktop, and Temp.</p>
+          <p>Apps and files found on this PC, with suspicious items highlighted.</p>
         </div>
       </header>
       <div className="simple-filter-row">
