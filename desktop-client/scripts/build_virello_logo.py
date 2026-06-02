@@ -1,13 +1,12 @@
-"""Build Virello Scanner logo: red icon, transparent background, updated wordmark."""
+"""Build logo from source art: transparent background, blue icon recolored to red, original wordmark kept."""
 from __future__ import annotations
 
 import base64
 import re
-import sys
 import zlib
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image
 
 ROOT = Path(__file__).resolve().parent.parent
 REPO = ROOT.parent
@@ -20,8 +19,14 @@ def resolve_source() -> Path:
     search_dirs = [CURSOR_ASSETS, REPO / "assets", REPO.parent / "assets"]
     candidates: list[Path] = []
     for folder in search_dirs:
-        if folder.is_dir():
-            candidates.extend(folder.glob("*.png"))
+        if not folder.is_dir():
+            continue
+        candidates.extend(folder.glob("imagevir*.png"))
+        candidates.extend(folder.glob("*virello*.png"))
+    if not candidates:
+        for folder in search_dirs:
+            if folder.is_dir():
+                candidates.extend(folder.glob("*.png"))
     if candidates:
         return max(candidates, key=lambda path: path.stat().st_mtime)
     raise FileNotFoundError("Virello source logo not found")
@@ -36,45 +41,17 @@ def is_background(r: int, g: int, b: int, a: int) -> bool:
 def is_blue_accent(r: int, g: int, b: int, a: int) -> bool:
     if a < 16:
         return False
-    return b > 90 and b > r + 25 and b > g + 10
+    if b > 90 and b > r + 20 and b > g + 8:
+        return True
+    return b > 55 and b >= max(r, g) + 10
 
 
 def blue_to_red(r: int, g: int, b: int) -> tuple[int, int, int]:
-    strength = min(255, int(b * 1.05))
-    red = max(r, strength)
-    green = min(g, max(18, int(g * 0.35)))
-    blue_channel = min(b, max(24, int(b * 0.22)))
-    return red, green, blue_channel
-
-
-def is_red_accent(r: int, g: int, b: int, a: int) -> bool:
-    if a < 16:
-        return False
-    return r > 70 and r > g + 12 and r > b + 12
-
-
-def clear_wordmark_band(img: Image.Image, text_top_ratio: float = 0.62) -> None:
-    """Remove original light/dark wordmarks; keep only the red icon above the band."""
-    pixels = img.load()
-    width, height = img.size
-    text_top = int(height * text_top_ratio)
-    for y in range(text_top, height):
-        for x in range(width):
-            r, g, b, a = pixels[x, y]
-            if a < 8:
-                continue
-            if is_red_accent(r, g, b, a):
-                continue
-            pixels[x, y] = (0, 0, 0, 0)
-
-
-def load_font(size: int) -> ImageFont.ImageFont | ImageFont.FreeTypeFont:
-    for family in ("Segoe UI Semibold", "Segoe UI", "Arial", "DejaVu Sans"):
-        try:
-            return ImageFont.truetype(family, size=size)
-        except OSError:
-            continue
-    return ImageFont.load_default()
+    """Map blue gradient tones to a matching red gradient."""
+    red = min(255, int(b * 0.98 + r * 0.35))
+    green = min(g, max(12, int(g * 0.32 + b * 0.04)))
+    blue_out = min(b, max(18, int(b * 0.22 + r * 0.08)))
+    return red, green, blue_out
 
 
 def process_logo(source: Path) -> Image.Image:
@@ -90,25 +67,8 @@ def process_logo(source: Path) -> Image.Image:
             elif is_blue_accent(r, g, b, a):
                 nr, ng, nb = blue_to_red(r, g, b)
                 pixels[x, y] = (nr, ng, nb, a)
+            # else: keep original pixels (white VIRELLO wordmark, anti-aliasing, etc.)
 
-    clear_wordmark_band(img)
-
-    draw = ImageDraw.Draw(img)
-    text_top = int(height * 0.62)
-    label = "VIRELLO SCANNER"
-    font_size = 64
-    font = load_font(font_size)
-    bbox = draw.textbbox((0, 0), label, font=font)
-    text_w = bbox[2] - bbox[0]
-    while text_w > width * 0.92 and font_size > 36:
-        font_size -= 2
-        font = load_font(font_size)
-        bbox = draw.textbbox((0, 0), label, font=font)
-        text_w = bbox[2] - bbox[0]
-    text_h = bbox[3] - bbox[1]
-    text_x = (width - text_w) // 2
-    text_y = text_top + (height - text_top - text_h) // 2
-    draw.text((text_x, text_y), label, font=font, fill=(255, 255, 255, 255))
     return img
 
 
