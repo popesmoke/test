@@ -12008,6 +12008,8 @@ USER_FOLDER_SCAN_SUBDIRS = ("Downloads", "Desktop", "Documents")
 USER_FOLDER_SCAN_MAX_DEPTH = 8
 USER_FOLDER_SCAN_MAX_ENUMERATED = 200_000
 USER_FOLDER_SCAN_MAX_HITS = 500
+LIFECYCLE_TRACK_MAX_HASHED = 1800
+LIFECYCLE_TRACK_MAX_CHANGES = 200
 USER_FOLDER_TRUSTED_APP_STEMS = frozenset(
     {
         # Executables often used as disguises when dropped into user folders.
@@ -12065,6 +12067,163 @@ def file_sha256_full(path: Path, max_bytes: int = EXECUTOR_HASH_MAX_FILE_BYTES) 
         return digest.hexdigest()
     except OSError:
         return ""
+
+
+def lifecycle_tracking_state_path() -> Path:
+    base = Path(os.getenv("LOCALAPPDATA", "")) if platform.system() == "Windows" else (Path.home() / ".cache")
+    root = base / "DangerousCityScanner"
+    return root / "binary_lifecycle_state.json"
+
+
+def _load_lifecycle_tracking_state() -> dict[str, object]:
+    path = lifecycle_tracking_state_path()
+    try:
+        if path.is_file():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return {}
+
+
+def _save_lifecycle_tracking_state(state: dict[str, object]) -> None:
+    path = lifecycle_tracking_state_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(state, ensure_ascii=True), encoding="utf-8")
+    except Exception:
+        # State persistence should never break a scan.
+        return
+
+
+def binary_lifecycle_tracking(max_hashed: int = LIFECYCLE_TRACK_MAX_HASHED) -> dict[str, object]:
+    """
+    Track executable lifecycle across scans (new files, renamed/moved paths, disappeared paths).
+    This is scan-to-scan persistence, not real-time kernel monitoring.
+    """
+    previous = _load_lifecycle_tracking_state()
+    prev_items = previous.get("items") if isinstance(previous, dict) else []
+    prev_by_sha: dict[str, list[dict[str, object]]] = defaultdict(list)
+    if isinstance(prev_items, list):
+        for item in prev_items:
+            if not isinstance(item, dict):
+                continue
+            sha = str(item.get("sha256") or "").strip().lower()
+            if len(sha) != 64:
+                continue
+            prev_by_sha[sha].append(item)
+
+    current_items: list[dict[str, object]] = []
+    by_sha_current: dict[str, list[dict[str, object]]] = defaultdict(list)
+    hashed = 0
+    scanned_exec_candidates = 0
+    seen_paths: set[str] = set()
+    for root, max_depth in executor_user_hash_scan_roots():
+        try:
+            for path in walk_files_depth_limited(root, max_depth):
+                if hashed >= max_hashed:
+                    break
+                try:
+                    if not path.is_file() or path.suffix.lower() not in {".exe", ".dll"}:
+                        continue
+                except OSError:
+                    continue
+                path_str = str(path)
+                key = path_str.lower()
+                if key in seen_paths:
+                    continue
+                seen_paths.add(key)
+                scanned_exec_candidates += 1
+                sha = file_sha256_full(path)
+                if len(sha) != 64:
+                    continue
+                try:
+                    stat = path.stat()
+                    modified = datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()
+                    size = int(stat.st_size)
+                except OSError:
+                    modified = ""
+                    size = 0
+                item = {
+                    "sha256": sha.lower(),
+                    "path": path_str,
+                    "size_bytes": size,
+                    "modified": modified,
+                }
+                current_items.append(item)
+                by_sha_current[sha.lower()].append(item)
+                hashed += 1
+        except (OSError, PermissionError):
+            continue
+
+    new_files: list[dict[str, object]] = []
+    moved_or_renamed: list[dict[str, object]] = []
+    disappeared: list[dict[str, object]] = []
+
+    for sha, now_items in by_sha_current.items():
+        prev_for_sha = prev_by_sha.get(sha, [])
+        prev_paths = {str(i.get("path") or "") for i in prev_for_sha}
+        now_paths = {str(i.get("path") or "") for i in now_items}
+        if not prev_for_sha:
+            # First time this binary hash appears.
+            sample = now_items[0]
+            new_files.append(
+                {
+                    "sha256": sha,
+                    "path": sample.get("path"),
+                    "size_bytes": sample.get("size_bytes"),
+                    "modified": sample.get("modified"),
+                }
+            )
+        elif prev_paths != now_paths:
+            moved_or_renamed.append(
+                {
+                    "sha256": sha,
+                    "previous_paths": sorted(prev_paths)[:12],
+                    "current_paths": sorted(now_paths)[:12],
+                    "path_count_delta": len(now_paths) - len(prev_paths),
+                }
+            )
+
+    for sha, prev_for_sha in prev_by_sha.items():
+        if sha in by_sha_current:
+            continue
+        sample = prev_for_sha[0]
+        disappeared.append(
+            {
+                "sha256": sha,
+                "last_seen_path": sample.get("path"),
+                "last_seen_modified": sample.get("modified"),
+            }
+        )
+
+    new_files.sort(key=lambda x: str(x.get("modified") or ""), reverse=True)
+    moved_or_renamed.sort(key=lambda x: str(x.get("sha256") or ""))
+    disappeared.sort(key=lambda x: str(x.get("last_seen_modified") or ""), reverse=True)
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    _save_lifecycle_tracking_state(
+        {
+            "updated_at": now_iso,
+            "items": current_items[:max_hashed],
+            "hashed_count": hashed,
+            "scan_candidate_count": scanned_exec_candidates,
+        }
+    )
+
+    return {
+        "available": True,
+        "updated_at": now_iso,
+        "max_hashed": max_hashed,
+        "hashed_count": hashed,
+        "scan_candidate_count": scanned_exec_candidates,
+        "first_run": not bool(prev_by_sha),
+        "new_files": new_files[:LIFECYCLE_TRACK_MAX_CHANGES],
+        "moved_or_renamed": moved_or_renamed[:LIFECYCLE_TRACK_MAX_CHANGES],
+        "disappeared_files": disappeared[:LIFECYCLE_TRACK_MAX_CHANGES],
+        "note": "Tracks changes between scans using SHA256 identity. Not a real-time file-system watcher.",
+    }
 
 
 def executor_user_hash_scan_roots() -> list[tuple[Path, int]]:
@@ -17403,6 +17562,7 @@ def build_report() -> dict:
         fut_roblox_int = pool.submit(roblox_integrity_scan, prefetch)
         fut_disk_exe = pool.submit(recent_disk_executable_scan)
         fut_browser_downloads = pool.submit(browser_download_history_scan)
+        fut_lifecycle = pool.submit(binary_lifecycle_tracking)
 
         forensic_bundle = fut_forensic.result()
         bam_structured = forensic_bundle.get("bam_structured")
@@ -17437,6 +17597,7 @@ def build_report() -> dict:
         roblox = fut_roblox.result()
         command_history = fut_cmdhist.result()
         browser_download_history = fut_browser_downloads.result()
+        lifecycle_tracking = fut_lifecycle.result()
         usn_rows = forensic_bundle.get("usn_file_lifecycle_rows") or []
         enrich_pca_executed_records(
             forensic_bundle.get("pca_executed") or {},
@@ -17584,6 +17745,7 @@ def build_report() -> dict:
             "bypass_resilience": bypass_resilience,
             "scan_review": scan_review,
             "browser_download_history": browser_download_history,
+            "binary_lifecycle_tracking": lifecycle_tracking,
         },
     }
 
