@@ -35,26 +35,6 @@ def is_background(r: int, g: int, b: int, a: int) -> bool:
     return False
 
 
-def is_red_accent(r: int, g: int, b: int, a: int) -> bool:
-    if a < 16:
-        return False
-    return r > 70 and r > g + 12 and r > b + 12
-
-
-def remove_bottom_right_marks(img: Image.Image) -> None:
-    """Drop generator watermarks (sparkle marks) tucked in the bottom-right corner."""
-    pixels = img.load()
-    width, height = img.size
-    x_start = int(width * 0.72)
-    y_start = int(height * 0.72)
-    for y in range(y_start, height):
-        for x in range(x_start, width):
-            r, g, b, a = pixels[x, y]
-            if a < 16 or is_red_accent(r, g, b, a):
-                continue
-            pixels[x, y] = (0, 0, 0, 0)
-
-
 def remove_background(source: Path) -> Image.Image:
     img = Image.open(source).convert("RGBA")
     pixels = img.load()
@@ -64,7 +44,6 @@ def remove_background(source: Path) -> Image.Image:
             r, g, b, a = pixels[x, y]
             if is_background(r, g, b, a):
                 pixels[x, y] = (0, 0, 0, 0)
-    remove_bottom_right_marks(img)
     return img
 
 
