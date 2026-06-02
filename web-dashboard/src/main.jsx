@@ -1627,20 +1627,10 @@ function forensicSeverityClass(severity) {
 
 function ForensicFindingsSection({ report, query }) {
   const fa = report.security_integrity_signals?.forensic_analysis;
-  if (!fa || fa.available === false) {
-    return (
-      <Card icon={Fingerprint} title="Evidence review">
-        <p className="muted">
-          No forensic analysis bundle on this report. Scans from older desktop builds, or non-Windows hosts, will not
-          include this section.
-        </p>
-      </Card>
-    );
-  }
   const q = query.trim().toLowerCase();
   const flat = useMemo(
-    () => [...(fa.detections_flat ?? [])].filter((d) => !(d.reason ?? "").includes("Unified forensic pass completed")),
-    [fa.detections_flat],
+    () => [...(fa?.detections_flat ?? [])].filter((d) => !(d.reason ?? "").includes("Unified forensic pass completed")),
+    [fa?.detections_flat],
   );
   const searchable = useMemo(
     () =>
@@ -1684,6 +1674,16 @@ function ForensicFindingsSection({ report, query }) {
       }),
     [filtered, report],
   );
+  if (!fa || fa.available === false) {
+    return (
+      <Card icon={Fingerprint} title="Evidence review">
+        <p className="muted">
+          No forensic analysis bundle on this report. Scans from older desktop builds, or non-Windows hosts, will not
+          include this section.
+        </p>
+      </Card>
+    );
+  }
 
   return (
     <>
