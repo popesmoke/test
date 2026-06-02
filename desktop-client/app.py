@@ -12789,11 +12789,6 @@ def combined_user_folder_security_scans(max_hashes: int = EXECUTOR_HASH_SCAN_MAX
     weird_only = sum(1 for item in hits if not item["executor_name_hits"] and item["name_anomaly_reasons"])
 
     designated = {
-        "extensions_scanned": sorted(USER_FOLDER_SCAN_EXTENSIONS),
-        "folders_scanned": [str(p) for p in roots],
-        "max_depth": USER_FOLDER_SCAN_MAX_DEPTH,
-        "enumeration_reached_cap": enumeration_reached_cap,
-        "files_enumerated": enumerated,
         "hit_count": len(hits),
         "executor_name_hits": executor_hits,
         "cheat_filename_only_hits": cheat_only,
@@ -12807,7 +12802,6 @@ def combined_user_folder_security_scans(max_hashes: int = EXECUTOR_HASH_SCAN_MAX
             "blocklist_size": 0,
             "files_hashed": 0,
             "hits": [],
-            "note": "Blocklist empty; add SHA256 entries to EXECUTOR_SHA256_BLOCKLIST or assets/executor_sha256_blocklist.json.",
         }
     else:
         sha_blocklist = {
@@ -12815,7 +12809,6 @@ def combined_user_folder_security_scans(max_hashes: int = EXECUTOR_HASH_SCAN_MAX
             "blocklist_size": len(blocklist),
             "files_hashed": hashed,
             "hits": sha_hits,
-            "note": "Full-file SHA256 match; path/name allowlists are ignored for hash detection.",
         }
     return designated, sha_blocklist
 
@@ -17376,11 +17369,10 @@ def in_scan_binary_change_signals(usn_rows: list[dict], bam_items: list[dict]) -
     ]
     return {
         "available": True,
-        "note": "Same-scan artifact signals only (USN + BAM), no previous scan baseline used.",
-        "install_like_events": {"count": len(creates), "examples": [str(r.get("path") or "") for r in creates[:25]]},
-        "rename_or_move_events": {"count": len(renames), "examples": [str(r.get("path") or "") for r in renames[:25]]},
-        "delete_or_disappear_events": {"count": len(deletes), "examples": [str(r.get("path") or "") for r in deletes[:25]]},
-        "bam_executed_binary_paths": {"count": len(bam_exec), "examples": bam_exec[:40]},
+        "install_like_events": {"count": len(creates)},
+        "rename_or_move_events": {"count": len(renames)},
+        "delete_or_disappear_events": {"count": len(deletes)},
+        "executed_binary_count": len(bam_exec),
     }
 
 
