@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   AlertTriangle,
@@ -858,8 +858,10 @@ function enrichedPcaItems(report) {
   return items.map((item) => enrichPcaItemFromReport(report, item));
 }
 
-function resolvePathTimestampFromReport(report, path) {
-  if (!path) return { display_at: null, timestamp_source: null, correlated: {} };
+const EMPTY_PATH_TIMESTAMP = { display_at: null, timestamp_source: null, correlated: {} };
+
+function resolvePathTimestampFromReport(report, path, pcaItems = null) {
+  if (!path) return EMPTY_PATH_TIMESTAMP;
   const sec = report.security_integrity_signals ?? {};
   const fa = sec.forensic_analysis ?? {};
   const perf = report.performance_environment ?? {};
@@ -868,7 +870,8 @@ function resolvePathTimestampFromReport(report, path) {
     if (ts && !correlated[source]) correlated[source] = ts;
   };
 
-  const pca = enrichedPcaItems(report).find((item) => pathsRelate(path, item.normalized_path || item.raw));
+  const pcaList = pcaItems ?? enrichedPcaItems(report);
+  const pca = pcaList.find((item) => pathsRelate(path, item.normalized_path || item.raw));
   if (pca?.display_at) {
     return {
       display_at: pca.display_at,
@@ -903,7 +906,18 @@ function resolvePathTimestampFromReport(report, path) {
       return { display_at: correlated[key], timestamp_source: key, correlated };
     }
   }
-  return { display_at: null, timestamp_source: null, correlated };
+  return EMPTY_PATH_TIMESTAMP;
+}
+
+function findingMatchesQuery(d, q) {
+  const base = [d.reason || "", d.file_path || "", d.artifact_source || "", d.severity || ""]
+    .join(" ")
+    .toLowerCase();
+  if (base.includes(q)) return true;
+  for (const entry of safeArray(d.correlated_evidence)) {
+    if (JSON.stringify(entry).toLowerCase().includes(q)) return true;
+  }
+  return false;
 }
 
 function findingResolvedTime(report, finding) {
@@ -1633,17 +1647,18 @@ function forensicSeverityClass(severity) {
 function ForensicFindingsSection({ report, query }) {
   const fa = report.security_integrity_signals?.forensic_analysis;
   const q = query.trim().toLowerCase();
+  const pcaItems = useMemo(() => enrichedPcaItems(report), [report]);
   const resolvePathTimestampCached = useMemo(() => {
     const cache = new Map();
     return (path) => {
       const key = pathKey(path);
-      if (!key) return { display_at: null, timestamp_source: null, correlated: {} };
+      if (!key) return EMPTY_PATH_TIMESTAMP;
       if (!cache.has(key)) {
-        cache.set(key, resolvePathTimestampFromReport(report, path));
+        cache.set(key, resolvePathTimestampFromReport(report, path, pcaItems));
       }
       return cache.get(key);
     };
-  }, [report]);
+  }, [report, pcaItems]);
   const flat = useMemo(
     () =>
       safeArray(fa?.detections_flat).filter(
@@ -1651,25 +1666,9 @@ function ForensicFindingsSection({ report, query }) {
       ),
     [fa?.detections_flat],
   );
-  const searchable = useMemo(
-    () =>
-      flat.map((d) => ({
-        d,
-        text: [
-          d.reason || "",
-          d.file_path || "",
-          d.artifact_source || "",
-          d.severity || "",
-          ...safeArray(d.correlated_evidence).map((entry) => JSON.stringify(entry)),
-        ]
-          .join(" ")
-          .toLowerCase(),
-      })),
-    [flat],
-  );
   const filtered = useMemo(
-    () => (q ? searchable.filter((entry) => entry.text.includes(q)).map((entry) => entry.d) : flat),
-    [q, searchable, flat],
+    () => (q ? flat.filter((d) => findingMatchesQuery(d, q)) : flat),
+    [q, flat],
   );
   const highCount = useMemo(
     () => filtered.filter((d) => ["critical", "high"].includes(String(d.severity ?? "").toLowerCase())).length,
@@ -1685,8 +1684,8 @@ function ForensicFindingsSection({ report, query }) {
     [filtered, resolvePathTimestampCached],
   );
   const missingPca = useMemo(
-    () => enrichedPcaItems(report).filter((i) => !i.file_exists && !i.display_at).length,
-    [report],
+    () => pcaItems.filter((i) => !i.file_exists && !i.display_at).length,
+    [pcaItems],
   );
   const visibleFindings = useMemo(
     () =>
@@ -1740,6 +1739,7 @@ function ForensicFindingsSection({ report, query }) {
         <p className="muted panel-intro">
           Reviewer-first layout — expand a row for hash and signature detail. Times are GMT+3; deleted paths are
           cross-matched across available system traces when the scanner can.
+          {filtered.length > 40 ? ` Showing the first 40 of ${filtered.length} findings (use search to narrow).` : ""}
         </p>
         <div className="evidence-list">
           {filtered.length === 0 ? (
@@ -1887,6 +1887,27 @@ function PcaExecutedCard({ report, query }) {
 function ForensicCorrelationSection({ report, query }) {
   const fa = report.security_integrity_signals?.forensic_analysis;
   const uc = fa?.unified_correlation ?? {};
+  const pcaEnriched = useMemo(() => enrichedPcaItems(report), [report]);
+  const timeline = useMemo(() => {
+    if (!fa || fa.available === false) return [];
+    return safeArray(uc.timeline).map((row) => {
+      if (row.artifact !== "pca_store" || row.timestamp) return row;
+      const match = pcaEnriched.find((item) => pathsRelate(row.path || "", item.normalized_path || item.raw));
+      if (match?.display_at) return { ...row, timestamp: match.display_at };
+      return row;
+    });
+  }, [fa, uc.timeline, pcaEnriched]);
+  const q = query.trim().toLowerCase();
+  const timelineFiltered = useMemo(
+    () =>
+      q
+        ? timeline.filter((row) =>
+            [row.artifact, row.path, row.detail, row.timestamp].join(" ").toLowerCase().includes(q),
+          )
+        : timeline,
+    [q, timeline],
+  );
+
   if (!fa || fa.available === false) {
     return (
       <Card icon={GitBranch} title="Correlation">
@@ -1894,19 +1915,6 @@ function ForensicCorrelationSection({ report, query }) {
       </Card>
     );
   }
-  const pcaEnriched = enrichedPcaItems(report);
-  const timeline = safeArray(uc.timeline).map((row) => {
-    if (row.artifact !== "pca_store" || row.timestamp) return row;
-    const match = pcaEnriched.find((item) => pathsRelate(row.path || "", item.normalized_path || item.raw));
-    if (match?.display_at) return { ...row, timestamp: match.display_at };
-    return row;
-  });
-  const q = query.trim().toLowerCase();
-  const timelineFiltered = q
-    ? timeline.filter((row) =>
-        [row.artifact, row.path, row.detail, row.timestamp].join(" ").toLowerCase().includes(q),
-      )
-    : timeline;
 
   return (
     <>
@@ -2020,6 +2028,7 @@ const resultSectionById = Object.fromEntries(resultSections.map((section) => [se
 function Results({ detail }) {
   const [sectionId, setSectionId] = useState("starter");
   const [query, setQuery] = useState("");
+  const deferredQuery = useDeferredValue(query);
   const [expertMode, setExpertMode] = useState(false);
 
   useEffect(() => {
@@ -2116,7 +2125,7 @@ function Results({ detail }) {
               onChange={(event) => setQuery(event.target.value)}
               placeholder={`Search ${activeSection.label} keywords...`}
             />
-            <ActiveComponent report={report} query={query} />
+            <ActiveComponent report={report} query={deferredQuery} />
           </>
         ) : (
           <SimpleResults
@@ -2345,9 +2354,13 @@ function Dashboard({ token, onLogout }) {
       });
 
     return () => controller.abort();
-  }, [selectedId, sessions, token, loadSessions, hasAccess]);
+  }, [selectedId, selectedSessionStatus, token, loadSessions, hasAccess]);
 
   const selectedPin = useMemo(() => sessions.find((session) => session.id === selectedId)?.pin, [sessions, selectedId]);
+  const selectedSessionStatus = useMemo(
+    () => sessions.find((session) => session.id === selectedId)?.status,
+    [sessions, selectedId],
+  );
   const greetingName = profile?.username || "there";
 
   return (
