@@ -2302,6 +2302,12 @@ function Dashboard({ token, onLogout }) {
     return () => clearInterval(timer);
   }, [loadSessions, profileLoading, hasAccess]);
 
+  const selectedPin = useMemo(() => sessions.find((session) => session.id === selectedId)?.pin, [sessions, selectedId]);
+  const selectedSessionStatus = useMemo(
+    () => sessions.find((session) => session.id === selectedId)?.status,
+    [sessions, selectedId],
+  );
+
   useEffect(() => {
     if (!hasAccess || !selectedId) {
       setDetail(null);
@@ -2356,11 +2362,6 @@ function Dashboard({ token, onLogout }) {
     return () => controller.abort();
   }, [selectedId, selectedSessionStatus, token, loadSessions, hasAccess]);
 
-  const selectedPin = useMemo(() => sessions.find((session) => session.id === selectedId)?.pin, [sessions, selectedId]);
-  const selectedSessionStatus = useMemo(
-    () => sessions.find((session) => session.id === selectedId)?.status,
-    [sessions, selectedId],
-  );
   const greetingName = profile?.username || "there";
 
   return (
