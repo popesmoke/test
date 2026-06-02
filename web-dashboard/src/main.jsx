@@ -1952,6 +1952,7 @@ const resultSections = [
   { id: "deletions", label: "Deletions", icon: Trash2, component: DeletionsSection },
   { id: "memory", label: "Memory", icon: MemoryStick, component: MemorySection },
 ];
+const resultSectionById = Object.fromEntries(resultSections.map((section) => [section.id, section]));
 
 function Results({ detail }) {
   const [sectionId, setSectionId] = useState("starter");
@@ -1972,9 +1973,10 @@ function Results({ detail }) {
   }
 
   const report = detail.report ?? {};
-  const summary = buildSuspicionSummary(report);
-  const activity = userActivityFromReport(report);
-  const activeSection = resultSections.find((section) => section.id === sectionId) ?? resultSections[0];
+  // Large reports can make tab switches feel sluggish if recomputed on every render.
+  const summary = useMemo(() => buildSuspicionSummary(report), [report]);
+  const activity = useMemo(() => userActivityFromReport(report), [report]);
+  const activeSection = resultSectionById[sectionId] ?? resultSections[0];
   const ActiveComponent = activeSection.component;
   const showSectionContent = detail.status === "completed";
 
