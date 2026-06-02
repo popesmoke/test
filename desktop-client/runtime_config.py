@@ -5,6 +5,11 @@ import os
 
 
 def get_api_url() -> str:
+    for key in ("DIAGNOSTIC_API_URL", "DNG_API_URL"):
+        value = os.environ.get(key, "").strip()
+        if value:
+            return value.rstrip("/")
+
     try:
         from embedded_build_config import API_URL as baked_url  # type: ignore
 
@@ -13,12 +18,6 @@ def get_api_url() -> str:
     except ImportError:
         pass
 
-    for key in ("DIAGNOSTIC_API_URL", "DNG_API_URL"):
-        value = os.environ.get(key, "").strip()
-        if value:
-            return value.rstrip("/")
-
-    # Local development only — not used when embedded_build_config exists.
     return "https://virello-secure.onrender.com"
 
 
