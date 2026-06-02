@@ -1637,21 +1637,53 @@ function ForensicFindingsSection({ report, query }) {
       </Card>
     );
   }
-  const flat = [...(fa.detections_flat ?? [])].filter(
-    (d) => !(d.reason ?? "").includes("Unified forensic pass completed"),
-  );
   const q = query.trim().toLowerCase();
-  const filtered = q
-    ? flat.filter((d) =>
-        [d.reason, d.file_path, d.artifact_source, d.severity, JSON.stringify(d.correlated_evidence ?? [])]
+  const flat = useMemo(
+    () => [...(fa.detections_flat ?? [])].filter((d) => !(d.reason ?? "").includes("Unified forensic pass completed")),
+    [fa.detections_flat],
+  );
+  const searchable = useMemo(
+    () =>
+      flat.map((d) => ({
+        d,
+        text: [
+          d.reason || "",
+          d.file_path || "",
+          d.artifact_source || "",
+          d.severity || "",
+          ...((d.correlated_evidence ?? []).map((entry) => JSON.stringify(entry)) || []),
+        ]
           .join(" ")
-          .toLowerCase()
-          .includes(q),
-      )
-    : flat;
-  const highCount = filtered.filter((d) => ["critical", "high"].includes(String(d.severity ?? "").toLowerCase())).length;
-  const withTime = filtered.filter((d) => findingResolvedTime(report, d)).length;
-  const missingPca = enrichedPcaItems(report).filter((i) => !i.file_exists && !i.display_at).length;
+          .toLowerCase(),
+      })),
+    [flat],
+  );
+  const filtered = useMemo(
+    () => (q ? searchable.filter((entry) => entry.text.includes(q)).map((entry) => entry.d) : flat),
+    [q, searchable, flat],
+  );
+  const highCount = useMemo(
+    () => filtered.filter((d) => ["critical", "high"].includes(String(d.severity ?? "").toLowerCase())).length,
+    [filtered],
+  );
+  const withTime = useMemo(() => filtered.filter((d) => findingResolvedTime(report, d)).length, [filtered, report]);
+  const missingPca = useMemo(
+    () => enrichedPcaItems(report).filter((i) => !i.file_exists && !i.display_at).length,
+    [report],
+  );
+  const visibleFindings = useMemo(
+    () =>
+      filtered.slice(0, 80).map((d) => {
+        const when = findingResolvedTime(report, d);
+        const src = findingTimestampSource(report, d);
+        const resolved = resolvePathTimestampFromReport(report, d.file_path || "");
+        const correlated =
+          (d.timestamps?.correlated && Object.keys(d.timestamps.correlated).length ? d.timestamps.correlated : null) ||
+          resolved.correlated;
+        return { d, when, src, correlated };
+      }),
+    [filtered, report],
+  );
 
   return (
     <>
@@ -1682,14 +1714,7 @@ function ForensicFindingsSection({ report, query }) {
           {filtered.length === 0 ? (
             <p className="muted">No findings match the current search.</p>
           ) : (
-            filtered.slice(0, 120).map((d, index) => {
-              const when = findingResolvedTime(report, d);
-              const src = findingTimestampSource(report, d);
-              const resolved = resolvePathTimestampFromReport(report, d.file_path || "");
-              const correlated =
-                (d.timestamps?.correlated && Object.keys(d.timestamps.correlated).length
-                  ? d.timestamps.correlated
-                  : null) || resolved.correlated;
+            visibleFindings.map(({ d, when, src, correlated }, index) => {
               return (
                 <details className="evidence-row" key={`${d.file_path ?? d.reason}-${index}`}>
                   <summary className="evidence-row-summary">
@@ -1762,17 +1787,24 @@ function ForensicFindingsSection({ report, query }) {
 }
 
 function PcaExecutedCard({ report, query }) {
-  const items = enrichedPcaItems(report).filter((item) => item.normalized_path || item.raw);
+  const items = useMemo(
+    () => enrichedPcaItems(report).filter((item) => item.normalized_path || item.raw),
+    [report],
+  );
   const q = query.trim().toLowerCase();
-  const filtered = q
-    ? items.filter((item) =>
-        [item.normalized_path, item.raw, item.timestamp_source, JSON.stringify(item.correlated_timestamps ?? {})]
-          .join(" ")
-          .toLowerCase()
-          .includes(q),
-      )
-    : items;
-  const missing = filtered.filter((item) => !item.file_exists && !item.display_at);
+  const filtered = useMemo(
+    () =>
+      q
+        ? items.filter((item) =>
+            [item.normalized_path, item.raw, item.timestamp_source, JSON.stringify(item.correlated_timestamps ?? {})]
+              .join(" ")
+              .toLowerCase()
+              .includes(q),
+          )
+        : items,
+    [q, items],
+  );
+  const missing = useMemo(() => filtered.filter((item) => !item.file_exists && !item.display_at), [filtered]);
 
   return (
     <Card icon={Boxes} title="Compatibility trace programs">
