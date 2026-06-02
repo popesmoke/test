@@ -11,22 +11,19 @@ from PIL import Image, ImageDraw, ImageFont
 
 ROOT = Path(__file__).resolve().parent.parent
 REPO = ROOT.parent
-SOURCE = (
-    REPO.parent
-    / "assets"
-    / "c__Users_proga_AppData_Roaming_Cursor_User_workspaceStorage_empty-window_images_imagevir-b7054f76-3323-4b03-84d2-3d1ecc646f60.png"
-)
-# When run from Cursor workspace, source may live under .cursor/projects/.../assets
-CURSOR_SOURCE = Path(
-    r"C:\Users\proga\.cursor\projects\c-Users-proga-Documents-Codex-2026-05-10-project-secure-remote-system-diagnostic-system"
-    r"\assets\c__Users_proga_AppData_Roaming_Cursor_User_workspaceStorage_empty-window_images_imagevir-b7054f76-3323-4b03-84d2-3d1ecc646f60.png"
+CURSOR_ASSETS = Path(
+    r"C:\Users\proga\.cursor\projects\c-Users-proga-Documents-Codex-2026-05-10-project-secure-remote-system-diagnostic-system\assets"
 )
 
 
 def resolve_source() -> Path:
-    for candidate in (SOURCE, CURSOR_SOURCE):
-        if candidate.is_file():
-            return candidate
+    search_dirs = [CURSOR_ASSETS, REPO / "assets", REPO.parent / "assets"]
+    candidates: list[Path] = []
+    for folder in search_dirs:
+        if folder.is_dir():
+            candidates.extend(folder.glob("*.png"))
+    if candidates:
+        return max(candidates, key=lambda path: path.stat().st_mtime)
     raise FileNotFoundError("Virello source logo not found")
 
 
@@ -50,6 +47,36 @@ def blue_to_red(r: int, g: int, b: int) -> tuple[int, int, int]:
     return red, green, blue_channel
 
 
+def is_red_accent(r: int, g: int, b: int, a: int) -> bool:
+    if a < 16:
+        return False
+    return r > 70 and r > g + 12 and r > b + 12
+
+
+def clear_wordmark_band(img: Image.Image, text_top_ratio: float = 0.62) -> None:
+    """Remove original light/dark wordmarks; keep only the red icon above the band."""
+    pixels = img.load()
+    width, height = img.size
+    text_top = int(height * text_top_ratio)
+    for y in range(text_top, height):
+        for x in range(width):
+            r, g, b, a = pixels[x, y]
+            if a < 8:
+                continue
+            if is_red_accent(r, g, b, a):
+                continue
+            pixels[x, y] = (0, 0, 0, 0)
+
+
+def load_font(size: int) -> ImageFont.ImageFont | ImageFont.FreeTypeFont:
+    for family in ("Segoe UI Semibold", "Segoe UI", "Arial", "DejaVu Sans"):
+        try:
+            return ImageFont.truetype(family, size=size)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+
 def process_logo(source: Path) -> Image.Image:
     img = Image.open(source).convert("RGBA")
     pixels = img.load()
@@ -64,35 +91,23 @@ def process_logo(source: Path) -> Image.Image:
                 nr, ng, nb = blue_to_red(r, g, b)
                 pixels[x, y] = (nr, ng, nb, a)
 
-    # Remove old "VIRELLO" wordmark (lower band) while keeping icon above ~y=620
-    text_top = int(height * 0.72)
-    for y in range(text_top, height):
-        for x in range(width):
-            r, g, b, a = pixels[x, y]
-            if a > 0 and r > 170 and g > 170 and b > 170:
-                pixels[x, y] = (0, 0, 0, 0)
+    clear_wordmark_band(img)
 
     draw = ImageDraw.Draw(img)
-    font = None
-    for family, size in (
-        ("Segoe UI", 62),
-        ("Arial", 58),
-        ("DejaVu Sans", 58),
-    ):
-        try:
-            font = ImageFont.truetype(family, size=size)
-            break
-        except OSError:
-            continue
-    if font is None:
-        font = ImageFont.load_default()
-
+    text_top = int(height * 0.62)
     label = "VIRELLO SCANNER"
+    font_size = 64
+    font = load_font(font_size)
     bbox = draw.textbbox((0, 0), label, font=font)
     text_w = bbox[2] - bbox[0]
+    while text_w > width * 0.92 and font_size > 36:
+        font_size -= 2
+        font = load_font(font_size)
+        bbox = draw.textbbox((0, 0), label, font=font)
+        text_w = bbox[2] - bbox[0]
     text_h = bbox[3] - bbox[1]
     text_x = (width - text_w) // 2
-    text_y = text_top + (height - text_top - text_h) // 2 - 8
+    text_y = text_top + (height - text_top - text_h) // 2
     draw.text((text_x, text_y), label, font=font, fill=(255, 255, 255, 255))
     return img
 
