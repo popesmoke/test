@@ -174,6 +174,10 @@ function countItems(value) {
   return 0;
 }
 
+function safeArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
 function parseMaybeJson(value) {
   if (!value || typeof value !== "string") return null;
   try {
@@ -288,7 +292,7 @@ function multiArtifactBonus(stemMap) {
 
 function forensicScoreContribution(fa) {
   if (!fa || fa.available === false) return { points: 0, browserOnly: 0, diskBacked: 0 };
-  const flat = fa.detections_flat ?? [];
+  const flat = safeArray(fa.detections_flat);
   let browserOnly = 0;
   let diskBacked = 0;
   for (const finding of flat) {
@@ -849,7 +853,7 @@ function enrichPcaItemFromReport(report, item) {
 }
 
 function enrichedPcaItems(report) {
-  const items = report.security_integrity_signals?.forensic_analysis?.pca_executed?.items ?? [];
+  const items = safeArray(report.security_integrity_signals?.forensic_analysis?.pca_executed?.items);
   return items.map((item) => enrichPcaItemFromReport(report, item));
 }
 
@@ -1629,7 +1633,10 @@ function ForensicFindingsSection({ report, query }) {
   const fa = report.security_integrity_signals?.forensic_analysis;
   const q = query.trim().toLowerCase();
   const flat = useMemo(
-    () => [...(fa?.detections_flat ?? [])].filter((d) => !(d.reason ?? "").includes("Unified forensic pass completed")),
+    () =>
+      safeArray(fa?.detections_flat).filter(
+        (d) => d && typeof d === "object" && !(d.reason ?? "").includes("Unified forensic pass completed"),
+      ),
     [fa?.detections_flat],
   );
   const searchable = useMemo(
@@ -1641,7 +1648,7 @@ function ForensicFindingsSection({ report, query }) {
           d.file_path || "",
           d.artifact_source || "",
           d.severity || "",
-          ...((d.correlated_evidence ?? []).map((entry) => JSON.stringify(entry)) || []),
+          ...safeArray(d.correlated_evidence).map((entry) => JSON.stringify(entry)),
         ]
           .join(" ")
           .toLowerCase(),
@@ -1759,7 +1766,7 @@ function ForensicFindingsSection({ report, query }) {
                           .join(" · ")}
                       </p>
                     ) : null}
-                    {(d.correlated_evidence ?? []).length ? (
+                    {safeArray(d.correlated_evidence).length ? (
                       <details className="raw-fold">
                         <summary>Technical detail</summary>
                         <pre className="terminal terminal--compact">
@@ -1769,7 +1776,7 @@ function ForensicFindingsSection({ report, query }) {
                               timestamp_source: src,
                               correlated,
                             },
-                            correlated_evidence: d.correlated_evidence,
+                            correlated_evidence: safeArray(d.correlated_evidence),
                           })}
                         </pre>
                       </details>
@@ -1864,7 +1871,7 @@ function ForensicCorrelationSection({ report, query }) {
     );
   }
   const pcaEnriched = enrichedPcaItems(report);
-  const timeline = (uc.timeline ?? []).map((row) => {
+  const timeline = safeArray(uc.timeline).map((row) => {
     if (row.artifact !== "pca_store" || row.timestamp) return row;
     const match = pcaEnriched.find((item) => pathsRelate(row.path || "", item.normalized_path || item.raw));
     if (match?.display_at) return { ...row, timestamp: match.display_at };
@@ -1928,7 +1935,7 @@ function ForensicArtifactsSection({ report, query }) {
       </Card>
     );
   }
-  const usnRows = (fa.usn_file_lifecycle_rows ?? []).slice(0, 100);
+  const usnRows = safeArray(fa.usn_file_lifecycle_rows).slice(0, 100);
   return (
     <>
       <Card icon={Boxes} title="Structured execution traces">
