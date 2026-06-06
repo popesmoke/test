@@ -57,6 +57,43 @@ The Discord OAuth scopes used are `identify` and `guilds.members.read`.
 
 The public Discord invite shown on the login page defaults to `https://discord.gg/wPZXKaPyWY`.
 
+### Automated database backup and recovery
+
+The backend can export the full database every 29 days and upload the backup to a Discord channel using a bot token. On startup, if the database is empty (for example after a Render PostgreSQL reset), the backend automatically downloads the latest Discord backup and restores all tables.
+
+Create a Discord bot in the Developer Portal, invite it to your server, and grant it permission to **Send Messages**, **Attach Files**, and **Read Message History** in the backup channel.
+
+Set these backend environment variables on Render:
+
+```text
+DISCORD_BOT_TOKEN=your Discord bot token
+DISCORD_BACKUP_CHANNEL_ID=your backup channel ID
+BACKUP_INTERVAL_DAYS=29
+BACKUP_AUTO_RESTORE=true
+BACKUP_ENABLED=true
+```
+
+Optional tuning:
+
+```text
+BACKUP_CHECK_INTERVAL_SECONDS=3600
+BACKUP_AUTO_RESTORE=false
+```
+
+Backups are stored as gzip-compressed JSON attachments named `virello-db-backup-<timestamp>.json.gz` in the configured channel.
+
+### Health check and UptimeRobot
+
+The backend exposes `GET /health` for uptime monitoring. A healthy response returns HTTP 200 with `"status": "ok"` and includes database and backup metadata.
+
+Example production monitor URL:
+
+```text
+https://virello-secure.onrender.com/health
+```
+
+In UptimeRobot, create an HTTP(s) monitor with a 5-minute interval and set the keyword monitor to `ok` so failed database connectivity returns HTTP 503 and triggers an alert.
+
 ### Web Dashboard
 
 ```powershell

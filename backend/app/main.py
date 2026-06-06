@@ -144,8 +144,12 @@ def row_to_summary(row: sqlite3.Row) -> SessionSummary:
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+def health() -> dict[str, str | dict]:
+    return {
+        "status": "ok",
+        "service": "virello-scanner-backend",
+        "timestamp": utc_now().isoformat().replace("+00:00", "Z"),
+    }
 
 
 @app.post("/auth/login", response_model=TokenResponse)

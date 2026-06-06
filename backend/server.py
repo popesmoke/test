@@ -18,6 +18,8 @@ from urllib import error as urlerror
 from urllib import request as urlrequest
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
+import backup
+
 DB_PATH = Path(__file__).resolve().parent / "diagnostics.db"
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 TOKEN_SECRET = os.getenv("API_TOKEN_SECRET", "local-dev-secret-change-me")
@@ -769,7 +771,8 @@ class Handler(BaseHTTPRequestHandler):
         query = parse_qs(parsed.query)
 
         if path == "/health":
-            self.send_json(HTTPStatus.OK, {"status": "ok"})
+            status_code, payload = backup.get_health_status()
+            self.send_json(HTTPStatus(status_code), payload)
             return
 
         if path == "/auth/me":
@@ -943,7 +946,15 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> None:
     init_db()
-    host = os.getenv("HOST", "127.0.0.1")
+    backup.configure(
+        connect=connect,
+        db_execute=db_execute,
+        using_postgres=using_postgres,
+        to_iso=to_iso,
+        utc_now=utc_now,
+    )
+    backup.initialize_backup_system()
+    host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", "8000"))
     print(f"Virello Scanner backend running at http://{host}:{port}")
     ThreadingHTTPServer((host, port), Handler).serve_forever()
