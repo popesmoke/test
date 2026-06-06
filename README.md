@@ -63,6 +63,8 @@ The backend can export the full database every 29 days and upload the backup to 
 
 Create a Discord bot in the Developer Portal, invite it to your server, and grant it permission to **Send Messages**, **Attach Files**, and **Read Message History** in the backup channel.
 
+You can reuse the same bot token as Virello Bot (`DISCORD_TOKEN` on the bot service). Both services upload to the same channel with different filenames (`virello-db-backup-*` for the scanner API, `virellobot-db-backup-*` for the bot).
+
 Set these backend environment variables on Render:
 
 ```text

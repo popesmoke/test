@@ -12,7 +12,7 @@ from urllib import error as urlerror
 from urllib import request as urlrequest
 
 DISCORD_API_BASE = "https://discord.com/api/v10"
-DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "")
+DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN") or os.getenv("DISCORD_TOKEN", "")
 DISCORD_BACKUP_CHANNEL_ID = os.getenv("DISCORD_BACKUP_CHANNEL_ID", "")
 BACKUP_INTERVAL_DAYS = int(os.getenv("BACKUP_INTERVAL_DAYS", "29"))
 BACKUP_FILENAME_PREFIX = "virello-db-backup-"
