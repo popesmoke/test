@@ -362,12 +362,14 @@ function buildSuspicionSummary(report) {
   const userAssistText = sec.userassist?.raw_sample ?? "";
   const bamText = sec.bam?.raw_sample ?? "";
   const bypass = sec.bypass_resilience ?? {};
+  const artifactEvidence = sec.executor_artifact_evidence?.hits ?? [];
 
   const stemMap = new Map();
   for (const item of fileHits) registerStem(stemMap, pathStemKey(item.path), "file");
   for (const item of prefetchHits) registerStem(stemMap, pathStemKey(item.name ?? item.path), "prefetch");
   for (const item of designatedExecutorHits) registerStem(stemMap, pathStemKey(item.path), "profile");
   for (const item of removedArtifactHits) registerStem(stemMap, pathStemKey(item.path), "removed");
+  for (const item of artifactEvidence) registerStem(stemMap, pathStemKey(item.path), String(item.artifact_source ?? "artifact"));
   for (const item of runtimeModules) registerStem(stemMap, pathStemKey(item.module_path), "runtime");
 
   const reasons = [];
@@ -381,6 +383,34 @@ function buildSuspicionSummary(report) {
       points,
       detail: `${shaHits.length} file(s) matched a verified SHA256 blocklist entry.`,
     });
+  }
+
+  if (artifactEvidence.length) {
+    const deletedCount = artifactEvidence.filter(
+      (item) => item.file_exists === false || item.removed_artifact,
+    ).length;
+    const weighted = artifactEvidence.reduce((sum, item) => {
+      const deleted = item.file_exists === false || item.removed_artifact;
+      const source = String(item.artifact_source ?? "");
+      const sourceBoost =
+        source === "prefetch_execution" || source === "bam_execution" || source === "dam_execution" ? 1.15 : 1;
+      const base = deleted ? 13 : 10;
+      return sum + base * sourceBoost * recencyFactor(item.display_at ?? item.modified, report);
+    }, 0);
+    const points = Math.min(50, Math.round(weighted));
+    if (points > 0) {
+      score += points;
+      const executors = [
+        ...new Set(
+          artifactEvidence.flatMap((item) => item.executor_name_hits ?? []).filter(Boolean),
+        ),
+      ].slice(0, 6);
+      reasons.push({
+        label: "Executor artifact evidence",
+        points,
+        detail: `${artifactEvidence.length} trace(s) from ${(sec.executor_artifact_evidence?.sources_used ?? []).join(", ") || "Windows artifacts"}${executors.length ? ` (${executors.join(", ")})` : ""}${deletedCount ? `; ${deletedCount} refer to paths no longer on disk.` : "."}`,
+      });
+    }
   }
 
   if (runtimeModules.length) {

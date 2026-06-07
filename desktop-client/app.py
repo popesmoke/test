@@ -2988,7 +2988,54 @@ def executor_scan_path_excluded(path_str: str) -> bool:
 
 def path_is_allowlisted(path_str: str) -> bool:
     low = path_str.lower().replace("/", "\\")
+    if path_is_suspicious_profile(path_str):
+        return False
+    if "\\prefetch\\" in low and any(
+        pattern.search(path_str) for pattern in executor_name_patterns().values()
+    ):
+        return False
     return any(fragment in low for fragment in PATH_ALLOWLIST_FRAGMENTS)
+
+
+def loose_executor_labels_for_artifact(text: str) -> list[str]:
+    """Aggressive token match for Prefetch stems, registry blobs, and binary artifacts."""
+    if not text:
+        return []
+    compact = re.sub(r"[\s._\-\\/]", "", str(text).upper())
+    labels: list[str] = []
+    for name in EXECUTOR_NAMES:
+        token = re.sub(r"[\s._\-]", "", name.upper())
+        if len(token) < 4:
+            continue
+        if token in compact:
+            labels.append(name)
+    return sorted(set(labels))
+
+
+def executor_labels_for_artifact_text(text: str) -> list[str]:
+    patterns = executor_name_patterns()
+    labels = sorted(set(match_executor_labels(str(text or ""), patterns)))
+    labels.extend(loose_executor_labels_for_artifact(str(text or "")))
+    return sorted(set(labels))
+
+
+def scan_binary_blob_for_executor_names(data: bytes, *, limit: int = 12) -> list[str]:
+    if not data:
+        return []
+    hits: list[str] = []
+    for name in EXECUTOR_NAMES:
+        if len(name) < 4:
+            continue
+        for encoding in ("utf-16le", "utf-8"):
+            try:
+                if name.encode(encoding) in data or name.lower().encode(encoding) in data:
+                    hits.append(name)
+                    break
+            except UnicodeEncodeError:
+                continue
+        if len(hits) >= limit:
+            break
+    return sorted(set(hits))
 
 
 def path_stem_key(path_str: str) -> str:
@@ -4114,13 +4161,11 @@ def userassist_registry_entries() -> dict:
         "  if($ft -gt 0){ $lastRun=$ft }"
         "};"
         "$matches=@();"
-        "$keywords=@('Roblox','executor','loader','bootstrapper','script','inject','bypass','cleaner');"
-        "foreach($k in $keywords){ if($decoded -match [regex]::Escape($k)){ $matches += $k } }"
         "$out += [pscustomobject]@{DecodedPath=$decoded; MatchedKeywords=$matches; LastRunFileTimeUtc=$lastRun}"
         "}"
         "}"
         "};"
-        "$out | Select-Object -First 120 | ConvertTo-Json -Depth 4"
+        "$out | Select-Object -First 220 | ConvertTo-Json -Depth 4"
     )
     raw = run_command(["powershell", "-NoProfile", "-Command", script])[:16000]
     structured: list[dict] = []
@@ -4133,10 +4178,24 @@ def userassist_registry_entries() -> dict:
             path = str(row.get("DecodedPath") or "")
             last_run = normalize_event_time(row.get("LastRunFileTimeUtc"))
             display_at, timestamp_source = resolve_display_timestamp(primary=last_run)
+            profile = suspicious_path_profile(path) if path else {
+                "executor_name_hits": [],
+                "cheat_filename_hints": [],
+                "name_anomaly_reasons": [],
+            }
+            if path and not profile["executor_name_hits"]:
+                profile["executor_name_hits"] = loose_executor_labels_for_artifact(path)
+            matched_kw = list(row.get("MatchedKeywords") or [])
+            if not matched_kw and profile["executor_name_hits"]:
+                matched_kw = profile["executor_name_hits"][:4]
+            if not profile["executor_name_hits"] and not profile["cheat_filename_hints"]:
+                continue
             structured.append(
                 {
                     "path": path,
-                    "matched_keywords": list(row.get("MatchedKeywords") or []),
+                    "matched_keywords": matched_kw,
+                    "executor_name_hits": profile["executor_name_hits"],
+                    "cheat_filename_hints": profile["cheat_filename_hints"],
                     "last_run_utc": last_run,
                     "display_at": display_at,
                     "timestamp_source": timestamp_source,
@@ -4510,6 +4569,7 @@ def bypass_resilience_signals(
     command_history: dict,
     designated: dict | None = None,
     trash: dict | None = None,
+    executor_artifact_evidence: dict | None = None,
 ) -> dict:
     """Correlate tamper, cover-up, and anti-forensics patterns across multiple independent sources."""
     if platform.system() != "Windows":
@@ -4748,6 +4808,42 @@ def bypass_resilience_signals(
     except json.JSONDecodeError:
         pass
 
+    artifact_rows = list((executor_artifact_evidence or {}).get("hits") or [])
+    deleted_artifact = [
+        row for row in artifact_rows if row.get("file_exists") is False or row.get("removed_artifact")
+    ]
+    prefetch_artifact = [row for row in artifact_rows if row.get("artifact_source") == "prefetch_execution"]
+    if deleted_artifact:
+        sample = ", ".join(
+            sorted({label for row in deleted_artifact[:8] for label in (row.get("executor_name_hits") or [])})[:5]
+        )
+        add(
+            severity="high",
+            title="Known executor left forensic traces after deletion",
+            detail=(
+                f"{len(deleted_artifact)} independent artifact(s) still reference a checked executor after the file or "
+                f"folder was deleted or the Recycle Bin was emptied"
+                + (f" ({sample})." if sample else ".")
+            ),
+            category="cover_up",
+            weight=24,
+        )
+    elif prefetch_artifact:
+        sample = ", ".join(
+            sorted({label for row in prefetch_artifact[:6] for label in (row.get("executor_name_hits") or [])})[:5]
+        )
+        add(
+            severity="high",
+            title="Prefetch proves a checked executor ran",
+            detail=(
+                f"Windows Prefetch still contains execution residue for a checked executor"
+                + (f" ({sample})." if sample else ".")
+                + " Deleting the folder does not remove Prefetch."
+            ),
+            category="ghost_trace",
+            weight=20,
+        )
+
     removed_hits = [
         hit
         for hit in (designated or {}).get("hits") or []
@@ -4903,7 +4999,6 @@ def prefetch_health_signals(prefetch: dict) -> dict:
     if platform.system() != "Windows" or not prefetch.get("available"):
         return {"available": False, "reason": "Prefetch health signals require available Windows Prefetch metadata"}
 
-    patterns = executor_name_patterns()
     items = prefetch.get("items", [])
     if not items:
         return {"available": True, "count": 0, "oldest_modified": None, "newest_modified": None}
@@ -4914,9 +5009,12 @@ def prefetch_health_signals(prefetch: dict) -> dict:
         "oldest_modified": modified[0] if modified else None,
         "newest_modified": modified[-1] if modified else None,
         "indicator_hits": [
-            item
+            {
+                **item,
+                "executor_name_hits": executor_labels_for_artifact_text(str(item.get("name") or "")),
+            }
             for item in items
-            if any(pattern.search(item["name"]) for pattern in patterns.values())
+            if executor_labels_for_artifact_text(str(item.get("name") or ""))
         ][:80],
     }
 
@@ -5478,6 +5576,13 @@ $rows | Select-Object -First 320 | ConvertTo-Json -Compress -Depth 3
                 exists = Path(norm).exists()
             except OSError:
                 exists = False
+        profile = suspicious_path_profile(norm) if norm else {
+            "executor_name_hits": [],
+            "cheat_filename_hints": [],
+            "name_anomaly_reasons": [],
+        }
+        if norm and not profile["executor_name_hits"]:
+            profile["executor_name_hits"] = loose_executor_labels_for_artifact(norm)
         normalized.append(
             {
                 "registry_path_value": raw_path,
@@ -5485,9 +5590,81 @@ $rows | Select-Object -First 320 | ConvertTo-Json -Compress -Depth 3
                 "last_execution_utc": iso,
                 "file_exists": exists,
                 "sid": it.get("Sid"),
+                "executor_name_hits": profile["executor_name_hits"],
+                "cheat_filename_hints": profile["cheat_filename_hints"],
+                "name_anomaly_reasons": profile["name_anomaly_reasons"],
             }
         )
     return {"available": True, "items": normalized, "source": "BAM UserSettings"}
+
+
+def dam_execution_records() -> dict[str, object]:
+    """Desktop Activity Moderator — same shape as BAM; present on newer Windows builds."""
+    if platform.system() != "Windows":
+        return {"available": False, "items": [], "reason": "Windows-only"}
+    script = r"""
+$ErrorActionPreference='SilentlyContinue'
+$base='HKLM:\SYSTEM\CurrentControlSet\Services\dam\State\UserSettings'
+if(-not(Test-Path $base)){ Write-Output '[]' } else {
+$rows=New-Object System.Collections.Generic.List[object]
+foreach($sid in Get-ChildItem $base){
+  $p=Get-ItemProperty $sid.PSPath
+  foreach($prop in $p.PSObject.Properties){
+    $n=$prop.Name
+    if($n -match '^PS'){ continue }
+    if($n -in @('SDL','Status')){ continue }
+    $ft=$null
+    if($prop.Value -is [byte[]] -and $prop.Value.Length -ge 8){
+      $ft=[BitConverter]::ToUInt64($prop.Value,0)
+    }
+    $rows.Add([pscustomobject]@{ Sid=$sid.PSChildName; RegValueName=$n; FileTimeUtc=$ft })
+  }
+}
+$rows | Select-Object -First 320 | ConvertTo-Json -Compress -Depth 3
+}
+""".strip()
+    data = forensic_powershell_json(script, timeout=26.0, max_chars=32000)
+    items: list[dict[str, object]] = []
+    if isinstance(data, list):
+        items = [dict(x) for x in data if isinstance(x, dict)]
+    elif isinstance(data, dict):
+        items = [dict(data)]
+    normalized: list[dict[str, object]] = []
+    for it in items:
+        raw_path = str(it.get("RegValueName") or "")
+        norm = forensic_normalize_pathish(raw_path)
+        ft = it.get("FileTimeUtc")
+        try:
+            ft_int = int(ft) if ft is not None else 0
+        except (TypeError, ValueError):
+            ft_int = 0
+        iso = windows_filetime_to_iso(ft_int) if ft_int else None
+        exists = False
+        if norm and re.match(r"^[A-Za-z]:\\", norm):
+            try:
+                exists = Path(norm).exists()
+            except OSError:
+                exists = False
+        profile = suspicious_path_profile(norm) if norm else {
+            "executor_name_hits": [],
+            "cheat_filename_hints": [],
+            "name_anomaly_reasons": [],
+        }
+        if norm and not profile["executor_name_hits"]:
+            profile["executor_name_hits"] = loose_executor_labels_for_artifact(norm)
+        normalized.append(
+            {
+                "registry_path_value": raw_path,
+                "normalized_path": norm,
+                "last_execution_utc": iso,
+                "file_exists": exists,
+                "sid": it.get("Sid"),
+                "executor_name_hits": profile["executor_name_hits"],
+                "cheat_filename_hints": profile["cheat_filename_hints"],
+                "name_anomaly_reasons": profile["name_anomaly_reasons"],
+            }
+        )
+    return {"available": bool(normalized), "items": normalized, "source": "DAM UserSettings"}
 
 
 def pca_executed_records() -> dict[str, object]:
@@ -5890,6 +6067,588 @@ def merge_removed_executor_artifact_hits(
         return
     designated.setdefault("hits", []).extend(new_hits)
     designated["removed_artifact_hits"] = len(new_hits)
+
+
+def _append_executor_artifact_hit(
+    hits: list[dict[str, object]],
+    seen: set[str],
+    *,
+    path: str,
+    labels: list[str],
+    occurred_at: str | None,
+    artifact_source: str,
+    timestamp_source: str | None = None,
+    file_exists: bool | None = None,
+    note: str | None = None,
+    extra: dict | None = None,
+) -> None:
+    norm = forensic_normalize_pathish(path) if path else ""
+    if not norm or not labels:
+        return
+    if executor_scan_path_excluded(norm):
+        return
+    dedupe_key = f"{artifact_source}|{_artifact_path_key(norm)}|{','.join(sorted(labels))}"
+    if dedupe_key in seen:
+        return
+    seen.add(dedupe_key)
+    profile = suspicious_path_profile(norm)
+    payload: dict[str, object] = {
+        "path": norm,
+        "executor_name_hits": sorted(set(labels + profile["executor_name_hits"])),
+        "cheat_filename_hints": profile["cheat_filename_hints"],
+        "name_anomaly_reasons": profile["name_anomaly_reasons"],
+        "display_at": occurred_at,
+        "modified": occurred_at,
+        "timestamp_source": timestamp_source or artifact_source,
+        "artifact_source": artifact_source,
+        "file_exists": file_exists,
+        "removed_artifact": file_exists is False,
+        "path_allowlisted": False,
+        "note": note or f"Executor evidence from {artifact_source}.",
+    }
+    if extra:
+        payload.update(extra)
+    hits.append(payload)
+
+
+def scan_recent_lnk_executor_hits() -> list[dict[str, object]]:
+    if platform.system() != "Windows":
+        return []
+    folders: list[Path] = []
+    appdata = os.getenv("APPDATA")
+    if appdata:
+        folders.append(Path(appdata) / "Microsoft" / "Windows" / "Recent")
+    userprofile = os.getenv("USERPROFILE")
+    if userprofile:
+        auto = Path(appdata or userprofile) / "Microsoft" / "Windows" / "Recent" / "AutomaticDestinations"
+        if auto.is_dir():
+            folders.append(auto)
+        custom = Path(appdata or userprofile) / "Microsoft" / "Windows" / "Recent" / "CustomDestinations"
+        if custom.is_dir():
+            folders.append(custom)
+    hits: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for folder in folders:
+        if not folder.is_dir():
+            continue
+        try:
+            candidates = list(folder.glob("*.lnk"))[:80]
+            if folder.name in {"AutomaticDestinations", "CustomDestinations"}:
+                candidates = list(folder.iterdir())[:40]
+        except OSError:
+            continue
+        for path in candidates:
+            try:
+                data = path.read_bytes()[:2_500_000]
+                stat = path.stat()
+                modified = datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()
+            except OSError:
+                continue
+            labels = scan_binary_blob_for_executor_names(data)
+            if not labels:
+                continue
+            for match in re.finditer(rb"(?:[\x20-\x7e\\:]){8,260}", data):
+                try:
+                    fragment = match.group(0).decode("ascii", errors="ignore")
+                except Exception:
+                    continue
+                if not re.match(r"^[A-Za-z]:\\", fragment):
+                    continue
+                frag_labels = executor_labels_for_artifact_text(fragment)
+                if frag_labels:
+                    _append_executor_artifact_hit(
+                        hits,
+                        seen,
+                        path=fragment[:520],
+                        labels=frag_labels,
+                        occurred_at=modified,
+                        artifact_source="recent_lnk",
+                        file_exists=path_exists_on_disk(fragment),
+                        note="Executor path recovered from a Recent/Jump List shortcut or destination file.",
+                    )
+            if labels and not hits:
+                _append_executor_artifact_hit(
+                    hits,
+                    seen,
+                    path=str(path),
+                    labels=labels,
+                    occurred_at=modified,
+                    artifact_source="recent_lnk",
+                    file_exists=path.is_file(),
+                    note="Executor name found inside a Recent/Jump List artifact.",
+                )
+    return hits[:120]
+
+
+def scan_registry_uninstall_executor_hits() -> list[dict[str, object]]:
+    if platform.system() != "Windows":
+        return []
+    script = r"""
+$ErrorActionPreference='SilentlyContinue'
+$roots=@(
+ 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
+ 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
+ 'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+)
+$rows=New-Object System.Collections.Generic.List[object]
+foreach($root in $roots){
+  Get-ItemProperty $root -ErrorAction SilentlyContinue | ForEach-Object {
+    $name=$_.DisplayName
+    $loc=$_.InstallLocation
+    $icon=$_.DisplayIcon
+    $pub=$_.Publisher
+    if($name -or $loc -or $icon){ $rows.Add([pscustomobject]@{DisplayName=$name;InstallLocation=$loc;DisplayIcon=$icon;Publisher=$pub}) }
+  }
+}
+$rows | Select-Object -First 220 | ConvertTo-Json -Compress -Depth 3
+""".strip()
+    data = forensic_powershell_json(script, timeout=22.0, max_chars=28000)
+    rows = data if isinstance(data, list) else [data] if isinstance(data, dict) else []
+    hits: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        blob = " ".join(
+            str(row.get(key) or "")
+            for key in ("DisplayName", "InstallLocation", "DisplayIcon", "Publisher")
+        )
+        labels = executor_labels_for_artifact_text(blob)
+        if not labels:
+            continue
+        path = str(row.get("InstallLocation") or row.get("DisplayIcon") or row.get("DisplayName") or "")
+        _append_executor_artifact_hit(
+            hits,
+            seen,
+            path=path,
+            labels=labels,
+            occurred_at=None,
+            artifact_source="registry_uninstall",
+            file_exists=path_exists_on_disk(path) if path else None,
+            note="Installed-program registry entry references a checked executor name.",
+            extra={"display_name": row.get("DisplayName"), "publisher": row.get("Publisher")},
+        )
+    return hits[:80]
+
+
+def scan_mui_cache_executor_hits() -> list[dict[str, object]]:
+    if platform.system() != "Windows":
+        return []
+    script = (
+        "$base='HKCU:\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\Shell\\MuiCache';"
+        "if(-not(Test-Path $base)){ '[]' } else {"
+        "Get-ItemProperty $base | Select-Object -First 1 | "
+        "ForEach-Object { $_.PSObject.Properties | Where-Object { $_.Name -notlike 'PS*' } | "
+        "Select-Object -First 220 Name,Value } | ConvertTo-Json -Compress -Depth 3"
+        "}"
+    )
+    data = forensic_powershell_json(script, timeout=14.0, max_chars=24000)
+    rows = data if isinstance(data, list) else [data] if isinstance(data, dict) else []
+    hits: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("Name") or "")
+        labels = executor_labels_for_artifact_text(name)
+        if not labels:
+            continue
+        path = name.split(".FriendlyAppName", 1)[0] if ".FriendlyAppName" in name else name
+        _append_executor_artifact_hit(
+            hits,
+            seen,
+            path=path,
+            labels=labels,
+            occurred_at=None,
+            artifact_source="mui_cache",
+            file_exists=path_exists_on_disk(path),
+            note="Shell MuiCache records a friendly name/path for a checked executor.",
+        )
+    return hits[:80]
+
+
+def scan_amcache_executor_hits() -> list[dict[str, object]]:
+    if platform.system() != "Windows":
+        return []
+    path = Path(os.getenv("SystemRoot", "C:\\Windows")) / "AppCompat" / "Programs" / "Amcache.hve"
+    if not path.is_file():
+        return []
+    try:
+        data = path.read_bytes()[:12_000_000]
+        modified = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
+    except OSError:
+        return []
+    hits: list[dict[str, object]] = []
+    seen: set[str] = set()
+    labels = scan_binary_blob_for_executor_names(data)
+    for label in labels:
+        _append_executor_artifact_hit(
+            hits,
+            seen,
+            path=str(path),
+            labels=[label],
+            occurred_at=modified,
+            artifact_source="amcache_hive",
+            file_exists=True,
+            note="Amcache program inventory hive contains a checked executor name (binary string match).",
+        )
+    return hits
+
+
+def scan_prefetch_executor_artifact_hits(prefetch: dict) -> list[dict[str, object]]:
+    hits: list[dict[str, object]] = []
+    seen: set[str] = set()
+    pf_folder = str(prefetch.get("folder") or "")
+    for item in prefetch.get("items") or []:
+        name = str(item.get("name") or "")
+        if not name.lower().endswith(".pf"):
+            continue
+        stem = prefetch_extract_stem(name)
+        labels = executor_labels_for_artifact_text(stem)
+        if not labels:
+            continue
+        pf_path = str(Path(pf_folder) / name) if pf_folder else name
+        original_exists = False
+        original_guess = ""
+        if pf_folder:
+            try:
+                pf_file = Path(pf_folder) / name
+                if pf_file.is_file():
+                    pf_bytes = pf_file.read_bytes()[:1_500_000]
+                    blob_labels = scan_binary_blob_for_executor_names(pf_bytes)
+                    labels = sorted(set(labels + blob_labels))
+                    for match in re.finditer(rb"(?:[\x20-\x7e\\:]){8,260}", pf_bytes):
+                        try:
+                            fragment = match.group(0).decode("ascii", errors="ignore")
+                        except Exception:
+                            continue
+                        if re.match(r"^[A-Za-z]:\\", fragment) and executor_labels_for_artifact_text(fragment):
+                            original_guess = fragment[:520]
+                            original_exists = path_exists_on_disk(fragment)
+                            break
+            except OSError:
+                pass
+        display_path = original_guess or pf_path
+        _append_executor_artifact_hit(
+            hits,
+            seen,
+            path=display_path,
+            labels=labels,
+            occurred_at=item.get("modified"),
+            artifact_source="prefetch_execution",
+            timestamp_source="prefetch_mtime",
+            file_exists=original_exists if original_guess else True,
+            note=(
+                "Windows Prefetch proves this executor binary ran"
+                + ("; original path no longer exists on disk." if original_guess and not original_exists else ".")
+            ),
+            extra={"prefetch_file": pf_path, "prefetch_stem": stem},
+        )
+    return hits[:120]
+
+
+def build_executor_artifact_evidence(
+    *,
+    bam: dict,
+    dam: dict | None,
+    prefetch: dict,
+    prefetch_health: dict,
+    designated: dict,
+    forensic_bundle: dict,
+    trash: dict,
+    userassist: dict,
+    browser_download_history: dict | None,
+    command_history: dict,
+    persistence: dict,
+    deletion: dict,
+    sha_blocklist: dict,
+    executor_indicators: dict,
+    recent_items: dict,
+) -> dict[str, object]:
+    """Aggregate every executor trace source into one scored evidence list."""
+    if platform.system() != "Windows":
+        return {"available": False, "reason": "Windows-only", "hits": []}
+
+    hits: list[dict[str, object]] = []
+    seen: set[str] = set()
+    sources_used: set[str] = set()
+
+    def ingest(source: str, rows: list[dict[str, object]]) -> None:
+        if rows:
+            sources_used.add(source)
+        hits.extend(rows)
+
+    for item in bam.get("items") or []:
+        path = str(item.get("normalized_path") or "")
+        labels = list(item.get("executor_name_hits") or []) or executor_labels_for_artifact_text(path)
+        if not labels:
+            continue
+        _append_executor_artifact_hit(
+            hits,
+            seen,
+            path=path,
+            labels=labels,
+            occurred_at=item.get("last_execution_utc"),
+            artifact_source="bam_execution",
+            timestamp_source="bam_execution",
+            file_exists=item.get("file_exists"),
+            note="BAM recorded execution of this path.",
+        )
+    if any(h.get("artifact_source") == "bam_execution" for h in hits):
+        sources_used.add("bam_execution")
+
+    for item in (dam or {}).get("items") or []:
+        path = str(item.get("normalized_path") or "")
+        labels = list(item.get("executor_name_hits") or []) or executor_labels_for_artifact_text(path)
+        if not labels:
+            continue
+        _append_executor_artifact_hit(
+            hits,
+            seen,
+            path=path,
+            labels=labels,
+            occurred_at=item.get("last_execution_utc"),
+            artifact_source="dam_execution",
+            timestamp_source="dam_execution",
+            file_exists=item.get("file_exists"),
+            note="DAM recorded execution of this path.",
+        )
+    if any(h.get("artifact_source") == "dam_execution" for h in hits):
+        sources_used.add("dam_execution")
+
+    ingest("prefetch_execution", scan_prefetch_executor_artifact_hits(prefetch))
+
+    pca = forensic_bundle.get("pca_executed") or {}
+    for item in pca.get("items") or []:
+        path = str(item.get("normalized_path") or "")
+        labels = executor_labels_for_artifact_text(path)
+        if not labels:
+            continue
+        _append_executor_artifact_hit(
+            hits,
+            seen,
+            path=path,
+            labels=labels,
+            occurred_at=item.get("display_at") or item.get("file_modified_utc"),
+            artifact_source="pca_compat",
+            file_exists=item.get("file_exists"),
+            note="Program Compatibility Assistant store references this path.",
+        )
+    if any(h.get("artifact_source") == "pca_compat" for h in hits):
+        sources_used.add("pca_compat")
+
+    usn_records = _collect_usn_records_for_removed_artifact_merge(forensic_bundle, deletion)
+    for row in usn_records:
+        reasons = [str(r).upper() for r in (row.get("reasons") or [])]
+        if not any("DELETE" in r or "RENAME_OLD" in r for r in reasons):
+            continue
+        path = str(row.get("path") or "")
+        labels = executor_labels_for_artifact_text(path)
+        if not labels:
+            continue
+        _append_executor_artifact_hit(
+            hits,
+            seen,
+            path=path,
+            labels=labels,
+            occurred_at=row.get("display_at") or row.get("timestamp_utc"),
+            artifact_source="usn_delete",
+            file_exists=False,
+            note="NTFS USN journal shows this executor path was deleted or renamed away.",
+        )
+    if any(h.get("artifact_source") == "usn_delete" for h in hits):
+        sources_used.add("usn_delete")
+
+    for item in trash.get("items") or []:
+        path = str(item.get("original_path") or "")
+        labels = list(item.get("executor_name_hits") or []) or executor_labels_for_artifact_text(path)
+        if not labels:
+            continue
+        _append_executor_artifact_hit(
+            hits,
+            seen,
+            path=path,
+            labels=labels,
+            occurred_at=item.get("display_at") or item.get("deleted_at"),
+            artifact_source="recycle_bin",
+            file_exists=False,
+            note="Recycle Bin metadata still lists this executor path.",
+        )
+    if any(h.get("artifact_source") == "recycle_bin" for h in hits):
+        sources_used.add("recycle_bin")
+
+    for item in designated.get("hits") or []:
+        if not item.get("removed_artifact"):
+            continue
+        path = str(item.get("path") or "")
+        labels = list(item.get("executor_name_hits") or [])
+        if not labels:
+            continue
+        _append_executor_artifact_hit(
+            hits,
+            seen,
+            path=path,
+            labels=labels,
+            occurred_at=item.get("display_at") or item.get("modified"),
+            artifact_source=str(item.get("artifact_source") or "removed_artifact"),
+            file_exists=False,
+            note=str(item.get("note") or "Removed executor artifact recovered during scan."),
+        )
+
+    for item in sha_blocklist.get("hits") or []:
+        path = str(item.get("path") or "")
+        label = str(item.get("label") or "known_executor")
+        _append_executor_artifact_hit(
+            hits,
+            seen,
+            path=path,
+            labels=[label],
+            occurred_at=item.get("modified"),
+            artifact_source="sha256_blocklist",
+            file_exists=path_exists_on_disk(path),
+            note="Verified SHA256 blocklist match.",
+            extra={"sha256": item.get("sha256")},
+        )
+    if any(h.get("artifact_source") == "sha256_blocklist" for h in hits):
+        sources_used.add("sha256_blocklist")
+
+    for item in (browser_download_history or {}).get("items") or []:
+        path = str(item.get("target_path") or "")
+        labels = list(item.get("matched_labels") or []) or executor_labels_for_artifact_text(path)
+        if not labels:
+            continue
+        _append_executor_artifact_hit(
+            hits,
+            seen,
+            path=path,
+            labels=labels,
+            occurred_at=item.get("started_at") or item.get("ended_at"),
+            artifact_source="browser_download",
+            file_exists=path_exists_on_disk(path),
+            note="Browser download history references this executor.",
+        )
+    if any(h.get("artifact_source") == "browser_download" for h in hits):
+        sources_used.add("browser_download")
+
+    for item in (userassist or {}).get("items") or []:
+        path = str(item.get("path") or "")
+        labels = list(item.get("executor_name_hits") or []) or executor_labels_for_artifact_text(path)
+        if not labels:
+            continue
+        _append_executor_artifact_hit(
+            hits,
+            seen,
+            path=path,
+            labels=labels,
+            occurred_at=item.get("display_at") or item.get("last_run_utc"),
+            artifact_source="userassist",
+            file_exists=path_exists_on_disk(path),
+            note="UserAssist recorded opening this executor path.",
+        )
+    if any(h.get("artifact_source") == "userassist" for h in hits):
+        sources_used.add("userassist")
+
+    for item in (recent_items or {}).get("items") or []:
+        folder = str(item.get("folder") or "")
+        name = str(item.get("name") or "")
+        path = f"{folder}\\{name}" if folder and name else name or folder
+        labels = list(item.get("matched_indicator_names") or []) or executor_labels_for_artifact_text(path)
+        if not labels:
+            continue
+        _append_executor_artifact_hit(
+            hits,
+            seen,
+            path=path,
+            labels=labels,
+            occurred_at=item.get("modified") or item.get("accessed"),
+            artifact_source="recent_items",
+            file_exists=path_exists_on_disk(path),
+            note="Recent folder listing still references this executor file.",
+        )
+
+    for item in (executor_indicators.get("file_hits") or [])[:120]:
+        path = str(item.get("path") or "")
+        labels = list(item.get("matched_names") or []) or executor_labels_for_artifact_text(path)
+        if not labels:
+            continue
+        _append_executor_artifact_hit(
+            hits,
+            seen,
+            path=path,
+            labels=labels,
+            occurred_at=item.get("modified"),
+            artifact_source="filesystem_indicator",
+            file_exists=item.get("is_file") if item.get("is_file") is not None else path_exists_on_disk(path),
+            note="Deep filesystem scan matched a checked executor name.",
+        )
+
+    for item in (persistence.get("suspicious_entries") or []):
+        path = str(item.get("target") or item.get("name") or "")
+        labels = list(item.get("executor_name_hits") or []) or executor_labels_for_artifact_text(path)
+        if not labels:
+            continue
+        _append_executor_artifact_hit(
+            hits,
+            seen,
+            path=path,
+            labels=labels,
+            occurred_at=None,
+            artifact_source="persistence",
+            file_exists=path_exists_on_disk(path),
+            note="Startup/persistence entry references a checked executor.",
+        )
+
+    ingest("recent_lnk", scan_recent_lnk_executor_hits())
+    ingest("registry_uninstall", scan_registry_uninstall_executor_hits())
+    ingest("mui_cache", scan_mui_cache_executor_hits())
+    ingest("amcache_hive", scan_amcache_executor_hits())
+
+    deletion_blob = "\n".join(
+        [
+            str(deletion.get("raw_sample") or ""),
+            str(deletion.get("usn_delete_sample") or ""),
+            json.dumps(deletion.get("deleted_file_evidence") or {}, default=str)[:120000],
+        ]
+    )
+    for name in EXECUTOR_NAMES:
+        if len(name) < 4:
+            continue
+        if re.search(re.escape(name), deletion_blob, re.IGNORECASE):
+            _append_executor_artifact_hit(
+                hits,
+                seen,
+                path=f"(deletion log mention) {name}",
+                labels=[name],
+                occurred_at=None,
+                artifact_source="deletion_log_mention",
+                file_exists=False,
+                note="Executor name appears in deletion/USN/event-log samples collected during scan.",
+            )
+            sources_used.add("deletion_log_mention")
+
+    by_executor: dict[str, int] = {}
+    for hit in hits:
+        for label in hit.get("executor_name_hits") or []:
+            by_executor[str(label)] = by_executor.get(str(label), 0) + 1
+
+    hits.sort(
+        key=lambda row: (
+            0 if row.get("file_exists") is False else 1,
+            str(row.get("display_at") or row.get("modified") or ""),
+        ),
+        reverse=True,
+    )
+    return {
+        "available": True,
+        "hit_count": len(hits),
+        "hits": hits[:220],
+        "by_executor": by_executor,
+        "sources_used": sorted(sources_used),
+        "executors_checked": EXECUTOR_NAMES,
+        "note": "Unified pass across BAM, DAM, Prefetch, PCA, USN, Recycle Bin, Amcache, MuiCache, uninstall registry, "
+        "Recent/Jump Lists, downloads, UserAssist, persistence, and deletion logs. Deleting files or emptying the "
+        "Recycle Bin does not remove Prefetch, BAM, or registry-backed traces.",
+    }
 
 
 def _build_shell_history_correlation_index(
@@ -8580,6 +9339,8 @@ def build_report() -> dict:
     scan_started_at = datetime.now(timezone.utc).isoformat()
     memory = psutil.virtual_memory()
     disk = psutil.disk_usage(str(Path.home().anchor or Path.home()))
+    dam_registry: dict = {"available": False, "items": []}
+    executor_artifact_evidence: dict = {"available": False, "hits": []}
 
     with ThreadPoolExecutor(max_workers=SCAN_WORKERS) as pool:
         fut_prefetch = pool.submit(prefetch_metadata)
@@ -8611,6 +9372,7 @@ def build_report() -> dict:
         fut_roblox_int = pool.submit(roblox_integrity_scan, prefetch)
         fut_disk_exe = pool.submit(recent_disk_executable_scan)
         fut_browser_downloads = pool.submit(browser_download_history_scan)
+        fut_dam = pool.submit(dam_execution_records)
 
         forensic_bundle = fut_forensic.result()
         bam_structured = forensic_bundle.get("bam_structured")
@@ -8684,6 +9446,24 @@ def build_report() -> dict:
             command_history=command_history,
         )
         patch_unified_correlation_timeline(forensic_bundle)
+        dam_registry = fut_dam.result()
+        executor_artifact_evidence = build_executor_artifact_evidence(
+            bam=bam_registry,
+            dam=dam_registry,
+            prefetch=prefetch,
+            prefetch_health=prefetch_health,
+            designated=designated,
+            forensic_bundle=forensic_bundle,
+            trash=trash,
+            userassist=userassist,
+            browser_download_history=browser_download_history,
+            command_history=command_history,
+            persistence=persistence,
+            deletion=deletion_signals,
+            sha_blocklist=sha_blocklist,
+            executor_indicators=executor_indicators,
+            recent_items=recent_items,
+        )
         executor_activity = build_executor_activity_summary(
             generated_at=generated_at,
             recent_items=recent_items,
@@ -8724,6 +9504,7 @@ def build_report() -> dict:
             command_history=command_history,
             designated=designated,
             trash=trash,
+            executor_artifact_evidence=executor_artifact_evidence,
         )
         in_scan_changes = in_scan_binary_change_signals(
             usn_rows=usn_rows if isinstance(usn_rows, list) else [],
@@ -8791,6 +9572,7 @@ def build_report() -> dict:
         "security_integrity_signals": {
             "amcache": fut_amcache.result(),
             "bam": bam_registry,
+            "dam": dam_registry,
             "userassist": userassist,
             "defender": fut_defender.result(),
             "windows_event_logs": fut_events.result(),
@@ -8803,6 +9585,7 @@ def build_report() -> dict:
             "deletion_and_log_clearing_signals": deletion_signals,
             "prefetch_health": prefetch_health,
             "roblox_executor_indicators": executor_indicators,
+            "executor_artifact_evidence": executor_artifact_evidence,
             "designated_folder_suspicious_files": designated,
             "executor_sha256_blocklist": sha_blocklist,
             "executor_activity_summary": executor_activity,

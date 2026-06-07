@@ -73,6 +73,18 @@ function buildClientScanReview(report) {
   for (const hit of sec.roblox_executor_indicators?.file_hits ?? []) {
     addInv(hit.path, "folder_scan", hit.modified, true, hit.matched_names ?? []);
   }
+  for (const hit of sec.executor_artifact_evidence?.hits ?? []) {
+    addInv(
+      hit.path,
+      hit.artifact_source ?? "executor_artifact",
+      hit.display_at || hit.modified,
+      true,
+      [
+        ...(hit.executor_name_hits ?? []),
+        ...(hit.cheat_filename_hints ?? []).map((label) => `cheat:${label}`),
+      ],
+    );
+  }
   for (const hit of sec.designated_folder_suspicious_files?.hits ?? []) {
     const source = hit.removed_artifact ? "removed_artifact" : "folder_scan";
     addInv(
