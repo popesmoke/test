@@ -2767,6 +2767,16 @@ EXECUTOR_NAMES = [
     "Codex",
 ]
 
+# Extra tokens commonly seen in paths, prefetch stems, or renamed folders.
+EXECUTOR_ALIASES: dict[str, list[str]] = {
+    "Potassium": ["potassium", "potass", "kpotassium", "potassiumware", "potassium.exe"],
+    "Solara": ["solara", "solarav3", "solarav2"],
+    "Wave": ["waveexecutor", "wave.exe"],
+    "Delta": ["deltaexecutor", "delta.exe"],
+    "Xeno": ["xenoexecutor", "xeno.exe"],
+    "Synapse Z": ["synapse", "synapsez", "synapse z"],
+}
+
 # Verified sample SHA256 (lowercase hex) -> label. Extend in code or assets/executor_sha256_blocklist.json.
 EXECUTOR_SHA256_BLOCKLIST: dict[str, str] = {}
 EXECUTOR_HASH_SCAN_MAX_FILES = 400
@@ -3009,7 +3019,77 @@ def loose_executor_labels_for_artifact(text: str) -> list[str]:
             continue
         if token in compact:
             labels.append(name)
+            continue
+        for alias in EXECUTOR_ALIASES.get(name, []):
+            alias_token = re.sub(r"[\s._\-]", "", alias.upper())
+            if len(alias_token) >= 4 and alias_token in compact:
+                labels.append(name)
+                break
     return sorted(set(labels))
+
+
+def extract_dos_paths_from_binary(data: bytes, *, limit: int = 24) -> list[str]:
+    """Pull drive-letter paths out of binary blobs (Prefetch, LNK, hives, logs)."""
+    if not data:
+        return []
+    found: list[str] = []
+    seen: set[str] = set()
+    patterns = (
+        rb"[A-Za-z]:\\(?:[\x20-\x7e\\]|[^\x00-\x1f]){4,420}",
+        rb"\\\\Device\\\\HarddiskVolume\d+\\(?:[\x20-\x7e\\]|[^\x00-\x1f]){4,420}",
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, data):
+            try:
+                raw = match.group(0).split(b"\x00", 1)[0].decode("ascii", errors="ignore").strip()
+            except Exception:
+                continue
+            path = device_path_to_dos_path(raw) if raw.startswith("\\") else forensic_normalize_pathish(raw)
+            if not path or len(path) < 6:
+                continue
+            key = path.lower()
+            if key in seen:
+                continue
+            if not executor_labels_for_artifact_text(path):
+                continue
+            seen.add(key)
+            found.append(path[:520])
+            if len(found) >= limit:
+                return found
+    if len(found) < limit:
+        try:
+            wide = data.decode("utf-16le", errors="ignore")
+        except Exception:
+            wide = ""
+        for match in re.finditer(r"([A-Za-z]:\\[^\x00-\x1f]{4,420})", wide):
+            path = forensic_normalize_pathish(match.group(1))
+            if not path or not executor_labels_for_artifact_text(path):
+                continue
+            key = path.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            found.append(path[:520])
+            if len(found) >= limit:
+                break
+    return found
+
+
+def device_path_to_dos_path(path: str) -> str:
+    """Best-effort Device HarddiskVolume path to C:\\Users\\... conversion."""
+    s = str(path or "").replace("/", "\\").strip()
+    if not s:
+        return ""
+    upper = s.upper()
+    idx = upper.find("\\USERS\\")
+    if idx != -1:
+        profile = os.getenv("USERPROFILE")
+        if profile and len(profile) >= 2:
+            return f"{profile[0:2]}{s[idx:]}"
+    m = re.search(r"([A-Za-z]:\\[^|*\"<>?\n\r]+)", s)
+    if m:
+        return m.group(1)
+    return s
 
 
 def executor_labels_for_artifact_text(text: str) -> list[str]:
@@ -4060,25 +4140,40 @@ def prefetch_metadata() -> dict:
         return {"available": False, "reason": "Prefetch folder not found"}
 
     items = []
+    executor_name_hits_in_prefetch = 0
     try:
-        files = sorted(folder.glob("*.pf"), key=lambda path: path.stat().st_mtime, reverse=True)[:120]
+        files = sorted(folder.glob("*.pf"), key=lambda path: path.stat().st_mtime, reverse=True)
     except Exception as exc:
         return {"available": False, "reason": str(exc)}
 
     for path in files:
         try:
             stat = path.stat()
+            pf_labels = executor_labels_for_artifact_text(path.name)
+            if not pf_labels:
+                pf_labels = executor_labels_for_artifact_text(prefetch_extract_stem(path.name))
+            if pf_labels:
+                executor_name_hits_in_prefetch += 1
             items.append(
                 {
                     "name": path.name,
                     "modified": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
                     "accessed": datetime.fromtimestamp(stat.st_atime, timezone.utc).isoformat(),
                     "size_bytes": stat.st_size,
+                    "executor_name_hits": pf_labels,
                 }
             )
         except Exception:
             continue
-    return {"available": True, "folder": str(folder), "count": len(items), "items": items}
+    # Keep metadata payload bounded; full Prefetch sweep runs separately on every .pf file.
+    return {
+        "available": True,
+        "folder": str(folder),
+        "count": len(items),
+        "total_pf_files": len(items),
+        "executor_pf_matches": executor_name_hits_in_prefetch,
+        "items": items[:400],
+    }
 
 
 def amcache_metadata() -> dict:
@@ -5492,6 +5587,8 @@ def forensic_normalize_pathish(raw: str) -> str:
     m = re.search(r"([A-Za-z]:\\[^|*\"<>?\n\r]+)", s)
     if m:
         return m.group(1)
+    if s.upper().startswith("\\DEVICE\\"):
+        return device_path_to_dos_path(s)
     return s
 
 
@@ -6295,56 +6392,408 @@ def scan_amcache_executor_hits() -> list[dict[str, object]]:
     return hits
 
 
-def scan_prefetch_executor_artifact_hits(prefetch: dict) -> list[dict[str, object]]:
+def scan_entire_prefetch_executor_hits() -> list[dict[str, object]]:
+    """Scan every Prefetch .pf file on disk — not just the newest 120."""
+    if platform.system() != "Windows":
+        return []
+    folder = Path(os.getenv("SystemRoot", "C:\\Windows")) / "Prefetch"
+    if not folder.is_dir():
+        return []
     hits: list[dict[str, object]] = []
     seen: set[str] = set()
-    pf_folder = str(prefetch.get("folder") or "")
-    for item in prefetch.get("items") or []:
-        name = str(item.get("name") or "")
-        if not name.lower().endswith(".pf"):
-            continue
+    try:
+        pf_files = list(folder.glob("*.pf"))
+    except OSError:
+        return []
+    for pf_file in pf_files:
+        name = pf_file.name
         stem = prefetch_extract_stem(name)
-        labels = executor_labels_for_artifact_text(stem)
+        labels = executor_labels_for_artifact_text(name)
+        if not labels:
+            labels = executor_labels_for_artifact_text(stem)
+        pf_bytes: bytes = b""
+        try:
+            if not labels:
+                pf_bytes = pf_file.read_bytes()[:2_000_000]
+                labels = scan_binary_blob_for_executor_names(pf_bytes)
+            elif pf_file.is_file():
+                pf_bytes = pf_file.read_bytes()[:2_000_000]
+                labels = sorted(set(labels + scan_binary_blob_for_executor_names(pf_bytes)))
+        except OSError:
+            if not labels:
+                continue
         if not labels:
             continue
-        pf_path = str(Path(pf_folder) / name) if pf_folder else name
-        original_exists = False
+        try:
+            modified = datetime.fromtimestamp(pf_file.stat().st_mtime, timezone.utc).isoformat()
+        except OSError:
+            modified = None
         original_guess = ""
-        if pf_folder:
-            try:
-                pf_file = Path(pf_folder) / name
-                if pf_file.is_file():
-                    pf_bytes = pf_file.read_bytes()[:1_500_000]
-                    blob_labels = scan_binary_blob_for_executor_names(pf_bytes)
-                    labels = sorted(set(labels + blob_labels))
-                    for match in re.finditer(rb"(?:[\x20-\x7e\\:]){8,260}", pf_bytes):
-                        try:
-                            fragment = match.group(0).decode("ascii", errors="ignore")
-                        except Exception:
-                            continue
-                        if re.match(r"^[A-Za-z]:\\", fragment) and executor_labels_for_artifact_text(fragment):
-                            original_guess = fragment[:520]
-                            original_exists = path_exists_on_disk(fragment)
-                            break
-            except OSError:
-                pass
-        display_path = original_guess or pf_path
+        original_exists = False
+        if pf_bytes:
+            for extracted in extract_dos_paths_from_binary(pf_bytes, limit=8):
+                original_guess = extracted
+                original_exists = path_exists_on_disk(extracted)
+                break
+        display_path = original_guess or str(pf_file)
         _append_executor_artifact_hit(
             hits,
             seen,
             path=display_path,
             labels=labels,
-            occurred_at=item.get("modified"),
+            occurred_at=modified,
             artifact_source="prefetch_execution",
             timestamp_source="prefetch_mtime",
             file_exists=original_exists if original_guess else True,
             note=(
-                "Windows Prefetch proves this executor binary ran"
-                + ("; original path no longer exists on disk." if original_guess and not original_exists else ".")
+                "Full Prefetch sweep: Windows recorded this executor binary running"
+                + ("; original file path is gone." if original_guess and not original_exists else ".")
             ),
-            extra={"prefetch_file": pf_path, "prefetch_stem": stem},
+            extra={"prefetch_file": str(pf_file), "prefetch_stem": stem},
         )
-    return hits[:120]
+    return hits
+
+
+def scan_all_usn_executor_path_hits(
+    forensic_bundle: dict,
+    deletion: dict,
+) -> list[dict[str, object]]:
+    hits: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for row in _collect_usn_records_for_removed_artifact_merge(forensic_bundle, deletion):
+        path = str(row.get("path") or "")
+        labels = executor_labels_for_artifact_text(path)
+        if not labels:
+            continue
+        reasons = [str(r).upper() for r in (row.get("reasons") or [])]
+        is_delete = any("DELETE" in r or "RENAME_OLD" in r for r in reasons)
+        _append_executor_artifact_hit(
+            hits,
+            seen,
+            path=path,
+            labels=labels,
+            occurred_at=row.get("display_at") or row.get("timestamp_utc"),
+            artifact_source="usn_delete" if is_delete else "usn_journal",
+            file_exists=path_exists_on_disk(path) if re.match(r"^[A-Za-z]:\\", path) else False,
+            note="NTFS USN journal references this executor path.",
+        )
+    return hits[:180]
+
+
+def scan_registry_shell_executor_hits() -> list[dict[str, object]]:
+    if platform.system() != "Windows":
+        return []
+    script = r"""
+$ErrorActionPreference='SilentlyContinue'
+$rows=New-Object System.Collections.Generic.List[object]
+$paths=@(
+ 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\TypedPaths',
+ 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\RecentDocs',
+ 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\RunMRU',
+ 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\ComDlg32\OpenSavePidlMRU',
+ 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\ComDlg32\LastVisitedPidlMRU'
+)
+foreach($p in $paths){
+  if(Test-Path $p){
+    Get-ItemProperty $p -ErrorAction SilentlyContinue | ForEach-Object {
+      $_.PSObject.Properties | Where-Object { $_.Name -notlike 'PS*' } | ForEach-Object {
+        $rows.Add([pscustomobject]@{Source=$p; Value=([string]$_.Value); Name=$_.Name})
+      }
+    }
+  }
+}
+$rows | Select-Object -First 260 | ConvertTo-Json -Compress -Depth 4
+""".strip()
+    data = forensic_powershell_json(script, timeout=20.0, max_chars=32000)
+    rows = data if isinstance(data, list) else [data] if isinstance(data, dict) else []
+    hits: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        blob = f"{row.get('Value') or ''} {row.get('Name') or ''}"
+        labels = executor_labels_for_artifact_text(blob)
+        if not labels:
+            continue
+        path = str(row.get("Value") or row.get("Name") or blob)[:520]
+        _append_executor_artifact_hit(
+            hits,
+            seen,
+            path=path,
+            labels=labels,
+            occurred_at=None,
+            artifact_source="registry_shell",
+            file_exists=path_exists_on_disk(path) if re.match(r"^[A-Za-z]:\\", path) else None,
+            note="Explorer typed/recent/open-dialog registry data references a checked executor.",
+            extra={"registry_key": row.get("Source")},
+        )
+    return hits[:100]
+
+
+def scan_wer_executor_hits() -> list[dict[str, object]]:
+    if platform.system() != "Windows":
+        return []
+    roots = [
+        Path(os.getenv("LOCALAPPDATA", "")) / "CrashDumps",
+        Path(os.getenv("ProgramData", "C:\\ProgramData")) / "Microsoft" / "Windows" / "WER" / "ReportArchive",
+        Path(os.getenv("ProgramData", "C:\\ProgramData")) / "Microsoft" / "Windows" / "WER" / "ReportQueue",
+    ]
+    hits: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for root in roots:
+        if not root.is_dir():
+            continue
+        try:
+            files = [p for p in root.rglob("*") if p.is_file()][:120]
+        except OSError:
+            continue
+        for path in files:
+            try:
+                data = path.read_bytes()[:900_000]
+                modified = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
+            except OSError:
+                continue
+            labels = scan_binary_blob_for_executor_names(data)
+            if not labels and not executor_labels_for_artifact_text(path.name):
+                continue
+            labels = sorted(set(labels + executor_labels_for_artifact_text(path.name)))
+            extracted = extract_dos_paths_from_binary(data, limit=4)
+            display = extracted[0] if extracted else str(path)
+            _append_executor_artifact_hit(
+                hits,
+                seen,
+                path=display,
+                labels=labels,
+                occurred_at=modified,
+                artifact_source="wer_crash_dump",
+                file_exists=path_exists_on_disk(display),
+                note="Crash/WER artifact contains a checked executor name or path.",
+            )
+    return hits[:80]
+
+
+def scan_defender_artifact_executor_hits() -> list[dict[str, object]]:
+    if platform.system() != "Windows":
+        return []
+    roots = [
+        Path(os.getenv("ProgramData", "C:\\ProgramData")) / "Microsoft" / "Windows Defender" / "Scans" / "History",
+        Path(os.getenv("ProgramData", "C:\\ProgramData")) / "Microsoft" / "Windows Defender" / "Support",
+    ]
+    hits: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for root in roots:
+        if not root.is_dir():
+            continue
+        try:
+            files = [p for p in root.rglob("*") if p.is_file()][:80]
+        except OSError:
+            continue
+        for path in files:
+            if path.suffix.lower() not in {".log", ".txt", ".json", ".xml", ""}:
+                continue
+            try:
+                data = path.read_bytes()[:600_000]
+                modified = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
+            except OSError:
+                continue
+            labels = scan_binary_blob_for_executor_names(data)
+            if not labels:
+                continue
+            for extracted in extract_dos_paths_from_binary(data, limit=3) or [str(path)]:
+                _append_executor_artifact_hit(
+                    hits,
+                    seen,
+                    path=extracted,
+                    labels=labels,
+                    occurred_at=modified,
+                    artifact_source="defender_history",
+                    file_exists=path_exists_on_disk(extracted),
+                    note="Windows Defender history/support logs mention a checked executor.",
+                )
+    return hits[:60]
+
+
+def scan_application_event_log_executor_hits() -> list[dict[str, object]]:
+    if platform.system() != "Windows":
+        return []
+    pattern = "|".join(re.escape(name) for name in EXECUTOR_NAMES if len(name) >= 4)
+    script = (
+        "$start=(Get-Date).AddDays(-30);"
+        f"$pat='{pattern}';"
+        "Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=$start} -MaxEvents 500 -ErrorAction SilentlyContinue | "
+        "Where-Object { $_.Message -match $pat } | "
+        "Select-Object -First 40 TimeCreated,Id,Message | ConvertTo-Json -Compress -Depth 3"
+    )
+    data = forensic_powershell_json(script, timeout=22.0, max_chars=28000)
+    rows = data if isinstance(data, list) else [data] if isinstance(data, dict) else []
+    hits: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        message = str(row.get("Message") or "")
+        labels = executor_labels_for_artifact_text(message)
+        if not labels:
+            continue
+        path = ""
+        for match in re.finditer(r"([A-Za-z]:\\[^\s\"']{4,420})", message):
+            if executor_labels_for_artifact_text(match.group(1)):
+                path = match.group(1)
+                break
+        _append_executor_artifact_hit(
+            hits,
+            seen,
+            path=path or f"(application event {row.get('Id', '?')})",
+            labels=labels,
+            occurred_at=normalize_event_time(row.get("TimeCreated")),
+            artifact_source="application_event_log",
+            file_exists=path_exists_on_disk(path) if path else None,
+            note="Application event log message references a checked executor.",
+        )
+    return hits[:40]
+
+
+PROFILE_BINARY_SWEEP_EXTENSIONS = frozenset(
+    {".log", ".txt", ".json", ".cfg", ".xml", ".lua", ".dat", ".ini", ".bat", ".ps1", ".ldb", ".sqlite", ".db"}
+)
+PROFILE_BINARY_SWEEP_MAX_FILES = 12_000
+PROFILE_BINARY_SWEEP_MAX_HITS = 120
+
+
+def scan_profile_binary_executor_sweep() -> list[dict[str, object]]:
+    """Search user profile + temp for leftover strings/paths after delete."""
+    if platform.system() != "Windows":
+        return []
+    roots: list[Path] = []
+    for env_key in ("USERPROFILE", "LOCALAPPDATA", "APPDATA", "TEMP"):
+        val = os.getenv(env_key)
+        if val:
+            roots.append(Path(val))
+    hits: list[dict[str, object]] = []
+    seen: set[str] = set()
+    enumerated = 0
+    for root in roots:
+        if not root.is_dir():
+            continue
+        try:
+            for path in walk_files_depth_limited(root, USER_FOLDER_SCAN_MAX_DEPTH):
+                enumerated += 1
+                if enumerated > PROFILE_BINARY_SWEEP_MAX_FILES or len(hits) >= PROFILE_BINARY_SWEEP_MAX_HITS:
+                    break
+                ext = path.suffix.lower()
+                if ext not in PROFILE_BINARY_SWEEP_EXTENSIONS and ext != ".exe" and ext != ".dll":
+                    continue
+                if executor_scan_path_excluded(str(path)):
+                    continue
+                try:
+                    size = path.stat().st_size
+                    if size <= 0 or size > 2_500_000:
+                        continue
+                    data = path.read_bytes()[:2_500_000]
+                    modified = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
+                except OSError:
+                    continue
+                labels = executor_labels_for_artifact_text(path.name)
+                if not labels:
+                    labels = scan_binary_blob_for_executor_names(data)
+                if not labels:
+                    continue
+                extracted = extract_dos_paths_from_binary(data, limit=2)
+                display = extracted[0] if extracted else str(path)
+                _append_executor_artifact_hit(
+                    hits,
+                    seen,
+                    path=display,
+                    labels=labels,
+                    occurred_at=modified,
+                    artifact_source="profile_binary_sweep",
+                    file_exists=path_exists_on_disk(display),
+                    note="User-profile binary/text sweep found a checked executor name or path residue.",
+                )
+        except (PermissionError, OSError):
+            continue
+        if enumerated > PROFILE_BINARY_SWEEP_MAX_FILES or len(hits) >= PROFILE_BINARY_SWEEP_MAX_HITS:
+            break
+    return hits
+
+
+def scan_roblox_log_executor_hits() -> list[dict[str, object]]:
+    if platform.system() != "Windows":
+        return []
+    la = os.getenv("LOCALAPPDATA")
+    if not la:
+        return []
+    roots = [
+        Path(la) / "Roblox" / "logs",
+        Path(la) / "Roblox",
+    ]
+    hits: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for root in roots:
+        if not root.is_dir():
+            continue
+        try:
+            files = [p for p in root.rglob("*.log") if p.is_file()][:80]
+        except OSError:
+            continue
+        for path in files:
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")[:500_000]
+                modified = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
+            except OSError:
+                continue
+            labels = executor_labels_for_artifact_text(text)
+            if not labels:
+                continue
+            extracted = extract_dos_paths_from_binary(text.encode("utf-8", errors="ignore"), limit=3)
+            display = extracted[0] if extracted else str(path)
+            _append_executor_artifact_hit(
+                hits,
+                seen,
+                path=display,
+                labels=labels,
+                occurred_at=modified,
+                artifact_source="roblox_log",
+                file_exists=path_exists_on_disk(display),
+                note="Roblox client log mentions a checked executor.",
+            )
+    return hits[:40]
+
+
+def scan_shimcache_executor_hits() -> list[dict[str, object]]:
+    if platform.system() != "Windows":
+        return []
+    path = Path(os.getenv("SystemRoot", "C:\\Windows")) / "AppCompat" / "Programs" / "RecentFileCache.bcf"
+    if not path.is_file():
+        return []
+    try:
+        data = path.read_bytes()[:4_000_000]
+        modified = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
+    except OSError:
+        return []
+    hits: list[dict[str, object]] = []
+    seen: set[str] = set()
+    labels = scan_binary_blob_for_executor_names(data)
+    for extracted in extract_dos_paths_from_binary(data, limit=12):
+        row_labels = sorted(set(labels + executor_labels_for_artifact_text(extracted)))
+        if not row_labels:
+            continue
+        _append_executor_artifact_hit(
+            hits,
+            seen,
+            path=extracted,
+            labels=row_labels,
+            occurred_at=modified,
+            artifact_source="shimcache",
+            file_exists=path_exists_on_disk(extracted),
+            note="AppCompat RecentFileCache references a checked executor path.",
+        )
+    return hits[:60]
+
+
+def scan_prefetch_executor_artifact_hits(prefetch: dict) -> list[dict[str, object]]:
+    # Full-folder sweep supersedes the bounded metadata sample.
+    return scan_entire_prefetch_executor_hits()
 
 
 def build_executor_artifact_evidence(
@@ -6417,6 +6866,7 @@ def build_executor_artifact_evidence(
         sources_used.add("dam_execution")
 
     ingest("prefetch_execution", scan_prefetch_executor_artifact_hits(prefetch))
+    ingest("usn_journal", scan_all_usn_executor_path_hits(forensic_bundle, deletion))
 
     pca = forensic_bundle.get("pca_executed") or {}
     for item in pca.get("items") or []:
@@ -6436,28 +6886,6 @@ def build_executor_artifact_evidence(
         )
     if any(h.get("artifact_source") == "pca_compat" for h in hits):
         sources_used.add("pca_compat")
-
-    usn_records = _collect_usn_records_for_removed_artifact_merge(forensic_bundle, deletion)
-    for row in usn_records:
-        reasons = [str(r).upper() for r in (row.get("reasons") or [])]
-        if not any("DELETE" in r or "RENAME_OLD" in r for r in reasons):
-            continue
-        path = str(row.get("path") or "")
-        labels = executor_labels_for_artifact_text(path)
-        if not labels:
-            continue
-        _append_executor_artifact_hit(
-            hits,
-            seen,
-            path=path,
-            labels=labels,
-            occurred_at=row.get("display_at") or row.get("timestamp_utc"),
-            artifact_source="usn_delete",
-            file_exists=False,
-            note="NTFS USN journal shows this executor path was deleted or renamed away.",
-        )
-    if any(h.get("artifact_source") == "usn_delete" for h in hits):
-        sources_used.add("usn_delete")
 
     for item in trash.get("items") or []:
         path = str(item.get("original_path") or "")
@@ -6602,6 +7030,13 @@ def build_executor_artifact_evidence(
     ingest("registry_uninstall", scan_registry_uninstall_executor_hits())
     ingest("mui_cache", scan_mui_cache_executor_hits())
     ingest("amcache_hive", scan_amcache_executor_hits())
+    ingest("registry_shell", scan_registry_shell_executor_hits())
+    ingest("wer_crash_dump", scan_wer_executor_hits())
+    ingest("defender_history", scan_defender_artifact_executor_hits())
+    ingest("application_event_log", scan_application_event_log_executor_hits())
+    ingest("profile_binary_sweep", scan_profile_binary_executor_sweep())
+    ingest("roblox_log", scan_roblox_log_executor_hits())
+    ingest("shimcache", scan_shimcache_executor_hits())
 
     deletion_blob = "\n".join(
         [
@@ -6641,13 +7076,14 @@ def build_executor_artifact_evidence(
     return {
         "available": True,
         "hit_count": len(hits),
-        "hits": hits[:220],
+        "hits": hits[:400],
         "by_executor": by_executor,
         "sources_used": sorted(sources_used),
         "executors_checked": EXECUTOR_NAMES,
-        "note": "Unified pass across BAM, DAM, Prefetch, PCA, USN, Recycle Bin, Amcache, MuiCache, uninstall registry, "
-        "Recent/Jump Lists, downloads, UserAssist, persistence, and deletion logs. Deleting files or emptying the "
-        "Recycle Bin does not remove Prefetch, BAM, or registry-backed traces.",
+        "note": "Exhaustive pass: full Prefetch folder, BAM, DAM, PCA, all USN paths, Recycle Bin, Amcache, ShimCache, "
+        "MuiCache, uninstall registry, Explorer typed/recent paths, WER/crash dumps, Defender logs, Application event log, "
+        "Roblox logs, profile binary sweep, Recent/Jump Lists, downloads, UserAssist, and persistence. "
+        "Deleting files or emptying the Recycle Bin does not remove Prefetch, BAM, or registry-backed traces.",
     }
 
 

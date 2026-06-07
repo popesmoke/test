@@ -393,11 +393,15 @@ function buildSuspicionSummary(report) {
       const deleted = item.file_exists === false || item.removed_artifact;
       const source = String(item.artifact_source ?? "");
       const sourceBoost =
-        source === "prefetch_execution" || source === "bam_execution" || source === "dam_execution" ? 1.15 : 1;
-      const base = deleted ? 13 : 10;
+        source === "prefetch_execution" || source === "bam_execution" || source === "dam_execution" ? 1.25 : 1;
+      const base = deleted ? 18 : 14;
       return sum + base * sourceBoost * recencyFactor(item.display_at ?? item.modified, report);
     }, 0);
-    const points = Math.min(50, Math.round(weighted));
+    let points = Math.min(65, Math.round(weighted));
+    const detectedExecutors = Object.keys(sec.executor_artifact_evidence?.by_executor ?? {});
+    if (detectedExecutors.length > 0) {
+      points = Math.max(points, Math.min(62, 38 + detectedExecutors.length * 10));
+    }
     if (points > 0) {
       score += points;
       const executors = [
