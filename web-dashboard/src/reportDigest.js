@@ -80,7 +80,10 @@ function buildClientScanReview(report) {
       source,
       hit.display_at || hit.modified,
       true,
-      hit.executor_name_hits ?? [],
+      [
+        ...(hit.executor_name_hits ?? []),
+        ...(hit.cheat_filename_hints ?? []).map((label) => `cheat:${label}`),
+      ],
     );
   }
   for (const item of sec.bam?.items ?? []) {

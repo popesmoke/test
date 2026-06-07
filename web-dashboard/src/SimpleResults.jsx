@@ -68,6 +68,8 @@ function friendlyReason(label, detail) {
     "BAM activity": "The PC recently ran a program on our watch list.",
     "Defender signal": "Windows security settings or history looked unusual.",
     "Deletion or log clearing": "Signs appeared that logs or traces may have been cleaned up.",
+    "Deleted cheat/executor traces recovered": "Cheat or executor files were deleted, but Windows still had traces of them.",
+    "Suspicious Recycle Bin items": "The Recycle Bin still holds files whose names look like cheats or loaders.",
     "Bypass / cover-up signals": "Signs appeared that someone may have tried to hide activity.",
     "No matched indicators": "Nothing major matched our watch lists on this scan.",
   };

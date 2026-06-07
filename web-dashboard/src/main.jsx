@@ -349,6 +349,10 @@ function buildSuspicionSummary(report) {
   const designatedWeirdHits = designatedHits.filter(
     (item) => !(item.executor_name_hits ?? []).length && (item.name_anomaly_reasons ?? []).length,
   );
+  const removedArtifactHits = designatedHits.filter((item) => item.removed_artifact);
+  const recycleSuspicious = (report.performance_environment?.trash?.items ?? []).filter(
+    (item) => item.suspicious_recycle_item && item.original_path,
+  );
   const recentMatched = (sec.recent_items?.items ?? []).filter(
     (item) =>
       (item.matched_indicator_names?.length ?? 0) > 0 || (item.matched_cheat_filename_hints?.length ?? 0) > 0,
@@ -363,6 +367,7 @@ function buildSuspicionSummary(report) {
   for (const item of fileHits) registerStem(stemMap, pathStemKey(item.path), "file");
   for (const item of prefetchHits) registerStem(stemMap, pathStemKey(item.name ?? item.path), "prefetch");
   for (const item of designatedExecutorHits) registerStem(stemMap, pathStemKey(item.path), "profile");
+  for (const item of removedArtifactHits) registerStem(stemMap, pathStemKey(item.path), "removed");
   for (const item of runtimeModules) registerStem(stemMap, pathStemKey(item.module_path), "runtime");
 
   const reasons = [];
@@ -480,6 +485,32 @@ function buildSuspicionSummary(report) {
         detail: `${designatedWeirdHits.length} file(s) had unusual name patterns (low weight; verify manually).`,
       });
     }
+  }
+  if (removedArtifactHits.length) {
+    const weighted = removedArtifactHits.reduce((sum, item) => {
+      const hasExecutor = (item.executor_name_hits ?? []).length > 0;
+      const hasCheat = (item.cheat_filename_hints ?? []).length > 0;
+      const base = hasExecutor ? 11 : hasCheat ? 8 : 6;
+      return sum + base * recencyFactor(item.display_at ?? item.modified, report);
+    }, 0);
+    const points = Math.min(42, Math.round(weighted));
+    if (points > 0) {
+      score += points;
+      reasons.push({
+        label: "Deleted cheat/executor traces recovered",
+        points,
+        detail: `${removedArtifactHits.length} path(s) were deleted or removed from the Recycle Bin but recovered from BAM, USN, Prefetch, downloads, or other Windows artifacts.`,
+      });
+    }
+  }
+  if (recycleSuspicious.length) {
+    const points = Math.min(18, recycleSuspicious.length * 6);
+    score += points;
+    reasons.push({
+      label: "Suspicious Recycle Bin items",
+      points,
+      detail: `${recycleSuspicious.length} item(s) in the Recycle Bin matched executor or cheat path rules (original path preserved in $I metadata).`,
+    });
   }
   if (persistenceSuspicious.length) {
     const points = Math.min(22, persistenceSuspicious.length * 6);

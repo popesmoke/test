@@ -2805,8 +2805,11 @@ PATH_ALLOWLIST_FRAGMENTS = (
     "\\visual studio\\",
 )
 
-# File-name-only cheat / hack hints (matched on basename, not full path).
+# Cheat / hack filename hints (also applied to each folder segment in cheat_path_hint_labels).
 CHEAT_FILENAME_HINT_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    ("cheat_label", re.compile(r"\bcheats?\b", re.IGNORECASE)),
+    ("hack_label", re.compile(r"\bhacks?\b", re.IGNORECASE)),
+    ("script_hub", re.compile(r"script[\s._-]*hub|hub[\s._-]*script", re.IGNORECASE)),
     ("roblox_hack", re.compile(r"roblox[\s._-]*hack", re.IGNORECASE)),
     ("aimbot", re.compile(r"aim[\s._-]*bot|aimbot", re.IGNORECASE)),
     ("wallhack", re.compile(r"wall[\s._-]*hack|wallhack", re.IGNORECASE)),
@@ -2922,6 +2925,49 @@ def cheat_filename_hint_labels(filename: str) -> list[str]:
         if pattern.search(filename):
             labels.append(label)
     return labels
+
+
+def cheat_path_hint_labels(path: str) -> list[str]:
+    """Match cheat/hack hints against every path segment and the basename."""
+    normalized = str(path or "").replace("/", "\\").strip()
+    if not normalized:
+        return []
+    labels: list[str] = []
+    parts = [part for part in normalized.split("\\") if part]
+    for part in parts:
+        labels.extend(cheat_filename_hint_labels(part))
+    return sorted(set(labels))
+
+
+def suspicious_path_profile(
+    path: str,
+    patterns: dict[str, re.Pattern[str]] | None = None,
+) -> dict[str, list[str]]:
+    patterns = patterns or executor_name_patterns()
+    norm = forensic_normalize_pathish(path) if path else ""
+    if not norm:
+        return {"executor_name_hits": [], "cheat_filename_hints": [], "name_anomaly_reasons": []}
+    executor_labels = sorted(set(match_executor_labels(norm, patterns)))
+    cheat_hints = cheat_path_hint_labels(norm)
+    stem = Path(norm).stem
+    full_name = Path(norm).name
+    weird = list(weird_filename_reasons(stem, full_name)) if full_name else []
+    for part in Path(norm).parts[:-1]:
+        weird.extend(weird_filename_reasons(part, part))
+    return {
+        "executor_name_hits": executor_labels,
+        "cheat_filename_hints": cheat_hints,
+        "name_anomaly_reasons": sorted(set(weird)),
+    }
+
+
+def path_is_suspicious_profile(path: str, patterns: dict[str, re.Pattern[str]] | None = None) -> bool:
+    profile = suspicious_path_profile(path, patterns)
+    return bool(
+        profile["executor_name_hits"]
+        or profile["cheat_filename_hints"]
+        or profile["name_anomaly_reasons"]
+    )
 
 
 def executor_scan_path_excluded(path_str: str) -> bool:
@@ -3569,9 +3615,13 @@ def combined_user_folder_security_scans(max_hashes: int = EXECUTOR_HASH_SCAN_MAX
                     continue
                 stem = path.stem
                 full_name = path.name
-                executor_labels = sorted(set(match_executor_labels(full_name, patterns)))
-                weird = weird_filename_reasons(stem, full_name)
-                cheat_hints = cheat_filename_hint_labels(full_name)
+                path_str = str(path)
+                executor_labels = sorted(set(match_executor_labels(path_str, patterns)))
+                weird = list(weird_filename_reasons(stem, full_name))
+                for part in path.parts[:-1]:
+                    weird.extend(weird_filename_reasons(part, part))
+                weird = sorted(set(weird))
+                cheat_hints = cheat_path_hint_labels(path_str)
                 if not executor_labels and not weird and not cheat_hints:
                     continue
                 try:
@@ -3925,6 +3975,14 @@ def recycle_bin_metadata() -> dict:
                 }
                 if info_record:
                     item.update(info_record)
+                    original_path = str(info_record.get("original_path") or "").strip()
+                    if original_path:
+                        profile = suspicious_path_profile(original_path)
+                        if path_is_suspicious_profile(original_path):
+                            item["suspicious_recycle_item"] = True
+                            item["executor_name_hits"] = profile["executor_name_hits"]
+                            item["cheat_filename_hints"] = profile["cheat_filename_hints"]
+                            item["name_anomaly_reasons"] = profile["name_anomaly_reasons"]
                 else:
                     display_at, timestamp_source = resolve_display_timestamp(
                         primary=item.get("modified"),
@@ -4218,8 +4276,9 @@ def recent_items_metadata() -> dict:
             try:
                 stat = path.stat()
                 fname = path.name
-                matched_exec = [label for label, pat in patterns.items() if pat.search(fname)]
-                cheat_hints = cheat_filename_hint_labels(fname)
+                full_path = str(path)
+                matched_exec = [label for label, pat in patterns.items() if pat.search(full_path)]
+                cheat_hints = cheat_path_hint_labels(full_path)
                 if not matched_exec and not cheat_hints:
                     continue
                 items.append(
@@ -4372,7 +4431,7 @@ def deletion_and_log_clearing_signals() -> dict:
         " try {"
         "  fsutil usn readjournal $d csv 2>$null |"
         "    Select-String -Pattern 'FILE_DELETE|0x80000002|0x80000200' |"
-        "    Select-Object -First 45 |"
+        "    Select-Object -First 90 |"
         "    ForEach-Object { [void]$usnList.Add(($d + [char]9 + $_.Line)) }"
         " } catch {}"
         "};"
@@ -4449,6 +4508,8 @@ def bypass_resilience_signals(
     prefetch_health: dict,
     amcache: dict,
     command_history: dict,
+    designated: dict | None = None,
+    trash: dict | None = None,
 ) -> dict:
     """Correlate tamper, cover-up, and anti-forensics patterns across multiple independent sources."""
     if platform.system() != "Windows":
@@ -4686,6 +4747,105 @@ def bypass_resilience_signals(
             )
     except json.JSONDecodeError:
         pass
+
+    removed_hits = [
+        hit
+        for hit in (designated or {}).get("hits") or []
+        if hit.get("removed_artifact") and hit.get("path_allowlisted") is not True
+    ]
+    if removed_hits:
+        executor_removed = [h for h in removed_hits if h.get("executor_name_hits")]
+        cheat_removed = [
+            h
+            for h in removed_hits
+            if (h.get("cheat_filename_hints") or h.get("name_anomaly_reasons"))
+            and not h.get("executor_name_hits")
+        ]
+        if executor_removed:
+            sample = ", ".join(
+                sorted({label for hit in executor_removed[:6] for label in (hit.get("executor_name_hits") or [])})[:4]
+            )
+            add(
+                severity="high",
+                title="Deleted executor traces recovered",
+                detail=(
+                    f"{len(executor_removed)} executor path(s) were removed from disk or the Recycle Bin but still "
+                    f"appear in BAM, USN, Prefetch, or download history"
+                    + (f" ({sample})." if sample else ".")
+                ),
+                category="cover_up",
+                weight=22,
+            )
+        elif cheat_removed:
+            add(
+                severity="high",
+                title="Deleted cheat-like paths recovered",
+                detail=(
+                    f"{len(cheat_removed)} deleted path(s) with cheat/hack-style folder or file names were recovered "
+                    "from Windows activity artifacts after cleanup."
+                ),
+                category="cover_up",
+                weight=20,
+            )
+        elif len(removed_hits) >= 2:
+            add(
+                severity="medium",
+                title="Multiple deleted suspicious paths recovered",
+                detail=(
+                    f"{len(removed_hits)} suspicious path(s) no longer on disk were reconstructed from independent "
+                    "system traces — deleting folders or emptying the Recycle Bin does not erase this evidence."
+                ),
+                category="cover_up",
+                weight=16,
+            )
+
+    suspicious_trash = [
+        item
+        for item in (trash or {}).get("items") or []
+        if item.get("suspicious_recycle_item") and item.get("original_path")
+    ]
+    if suspicious_trash:
+        add(
+            severity="medium",
+            title="Suspicious items sitting in Recycle Bin",
+            detail=(
+                f"{len(suspicious_trash)} Recycle Bin item(s) match executor or cheat path rules — emptying the bin "
+                "will not remove USN, Prefetch, or execution history already collected."
+            ),
+            category="cover_up",
+            weight=14,
+        )
+
+    deletion_usn = str(deletion.get("usn_delete_sample") or "")
+    if deletion_usn and not deletion_usn.startswith("Unavailable"):
+        profile_roots = (
+            str(Path(os.getenv("USERPROFILE") or Path.home()).resolve()).lower()
+            if platform.system() == "Windows"
+            else str(Path.home()).lower()
+        )
+        suspicious_deletes = 0
+        for line in deletion_usn.splitlines()[:180]:
+            if "FILE_DELETE" not in line.upper():
+                continue
+            path_m = re.search(r"([A-Za-z]:\\(?:[^,\"\n\r\t|<>?]+))", line, re.IGNORECASE)
+            if not path_m:
+                continue
+            candidate = path_m.group(1)
+            if profile_roots and not candidate.lower().startswith(profile_roots):
+                continue
+            if path_is_suspicious_profile(candidate):
+                suspicious_deletes += 1
+        if suspicious_deletes >= 1:
+            add(
+                severity="high" if suspicious_deletes >= 2 else "medium",
+                title="Recent cheat-path deletes in USN journal",
+                detail=(
+                    f"{suspicious_deletes} NTFS journal delete record(s) under the user profile matched executor or "
+                    "cheat folder/file naming — evidence of cleanup after use."
+                ),
+                category="cover_up",
+                weight=18 if suspicious_deletes >= 2 else 12,
+            )
 
     if isinstance(forensic_bundle, dict) and forensic_bundle.get("available"):
         flat = list(forensic_bundle.get("detections_flat") or [])
@@ -5545,6 +5705,35 @@ def path_exists_on_disk(path: str) -> bool:
         return False
 
 
+def _collect_usn_records_for_removed_artifact_merge(
+    forensic_bundle: dict,
+    deletion: dict,
+) -> list[dict[str, object]]:
+    """Merge USN rows from forensic bundle and deletion evidence for removed-path recovery."""
+    records: list[dict[str, object]] = [
+        row for row in (forensic_bundle.get("usn_file_lifecycle_rows") or []) if isinstance(row, dict)
+    ]
+    extra_lines: list[str] = []
+    usn_text = str(deletion.get("usn_delete_sample") or "")
+    if usn_text:
+        extra_lines.extend(usn_text.splitlines()[:220])
+    evidence = deletion.get("deleted_file_evidence")
+    if isinstance(evidence, dict):
+        for line in evidence.get("usn_file_delete_lines") or []:
+            extra_lines.append(str(line))
+    if extra_lines:
+        records.extend(usn_parse_records(extra_lines))
+    seen: set[tuple[str, str]] = set()
+    deduped: list[dict[str, object]] = []
+    for row in records:
+        key = (_artifact_path_key(str(row.get("path") or "")), ",".join(row.get("reasons") or []))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(row)
+    return deduped[:400]
+
+
 def merge_removed_executor_artifact_hits(
     designated: dict,
     *,
@@ -5556,9 +5745,15 @@ def merge_removed_executor_artifact_hits(
     command_history: dict,
     persistence: dict,
     forensic_bundle: dict,
+    recent_items: dict | None = None,
+    userassist: dict | None = None,
+    browser_download_history: dict | None = None,
+    deletion: dict | None = None,
 ) -> None:
-    """Surface executor paths removed from disk and Recycle Bin via BAM, USN, PCA, Prefetch, etc."""
+    """Surface executor/cheat paths removed from disk and Recycle Bin via BAM, USN, PCA, Prefetch, etc."""
     patterns = executor_name_patterns()
+    if deletion:
+        usn_records = _collect_usn_records_for_removed_artifact_merge(forensic_bundle, deletion)
     existing_keys = {_artifact_path_key(str(hit.get("path") or "")) for hit in designated.get("hits") or []}
     seen_removed: set[str] = set()
     new_hits: list[dict] = []
@@ -5569,8 +5764,12 @@ def merge_removed_executor_artifact_hits(
             return
         if executor_scan_path_excluded(normalized):
             return
-        labels = sorted(set(match_executor_labels(normalized, patterns)))
-        if not labels:
+        profile = suspicious_path_profile(normalized, patterns)
+        if not (
+            profile["executor_name_hits"]
+            or profile["cheat_filename_hints"]
+            or profile["name_anomaly_reasons"]
+        ):
             return
         if path_exists_on_disk(normalized):
             return
@@ -5586,11 +5785,15 @@ def merge_removed_executor_artifact_hits(
             trash=trash,
             designated=designated,
             command_history=command_history,
+            recent_items=recent_items,
+            userassist=userassist,
         )
         new_hits.append(
             {
                 "path": normalized,
-                "executor_name_hits": labels,
+                "executor_name_hits": profile["executor_name_hits"],
+                "cheat_filename_hints": profile["cheat_filename_hints"],
+                "name_anomaly_reasons": profile["name_anomaly_reasons"],
                 "modified": occurred_at or display_at,
                 "display_at": display_at,
                 "timestamp_source": timestamp_source or source,
@@ -5598,6 +5801,7 @@ def merge_removed_executor_artifact_hits(
                 "file_exists": False,
                 "removed_artifact": True,
                 "artifact_source": source,
+                "path_allowlisted": path_is_allowlisted(normalized),
                 "note": "No longer on disk or in Recycle Bin; recovered from Windows activity artifacts.",
             }
         )
@@ -5619,18 +5823,19 @@ def merge_removed_executor_artifact_hits(
 
     for row in usn_records:
         reasons = [str(reason).upper() for reason in (row.get("reasons") or [])]
-        if not any("DELETE" in reason for reason in reasons):
+        if not any("DELETE" in reason or "RENAME_OLD" in reason for reason in reasons):
             continue
         consider(
             str(row.get("path") or ""),
             occurred_at=row.get("display_at") or row.get("timestamp_utc"),
-            source="usn_delete",
+            source="usn_delete" if any("DELETE" in reason for reason in reasons) else "usn_rename",
         )
 
     pf_folder = str(prefetch.get("folder") or "")
     for item in prefetch.get("items") or []:
         name = str(item.get("name") or "")
-        if not any(pattern.search(name) for pattern in patterns.values()):
+        stem = prefetch_extract_stem(name)
+        if not path_is_suspicious_profile(stem, patterns) and not path_is_suspicious_profile(name, patterns):
             continue
         path = f"{pf_folder}\\{name}" if pf_folder and name else name
         consider(path, occurred_at=item.get("modified"), source="prefetch")
@@ -5653,6 +5858,32 @@ def merge_removed_executor_artifact_hits(
             str(item.get("original_path") or ""),
             occurred_at=item.get("deleted_at") or item.get("display_at"),
             source="recycle_bin",
+        )
+
+    for item in (recent_items or {}).get("items") or []:
+        folder = str(item.get("folder") or "")
+        name = str(item.get("name") or "")
+        combined = f"{folder}\\{name}" if folder and name else name or folder
+        consider(
+            combined,
+            occurred_at=item.get("modified") or item.get("accessed"),
+            source="recent_items",
+        )
+
+    for item in (userassist or {}).get("items") or []:
+        consider(
+            str(item.get("path") or ""),
+            occurred_at=item.get("display_at") or item.get("last_run_utc"),
+            source="userassist",
+        )
+
+    for item in (browser_download_history or {}).get("items") or []:
+        if not item.get("suspicious"):
+            continue
+        consider(
+            str(item.get("target_path") or ""),
+            occurred_at=item.get("started_at") or item.get("ended_at"),
+            source="browser_download",
         )
 
     if not new_hits:
@@ -6072,7 +6303,7 @@ def _firefox_profile_download_databases() -> list[tuple[str, Path]]:
 
 def _download_row_matches(path: str, url: str, patterns: dict[str, re.Pattern[str]]) -> tuple[bool, list[str]]:
     labels = sorted(set(match_executor_labels(f"{path} {url}", patterns)))
-    labels.extend(cheat_filename_hint_labels(_download_basename(path)))
+    labels.extend(cheat_path_hint_labels(path))
     if not labels and url:
         lower = url.lower()
         if any(ext in lower for ext in (".exe", ".dll", ".bat", ".ps1", ".msi", ".zip", ".rar", ".7z")):
@@ -7151,11 +7382,13 @@ def build_user_activity_timeline(
             continue
         path = str(item.get("path") or "")
         labels = list(item.get("executor_name_hits") or [])
+        cheat_labels = list(item.get("cheat_filename_hints") or [])
+        label_text = ", ".join(labels + [f"cheat:{c}" for c in cheat_labels[:3]])
         _append_activity_event(
             events,
             category="deletions",
             kind="removed_executor_artifact",
-            label=", ".join(labels) if labels else "Removed executor artifact",
+            label=label_text if label_text else "Removed suspicious artifact",
             path=path,
             occurred_at=item.get("display_at") or item.get("modified"),
             timestamp_source=item.get("timestamp_source") or item.get("artifact_source"),
@@ -8423,6 +8656,10 @@ def build_report() -> dict:
             command_history=command_history,
             persistence=persistence,
             forensic_bundle=forensic_bundle,
+            recent_items=recent_items,
+            userassist=userassist,
+            browser_download_history=browser_download_history,
+            deletion=deletion_signals,
         )
         enrich_pca_executed_records(
             forensic_bundle.get("pca_executed") or {},
@@ -8485,6 +8722,8 @@ def build_report() -> dict:
             prefetch_health=prefetch_health,
             amcache=fut_amcache.result(),
             command_history=command_history,
+            designated=designated,
+            trash=trash,
         )
         in_scan_changes = in_scan_binary_change_signals(
             usn_rows=usn_rows if isinstance(usn_rows, list) else [],
