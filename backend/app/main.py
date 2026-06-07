@@ -132,11 +132,31 @@ def require_checker(authorization: str | None = Header(default=None)) -> str:
     return email
 
 
+def expire_stale_pending_sessions(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "UPDATE sessions SET status = ? WHERE status = ? AND expires_at < ?",
+        ("expired", "pending", to_iso(utc_now())),
+    )
+
+
+def effective_session_status(row: sqlite3.Row) -> str:
+    status = row["status"]
+    if status != "pending":
+        return status
+    try:
+        expires_at = datetime.fromisoformat(str(row["expires_at"]).replace("Z", "+00:00"))
+    except ValueError:
+        return status
+    if expires_at < utc_now():
+        return "expired"
+    return status
+
+
 def row_to_summary(row: sqlite3.Row) -> SessionSummary:
     return SessionSummary(
         id=row["id"],
         pin=row["pin"],
-        status=row["status"],
+        status=effective_session_status(row),
         created_at=row["created_at"],
         expires_at=row["expires_at"],
         completed_at=row["completed_at"],
@@ -189,6 +209,8 @@ def create_session(_: str = Depends(require_checker)) -> SessionCreateResponse:
 @app.get("/sessions", response_model=list[SessionSummary])
 def list_sessions(_: str = Depends(require_checker)) -> list[SessionSummary]:
     with connect() as conn:
+        expire_stale_pending_sessions(conn)
+        conn.commit()
         rows = conn.execute("SELECT * FROM sessions ORDER BY id DESC").fetchall()
     return [row_to_summary(row) for row in rows]
 
@@ -206,11 +228,14 @@ def delete_session(session_id: int, _: str = Depends(require_checker)) -> dict[s
 @app.get("/sessions/{session_id}")
 def get_session(session_id: int, _: str = Depends(require_checker)) -> dict[str, Any]:
     with connect() as conn:
+        expire_stale_pending_sessions(conn)
+        conn.commit()
         row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
 
     result = dict(row)
+    result["status"] = effective_session_status(row)
     result["collected_categories"] = json.loads(result["collected_categories"] or "[]")
     result["report"] = json.loads(result.pop("report_json") or "{}")
     return result

@@ -479,6 +479,13 @@ input {
   background: #ff8d8d;
 }
 
+.session-expires {
+  display: block;
+  font-size: 11px;
+  color: #9eb7c0;
+  margin-top: 2px;
+}
+
 .status.large {
   font-size: 13px;
   padding: 6px 10px;

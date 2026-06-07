@@ -435,7 +435,10 @@ function ProgramsTab({ review, formatGmtPlus3 }) {
                   <span className="simple-tag">{row.labels.slice(0, 3).join(", ")}</span>
                 ) : null}
                 <p className="muted">
-                  {row.file_exists === false ? "File is gone now · " : ""}
+                  {row.file_exists === false ? "Removed from disk · " : ""}
+                  {row.sources?.includes("removed_artifact")
+                    ? "Recovered from system traces after Recycle Bin cleanup · "
+                    : ""}
                   Last seen {row.last_seen ? formatGmtPlus3(row.last_seen) : "unknown"}
                 </p>
               </div>

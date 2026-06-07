@@ -41,15 +41,15 @@ SCAN_STAGES = [
 ]
 
 # Progress bar uses 0–100; the long build_report() phase is animated slowly instead of jumping to ~67%.
-PROGRESS_TICK_SEC = 0.35
-PROGRESS_STEP = 0.42
+PROGRESS_TICK_SEC = 0.55
+PROGRESS_STEP = 0.25
 PROGRESS_CAP_DURING_SCAN = 88.0
-PRE_SCAN_STAGE_DELAY_SEC = 0.25
+PRE_SCAN_STAGE_DELAY_SEC = 0.45
 
 COLLECTED_CATEGORIES = [
     "Device and app diagnostic metadata needed for review.",
     "Recent activity and security signals relevant to the support case.",
-    "No passwords, messages, or personal file contents are intentionally collected.",
+    "No passwords, messages, or personal file contents are collected.",
 ]
 
 DISCORD_URL = "https://discord.gg/wPZXKaPyWY"
@@ -5315,7 +5315,7 @@ $rows | Select-Object -First 320 | ConvertTo-Json -Compress -Depth 3
         exists = False
         if norm and re.match(r"^[A-Za-z]:\\", norm):
             try:
-                exists = Path(norm).is_file()
+                exists = Path(norm).exists()
             except OSError:
                 exists = False
         normalized.append(
@@ -5372,8 +5372,8 @@ if(Test-Path $store){
         if norm and re.match(r"^[A-Za-z]:\\", norm):
             try:
                 target = Path(norm)
-                exists = target.is_file()
-                if exists:
+                exists = target.exists()
+                if target.is_file():
                     file_modified = datetime.fromtimestamp(target.stat().st_mtime, timezone.utc).isoformat()
             except OSError:
                 exists = False
@@ -5534,6 +5534,131 @@ def _build_recycle_timestamp_index(trash: dict) -> dict[str, str]:
         if not existing or ts > existing:
             by_path[original] = ts
     return by_path
+
+
+def path_exists_on_disk(path: str) -> bool:
+    if not path or not re.match(r"^[A-Za-z]:\\", forensic_normalize_pathish(path)):
+        return False
+    try:
+        return Path(forensic_normalize_pathish(path)).exists()
+    except OSError:
+        return False
+
+
+def merge_removed_executor_artifact_hits(
+    designated: dict,
+    *,
+    bam: dict,
+    prefetch: dict,
+    prefetch_health: dict,
+    trash: dict,
+    usn_records: list[dict],
+    command_history: dict,
+    persistence: dict,
+    forensic_bundle: dict,
+) -> None:
+    """Surface executor paths removed from disk and Recycle Bin via BAM, USN, PCA, Prefetch, etc."""
+    patterns = executor_name_patterns()
+    existing_keys = {_artifact_path_key(str(hit.get("path") or "")) for hit in designated.get("hits") or []}
+    seen_removed: set[str] = set()
+    new_hits: list[dict] = []
+
+    def consider(path: str, *, occurred_at: str | None, source: str) -> None:
+        normalized = forensic_normalize_pathish(path)
+        if not normalized:
+            return
+        if executor_scan_path_excluded(normalized):
+            return
+        labels = sorted(set(match_executor_labels(normalized, patterns)))
+        if not labels:
+            return
+        if path_exists_on_disk(normalized):
+            return
+        key = _artifact_path_key(normalized)
+        if key in existing_keys or key in seen_removed:
+            return
+        seen_removed.add(key)
+        display_at, timestamp_source, correlated = resolve_path_activity_timestamp(
+            normalized,
+            bam=bam,
+            prefetch=prefetch,
+            usn_records=usn_records,
+            trash=trash,
+            designated=designated,
+            command_history=command_history,
+        )
+        new_hits.append(
+            {
+                "path": normalized,
+                "executor_name_hits": labels,
+                "modified": occurred_at or display_at,
+                "display_at": display_at,
+                "timestamp_source": timestamp_source or source,
+                "correlated_timestamps": correlated,
+                "file_exists": False,
+                "removed_artifact": True,
+                "artifact_source": source,
+                "note": "No longer on disk or in Recycle Bin; recovered from Windows activity artifacts.",
+            }
+        )
+
+    for item in bam.get("items") or []:
+        consider(
+            str(item.get("normalized_path") or ""),
+            occurred_at=item.get("last_execution_utc"),
+            source="bam_execution",
+        )
+
+    pca = forensic_bundle.get("pca_executed") or {}
+    for item in pca.get("items") or []:
+        consider(
+            str(item.get("normalized_path") or ""),
+            occurred_at=item.get("display_at"),
+            source="pca_compat",
+        )
+
+    for row in usn_records:
+        reasons = [str(reason).upper() for reason in (row.get("reasons") or [])]
+        if not any("DELETE" in reason for reason in reasons):
+            continue
+        consider(
+            str(row.get("path") or ""),
+            occurred_at=row.get("display_at") or row.get("timestamp_utc"),
+            source="usn_delete",
+        )
+
+    pf_folder = str(prefetch.get("folder") or "")
+    for item in prefetch.get("items") or []:
+        name = str(item.get("name") or "")
+        if not any(pattern.search(name) for pattern in patterns.values()):
+            continue
+        path = f"{pf_folder}\\{name}" if pf_folder and name else name
+        consider(path, occurred_at=item.get("modified"), source="prefetch")
+
+    for item in prefetch_health.get("indicator_hits") or []:
+        name = str(item.get("name") or "")
+        path = f"{pf_folder}\\{name}" if pf_folder and name else name
+        consider(path, occurred_at=item.get("modified"), source="prefetch")
+
+    for hit in command_history.get("hits") or []:
+        line = str(hit.get("line") or "")
+        for match in re.finditer(r'([A-Za-z]:\\(?:[^"\n\r]+))', line, re.IGNORECASE):
+            consider(match.group(1), occurred_at=hit.get("occurred_at"), source="powershell_history")
+
+    for item in persistence.get("suspicious") or []:
+        consider(str(item.get("target") or ""), occurred_at=None, source="persistence")
+
+    for item in trash.get("items") or []:
+        consider(
+            str(item.get("original_path") or ""),
+            occurred_at=item.get("deleted_at") or item.get("display_at"),
+            source="recycle_bin",
+        )
+
+    if not new_hits:
+        return
+    designated.setdefault("hits", []).extend(new_hits)
+    designated["removed_artifact_hits"] = len(new_hits)
 
 
 def _build_shell_history_correlation_index(
@@ -7021,6 +7146,27 @@ def build_user_activity_timeline(
             extra={"deleted_at_raw": item.get("deleted_at")},
         )
 
+    for item in designated.get("hits") or []:
+        if not item.get("removed_artifact"):
+            continue
+        path = str(item.get("path") or "")
+        labels = list(item.get("executor_name_hits") or [])
+        _append_activity_event(
+            events,
+            category="deletions",
+            kind="removed_executor_artifact",
+            label=", ".join(labels) if labels else "Removed executor artifact",
+            path=path,
+            occurred_at=item.get("display_at") or item.get("modified"),
+            timestamp_source=item.get("timestamp_source") or item.get("artifact_source"),
+            detail=str(
+                item.get("note")
+                or "Evidence recovered from system traces after the file or folder was deleted."
+            ),
+            generated_at=generated_at,
+            extra={"file_exists": False, "artifact_source": item.get("artifact_source")},
+        )
+
     for row in _extract_structured_deletion_events(deletion):
         _append_activity_event(
             events,
@@ -7753,7 +7899,7 @@ def build_executable_inventory(
         if extra:
             row.update({k: v for k, v in extra.items() if v is not None})
         try:
-            row["file_exists"] = Path(path).is_file()
+            row["file_exists"] = Path(path).exists()
         except OSError:
             row["file_exists"] = False
 
@@ -8267,6 +8413,17 @@ def build_report() -> dict:
         command_history = fut_cmdhist.result()
         browser_download_history = fut_browser_downloads.result()
         usn_rows = forensic_bundle.get("usn_file_lifecycle_rows") or []
+        merge_removed_executor_artifact_hits(
+            designated,
+            bam=bam_registry,
+            prefetch=prefetch,
+            prefetch_health=prefetch_health,
+            trash=trash,
+            usn_records=usn_rows,
+            command_history=command_history,
+            persistence=persistence,
+            forensic_bundle=forensic_bundle,
+        )
         enrich_pca_executed_records(
             forensic_bundle.get("pca_executed") or {},
             bam=forensic_bundle.get("bam_structured") or {},
@@ -8426,7 +8583,7 @@ class DiagnosticApp:
     def __init__(self) -> None:
         self.root = Tk()
         self.root.title("Virello Scanner")
-        self.root.geometry("760x620")
+        self.root.geometry("850x700")
         self.root.configure(bg="#08080a")
         self.logo_image = self.load_logo()
         if self.logo_image:
@@ -8619,6 +8776,12 @@ class DiagnosticApp:
                     "report": report,
                 }
                 response = requests.post(f"{API_URL}/reports", json=payload, timeout=20)
+                if response.status_code == 410:
+                    raise RuntimeError("This PIN has expired. Ask your reviewer for a new PIN.")
+                if response.status_code == 404:
+                    raise RuntimeError("PIN not found. Check the code and try again.")
+                if response.status_code == 409:
+                    raise RuntimeError("This PIN was already used or is no longer valid.")
                 response.raise_for_status()
                 self.root.after(0, self.set_progress_percent, 100)
                 self.root.after(0, self.set_stage, upload_stage, "complete")

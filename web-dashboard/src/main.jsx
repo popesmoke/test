@@ -114,6 +114,13 @@ function Login({ loginError }) {
   );
 }
 
+function formatSessionStatus(status) {
+  if (status === "expired") return "expired";
+  if (status === "pending") return "pending";
+  if (status === "completed") return "completed";
+  return status || "unknown";
+}
+
 function SessionList({ sessions, selectedId, onSelect, onDelete }) {
   return (
     <aside className="sidebar">
@@ -132,7 +139,15 @@ function SessionList({ sessions, selectedId, onSelect, onDelete }) {
           >
             <button type="button" className="session-row" onClick={() => onSelect(session.id)}>
               <span className="pin">{session.pin}</span>
-              <span className={`status ${session.status}`}>{session.status}</span>
+              <span className={`status ${formatSessionStatus(session.status)}`}>
+                {formatSessionStatus(session.status)}
+              </span>
+              {session.status === "pending" && session.expires_at ? (
+                <small className="session-expires">until {formatGmtPlus3(session.expires_at)}</small>
+              ) : null}
+              {session.status === "expired" && session.expires_at ? (
+                <small className="session-expires">expired {formatGmtPlus3(session.expires_at)}</small>
+              ) : null}
               <small>{formatGmtPlus3(session.created_at)}</small>
             </button>
             <button
@@ -684,6 +699,7 @@ function activityEventSummary(event) {
     roblox_log: `Roblox log activity involved ${quoted}.`,
     browser_history: `Browser history included a visit related to ${quoted}.`,
     browser_download: `A file was downloaded in the browser: ${quoted}.`,
+    removed_executor_artifact: `Evidence remains for ${quoted} even though it was removed from disk and the Recycle Bin.`,
   };
   let summary = byKind[event?.kind] || `${ACTIVITY_KIND_LABELS[event?.kind] ?? event?.kind ?? "Activity"} involving ${quoted}.`;
   const label = String(event?.label || "").trim();
@@ -2107,7 +2123,9 @@ function Results({ detail }) {
               {expertMode ? `Suspicion ${summary.score}/100` : `Concern ${Math.min(100, Math.round(summary.score * 0.75 + ((report.security_integrity_signals?.bypass_resilience?.risk_score ?? 0) * 0.35)))}/100`}
             </span>
           )}
-          <span className={`status large ${detail.status}`}>{detail.status}</span>
+          <span className={`status large ${formatSessionStatus(detail.status)}`}>
+            {formatSessionStatus(detail.status)}
+          </span>
           {showSectionContent && !expertMode ? (
             <button type="button" className="text-button header-expert-link" onClick={() => setExpertMode(true)}>
               Advanced review

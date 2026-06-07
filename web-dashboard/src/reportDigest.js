@@ -74,7 +74,14 @@ function buildClientScanReview(report) {
     addInv(hit.path, "folder_scan", hit.modified, true, hit.matched_names ?? []);
   }
   for (const hit of sec.designated_folder_suspicious_files?.hits ?? []) {
-    addInv(hit.path, "folder_scan", hit.modified, true, hit.executor_name_hits ?? []);
+    const source = hit.removed_artifact ? "removed_artifact" : "folder_scan";
+    addInv(
+      hit.path,
+      source,
+      hit.display_at || hit.modified,
+      true,
+      hit.executor_name_hits ?? [],
+    );
   }
   for (const item of sec.bam?.items ?? []) {
     addInv(item.normalized_path, "execution_history", item.last_execution_utc, true, []);

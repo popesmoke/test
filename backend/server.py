@@ -672,11 +672,34 @@ def fetch_discord_member(access_token: str) -> list[str]:
     return [str(role) for role in member.get("roles", [])]
 
 
+def expire_stale_pending_sessions(conn) -> None:
+    db_execute(
+        conn,
+        "UPDATE sessions SET status = ? WHERE status = ? AND expires_at < ?",
+        ("expired", "pending", to_iso(utc_now())),
+    )
+    if using_postgres():
+        conn.commit()
+
+
+def effective_session_status(row: sqlite3.Row) -> str:
+    status = row["status"]
+    if status != "pending":
+        return status
+    try:
+        expires_at = datetime.fromisoformat(str(row["expires_at"]).replace("Z", "+00:00"))
+    except ValueError:
+        return status
+    if expires_at < utc_now():
+        return "expired"
+    return status
+
+
 def row_to_summary(row: sqlite3.Row) -> dict:
     return {
         "id": row["id"],
         "pin": row["pin"],
-        "status": row["status"],
+        "status": effective_session_status(row),
         "created_at": row["created_at"],
         "expires_at": row["expires_at"],
         "completed_at": row["completed_at"],
@@ -843,6 +866,7 @@ class Handler(BaseHTTPRequestHandler):
             if not self.require_checker():
                 return
             with connect() as conn:
+                expire_stale_pending_sessions(conn)
                 rows = db_execute(conn, "SELECT * FROM sessions ORDER BY id DESC").fetchall()
             self.send_json(HTTPStatus.OK, [row_to_summary(row) for row in rows])
             return
@@ -856,11 +880,13 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Invalid session id"})
                 return
             with connect() as conn:
+                expire_stale_pending_sessions(conn)
                 row = db_execute(conn, "SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
             if row is None:
                 self.send_json(HTTPStatus.NOT_FOUND, {"detail": "Session not found"})
                 return
             result = dict(row)
+            result["status"] = effective_session_status(row)
             result["collected_categories"] = json.loads(result["collected_categories"] or "[]")
             result["report"] = json.loads(result.pop("report_json") or "{}")
             self.send_json(HTTPStatus.OK, result)
