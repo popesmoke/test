@@ -2740,48 +2740,75 @@ def resource_path(relative_path: str) -> Path:
         base_path = Path(__file__).resolve().parent
     return base_path / relative_path
 
+# Curated from the project's executor catalog (Windows script, Windows external, Mac, mobile).
 EXECUTOR_NAMES = [
+    # Windows script executors
     "Volt",
     "Potassium",
     "Wave",
-    "Seliware",
     "Synapse Z",
+    "Seliware",
     "Madium",
+    "Cosmic",
     "Velocity",
     "SirHurt",
     "Solara",
     "Xeno",
+    # Windows external exploits
+    "Serotonin",
+    "Severe",
     "RbxCli",
-    "Ronin",
+    "Lumen",
     "Matcha",
     "Matrix Hub",
     "Photon",
     "DX9WARE V2",
-    "Serotonin",
-    "Severe",
+    # Mac
     "MacSploit",
     "Opiumware",
+    # Mobile / cross-platform
     "Delta",
-    "Cryptic",
     "Vega X",
     "Codex",
 ]
 
 # Extra tokens commonly seen in paths, prefetch stems, or renamed folders.
 EXECUTOR_ALIASES: dict[str, list[str]] = {
+    "Volt": ["volt", "voltexecutor", "volt.exe"],
     "Potassium": ["potassium", "potass", "kpotassium", "potassiumware", "potassium.exe"],
-    "Solara": ["solara", "solarav3", "solarav2"],
     "Wave": ["waveexecutor", "wave.exe"],
-    "Delta": ["deltaexecutor", "delta.exe"],
-    "Xeno": ["xenoexecutor", "xeno.exe"],
     "Synapse Z": ["synapse", "synapsez", "synapse z"],
+    "Seliware": ["seliware", "seliware.exe"],
+    "Madium": ["madium", "madium.exe"],
+    "Cosmic": ["cosmic", "cosmicexecutor", "cosmicware"],
+    "Velocity": ["velocity", "velocityexecutor"],
+    "SirHurt": ["sirhurt", "sir_hurt", "sirhurt.exe"],
+    "Solara": ["solara", "solarav3", "solarav2"],
+    "Xeno": ["xenoexecutor", "xeno.exe"],
+    "Serotonin": ["serotonin", "serotonin.exe"],
+    "Severe": ["severe", "severe.exe"],
+    "RbxCli": ["rbxcli", "rbxcli.exe"],
+    "Lumen": ["lumen", "lumenexecutor", "lumen.exe"],
+    "Matcha": ["matcha", "matcha.exe"],
+    "Matrix Hub": ["matrixhub", "matrix hub", "matrixhub.exe"],
+    "Photon": ["photon", "photon.exe"],
+    "DX9WARE V2": ["dx9ware", "dx9warev2", "dx9ware v2"],
+    "MacSploit": ["macsploit", "macsploit.exe"],
+    "Opiumware": ["opiumware", "opiumware.exe"],
+    "Delta": ["deltaexecutor", "delta.exe"],
+    "Vega X": ["vegax", "vega x", "vegax.exe"],
+    "Codex": ["codexexecutor", "codex.exe"],
 }
 
 # Verified sample SHA256 (lowercase hex) -> label. Extend in code or assets/executor_sha256_blocklist.json.
 EXECUTOR_SHA256_BLOCKLIST: dict[str, str] = {}
-EXECUTOR_HASH_SCAN_MAX_FILES = 400
+EXECUTOR_HASH_SCAN_MAX_FILES = 2500
 EXECUTOR_HASH_MAX_FILE_BYTES = 120_000_000
 EXECUTOR_ACTIVITY_RECENT_HOURS = 72
+USN_JOURNAL_MAX_LINES = 6000
+USN_DELETE_MAX_LINES = 3000
+RECYCLE_BIN_MAX_ITEMS = 500
+RECYCLE_BIN_HASH_MAX_BYTES = 80_000_000
 
 ROBLOX_PROCESS_NAMES = frozenset({"robloxplayerbeta.exe", "robloxplayer.exe", "roblox.exe"})
 ROBLOX_MODULE_TRUSTED_FRAGMENTS = (
@@ -2849,6 +2876,20 @@ USER_FOLDER_TRUSTED_APP_STEMS = frozenset(
     }
 )
 SCAN_WORKERS = min(10, (os.cpu_count() or 4) + 2)
+
+# Populated once per build_report() pass to avoid duplicate full USN journal reads.
+_usn_comprehensive_cache: dict[str, object] | None = None
+
+
+def _reset_usn_comprehensive_cache() -> None:
+    global _usn_comprehensive_cache
+    _usn_comprehensive_cache = None
+
+
+def _windows_user_profile_prefix() -> str:
+    if platform.system() != "Windows":
+        return str(Path.home()).lower() + "\\"
+    return str(Path(os.getenv("USERPROFILE") or Path.home()).resolve()).lower() + "\\"
 
 
 def load_executor_sha256_blocklist() -> dict[str, str]:
@@ -4121,13 +4162,16 @@ def recycle_bin_metadata() -> dict:
             except Exception:
                 continue
     items.sort(key=lambda item: item.get("display_at") or item.get("deleted_at") or item.get("modified") or "", reverse=True)
+    suspicious_count = sum(1 for item in items if item.get("suspicious_recycle_item"))
     return {
         "status": "Recycle Bin metadata collected" if items else "No accessible Trash/Recycle Bin item found",
-        "count": len(items[:180]),
+        "count": len(items[:RECYCLE_BIN_MAX_ITEMS]),
         "latest": items[0] if items else None,
-        "items": items[:180],
+        "items": items[:RECYCLE_BIN_MAX_ITEMS],
+        "suspicious_count": suspicious_count,
         "note": "Windows: all fixed-drive $Recycle.Bin folders scanned. $I metadata lists original paths before "
-        "emptying; after permanent delete, USN / Security / Sysmon samples below may still show evidence.",
+        "emptying; $R payload files are hashed in a follow-up pass. After permanent delete, BAM, Prefetch, USN, "
+        "and registry artifacts below still recover evidence.",
     }
 
 
@@ -4464,7 +4508,27 @@ def command_history_keyword_hits() -> dict:
     if userprofile:
         candidates.append(Path(userprofile) / "AppData" / "Roaming" / "Microsoft" / "Windows" / "PowerShell" / "PSReadLine" / "ConsoleHost_history.txt")
 
-    keywords = EXECUTOR_NAMES + ["prefetch", "usn", "fsutil", "journal", "wevtutil", "clear-log", "Clear-EventLog", "Set-MpPreference", "Add-MpPreference", "Unblock-File", "Potassium"]
+    keywords = EXECUTOR_NAMES + [
+        "prefetch",
+        "usn",
+        "fsutil",
+        "journal",
+        "wevtutil",
+        "clear-log",
+        "Clear-EventLog",
+        "Set-MpPreference",
+        "Add-MpPreference",
+        "Unblock-File",
+        "Potassium",
+        "Clear-RecycleBin",
+        "$Recycle.Bin",
+        "Remove-Item",
+        "rd /s",
+        "del /f",
+        "cipher /w",
+        "deletejournal",
+        "vssadmin",
+    ]
     hits = []
     for path in candidates:
         if not path.exists():
@@ -4577,77 +4641,69 @@ def deletion_and_log_clearing_signals() -> dict:
         "$events | Sort-Object TimeCreated -Descending | "
         "Select-Object -First 100 TimeCreated,LogName,ProviderName,Id,Message | ConvertTo-Json -Depth 3"
     )
-    extended_script = (
+    security_script = (
         "$ErrorActionPreference='SilentlyContinue';"
-        "$start=(Get-Date).AddDays(-14);"
-        "$usnList = New-Object System.Collections.Generic.List[string];"
-        "foreach ($d in (Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | ForEach-Object { $_.DeviceID })) {"
-        " try {"
-        "  fsutil usn readjournal $d csv 2>$null |"
-        "    Select-String -Pattern 'FILE_DELETE|0x80000002|0x80000200' |"
-        "    Select-Object -First 90 |"
-        "    ForEach-Object { [void]$usnList.Add(($d + [char]9 + $_.Line)) }"
-        " } catch {}"
-        "};"
+        "$start=(Get-Date).AddDays(-30);"
         "$sec = @();"
         "try {"
-        " $sec = Get-WinEvent -FilterHashtable @{LogName='Security'; StartTime=$start; Id=4660,4663} -MaxEvents 250 -ErrorAction SilentlyContinue |"
-        "   Where-Object { $_.Message -match '(?i)delete|eliminated|removed' } |"
-        "   Select-Object -First 50 @{N='TimeCreated';E={$_.TimeCreated.ToString('u')}},Id,"
-        "   @{N='Message';E={ if ($_.Message.Length -gt 1200) { $_.Message.Substring(0,1200) } else { $_.Message } }}"
+        " $sec = Get-WinEvent -FilterHashtable @{LogName='Security'; StartTime=$start; Id=4660,4663,4656} -MaxEvents 600 -ErrorAction SilentlyContinue |"
+        "   Where-Object { $_.Message -match '(?i)delete|eliminated|removed|recycle' } |"
+        "   Select-Object -First 120 @{N='TimeCreated';E={$_.TimeCreated.ToString('u')}},Id,"
+        "   @{N='Message';E={ if ($_.Message.Length -gt 1400) { $_.Message.Substring(0,1400) } else { $_.Message } }}"
         "} catch {};"
         "$sm = @();"
         "try {"
-        " $sm = Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Sysmon/Operational'; StartTime=$start; Id=23} -MaxEvents 120 -ErrorAction SilentlyContinue |"
-        "   Select-Object -First 55 @{N='TimeCreated';E={$_.TimeCreated.ToString('u')}},"
-        "   @{N='Message';E={ if ($_.Message.Length -gt 1400) { $_.Message.Substring(0,1400) } else { $_.Message } }}"
+        " $sm = Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Sysmon/Operational'; StartTime=$start; Id=23,26} -MaxEvents 300 -ErrorAction SilentlyContinue |"
+        "   Select-Object -First 100 @{N='TimeCreated';E={$_.TimeCreated.ToString('u')}},Id,"
+        "   @{N='Message';E={ if ($_.Message.Length -gt 1600) { $_.Message.Substring(0,1600) } else { $_.Message } }}"
+        "} catch {};"
+        "$recycleEmpty = @();"
+        "try {"
+        " $recycleEmpty = Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=$start} -MaxEvents 400 -ErrorAction SilentlyContinue |"
+        "   Where-Object { $_.Message -match '(?i)recycle|empty.*trash|shell32' } |"
+        "   Select-Object -First 25 @{N='TimeCreated';E={$_.TimeCreated.ToString('u')}},Id,ProviderName,"
+        "   @{N='Message';E={ if ($_.Message.Length -gt 900) { $_.Message.Substring(0,900) } else { $_.Message } }}"
         "} catch {};"
         "[pscustomobject]@{"
-        " usn_file_delete_lines = @($usnList | Select-Object -First 130);"
         " security_object_deletion_events = @($sec);"
-        " sysmon_file_delete_events = @($sm)"
+        " sysmon_file_delete_events = @($sm);"
+        " recycle_empty_events = @($recycleEmpty)"
         "} | ConvertTo-Json -Depth 5 -Compress"
     )
     ps = ["powershell", "-NoProfile", "-Command"]
     with ThreadPoolExecutor(max_workers=2) as pool:
-        event_future = pool.submit(run_command, ps + [event_script], 20, 20000)
-        extended_future = pool.submit(run_command, ps + [extended_script], 28, 32000)
+        event_future = pool.submit(run_command, ps + [event_script], 24, 24000)
+        security_future = pool.submit(run_command, ps + [security_script], 32, 48000)
+        usn_future = pool.submit(usn_journal_comprehensive_read)
         event_sample = event_future.result()
-        extended_raw = extended_future.result()
-    extended_parsed: dict | str
+        security_raw = security_future.result()
+        usn_pack = usn_future.result()
     try:
-        extended_parsed = json.loads(extended_raw) if extended_raw and not extended_raw.startswith("Unavailable:") else {"raw": extended_raw}
-    except json.JSONDecodeError:
-        extended_parsed = {"json_parse_error": True, "raw_head": extended_raw[:4000]}
-
-    usn_lines: list | None = None
-    if isinstance(extended_parsed, dict):
-        raw_lines = extended_parsed.get("usn_file_delete_lines")
-        if isinstance(raw_lines, list) and raw_lines:
-            usn_lines = raw_lines
-    usn_text = "\n".join(str(line) for line in usn_lines) if usn_lines else ""
-    if not usn_text.strip():
-        usn_text = run_command(
-            [
-                "powershell",
-                "-NoProfile",
-                "-Command",
-                "$d=$env:SystemDrive; try { fsutil usn readjournal $d csv 2>$null | Select-String -Pattern 'FILE_DELETE' | "
-                "Select-Object -First 60 | ForEach-Object { $_.Line } } catch { }",
-            ],
-            timeout=12,
-            max_chars=12000,
+        extended_parsed = (
+            json.loads(security_raw)
+            if security_raw and not security_raw.startswith("Unavailable:")
+            else {"raw": security_raw}
         )
+    except json.JSONDecodeError:
+        extended_parsed = {"json_parse_error": True, "raw_head": security_raw[:4000]}
+    if isinstance(extended_parsed, dict):
+        delete_lines = list(usn_pack.get("delete_lines") or [])
+        extended_parsed["usn_file_delete_lines"] = delete_lines[:USN_DELETE_MAX_LINES]
+        extended_parsed["usn_scan_source"] = usn_pack.get("source")
+
+    usn_lines = list(usn_pack.get("delete_lines") or [])
+    usn_text = "\n".join(str(line) for line in usn_lines)
 
     return {
         "available": True,
-        "window": "last 30 days (general events); last 14 days (USN / Security / Sysmon file delete)",
+        "window": "last 30 days (events); comprehensive NTFS USN delete scan (recent journal tail)",
         "raw_sample": event_sample,
         "deleted_file_evidence": extended_parsed,
-        "usn_delete_sample": usn_text[:20000],
-        "note": "Recycle Bin $I metadata (in trash report) shows files still in the bin. After emptying or Shift+Delete, "
-        "look here: USN FILE_DELETE lines (Admin may be required), Security 4660/4663 if auditing is on, Sysmon ID 23 if installed, "
-        "and general event raw_sample.",
+        "usn_delete_sample": usn_text[:120000],
+        "usn_delete_line_count": len(usn_lines),
+        "note": "Recycle Bin $I metadata shows files still in the bin. After emptying or Shift+Delete, BAM/Prefetch/registry "
+        "traces remain; this section adds comprehensive USN FILE_DELETE recovery, Security 4660/4663, Sysmon ID 23/26, "
+        "and recycle-empty event samples.",
     }
 
 
@@ -4768,7 +4824,7 @@ def bypass_resilience_signals(
     clearing_blob = f"{deletion.get('raw_sample') or ''}\n{deletion.get('usn_delete_sample') or ''}"
     if re.search(
         r"wevtutil\s+cl|Clear-EventLog|fsutil\s+usn\s+deletejournal|vssadmin\s+delete\s+shadows|"
-        r"Remove-Item.*Prefetch|del\s+/f.*\.pf|cipher\s+/w",
+        r"Remove-Item.*Prefetch|del\s+/f.*\.pf|cipher\s+/w|Clear-RecycleBin|\$Recycle\.Bin|rd\s+/s\s+/q",
         clearing_blob,
         re.I,
     ):
@@ -4849,7 +4905,8 @@ def bypass_resilience_signals(
         line = str(hit.get("line") or "")
         if re.search(
             r"wevtutil\s+cl|Clear-EventLog|fsutil\s+usn|vssadmin\s+delete|Remove-Item.*Prefetch|"
-            r"Set-MpPreference.*DisableRealtimeMonitoring|Unblock-File|del\s+/[fq]",
+            r"Set-MpPreference.*DisableRealtimeMonitoring|Unblock-File|del\s+/[fq]|Clear-RecycleBin|\$Recycle\.Bin|"
+            r"rd\s+/s\s+/q|cipher\s+/w",
             line,
             re.I,
         ):
@@ -5007,6 +5064,48 @@ def bypass_resilience_signals(
             weight=14,
         )
 
+    trash_paths = {
+        _artifact_path_key(str(item.get("original_path") or ""))
+        for item in (trash or {}).get("items") or []
+        if item.get("original_path")
+    }
+    emptied_cover_up = [
+        it
+        for it in bam_items
+        if it.get("executor_name_hits")
+        and it.get("file_exists") is False
+        and not it.get("path_allowlisted")
+        and _artifact_path_key(str(it.get("normalized_path") or "")) not in trash_paths
+    ]
+    if emptied_cover_up:
+        sample = ", ".join(
+            sorted({label for row in emptied_cover_up[:6] for label in (row.get("executor_name_hits") or [])})[:4]
+        )
+        add(
+            severity="high",
+            title="Executor deleted and Recycle Bin cleared",
+            detail=(
+                f"{len(emptied_cover_up)} executor(s) ran on this PC but the file is gone and not in the Recycle Bin"
+                + (f" ({sample})" if sample else "")
+                + " — BAM/Prefetch/USN/registry traces still prove prior presence."
+            ),
+            category="cover_up",
+            weight=26,
+        )
+
+    evidence = deletion.get("deleted_file_evidence")
+    if isinstance(evidence, dict) and evidence.get("recycle_empty_events"):
+        add(
+            severity="medium",
+            title="Recycle Bin emptying detected in event logs",
+            detail=(
+                "Application event logs contain recycle-bin emptying activity. If an executor was removed before this "
+                "scan, independent BAM and Prefetch artifacts should still be reviewed."
+            ),
+            category="cover_up",
+            weight=12,
+        )
+
     deletion_usn = str(deletion.get("usn_delete_sample") or "")
     if deletion_usn and not deletion_usn.startswith("Unavailable"):
         profile_roots = (
@@ -5015,7 +5114,7 @@ def bypass_resilience_signals(
             else str(Path.home()).lower()
         )
         suspicious_deletes = 0
-        for line in deletion_usn.splitlines()[:180]:
+        for line in deletion_usn.splitlines()[:800]:
             if "FILE_DELETE" not in line.upper():
                 continue
             path_m = re.search(r"([A-Za-z]:\\(?:[^,\"\n\r\t|<>?]+))", line, re.IGNORECASE)
@@ -5990,11 +6089,14 @@ def _collect_usn_records_for_removed_artifact_merge(
     extra_lines: list[str] = []
     usn_text = str(deletion.get("usn_delete_sample") or "")
     if usn_text:
-        extra_lines.extend(usn_text.splitlines()[:220])
+        extra_lines.extend(usn_text.splitlines()[:USN_DELETE_MAX_LINES])
     evidence = deletion.get("deleted_file_evidence")
     if isinstance(evidence, dict):
         for line in evidence.get("usn_file_delete_lines") or []:
             extra_lines.append(str(line))
+    usn_pack = usn_journal_comprehensive_read()
+    for line in list(usn_pack.get("lines") or []) + list(usn_pack.get("delete_lines") or []):
+        extra_lines.append(str(line))
     if extra_lines:
         records.extend(usn_parse_records(extra_lines))
     seen: set[tuple[str, str]] = set()
@@ -6005,7 +6107,7 @@ def _collect_usn_records_for_removed_artifact_merge(
             continue
         seen.add(key)
         deduped.append(row)
-    return deduped[:400]
+    return deduped[:2000]
 
 
 def merge_removed_executor_artifact_hits(
@@ -6371,7 +6473,7 @@ def scan_amcache_executor_hits() -> list[dict[str, object]]:
     if not path.is_file():
         return []
     try:
-        data = path.read_bytes()[:12_000_000]
+        data = path.read_bytes()[:50_000_000]
         modified = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
     except OSError:
         return []
@@ -6389,7 +6491,21 @@ def scan_amcache_executor_hits() -> list[dict[str, object]]:
             file_exists=True,
             note="Amcache program inventory hive contains a checked executor name (binary string match).",
         )
-    return hits
+    for extracted in extract_dos_paths_from_binary(data, limit=40):
+        path_labels = executor_labels_for_artifact_text(extracted)
+        if not path_labels:
+            continue
+        _append_executor_artifact_hit(
+            hits,
+            seen,
+            path=extracted,
+            labels=path_labels,
+            occurred_at=modified,
+            artifact_source="amcache_hive_path",
+            file_exists=path_exists_on_disk(extracted),
+            note="Amcache hive embeds a full path to a checked executor — survives file deletion.",
+        )
+    return hits[:120]
 
 
 def scan_entire_prefetch_executor_hits() -> list[dict[str, object]]:
@@ -6477,7 +6593,116 @@ def scan_all_usn_executor_path_hits(
             file_exists=path_exists_on_disk(path) if re.match(r"^[A-Za-z]:\\", path) else False,
             note="NTFS USN journal references this executor path.",
         )
-    return hits[:180]
+    return hits[:500]
+
+
+def scan_recycle_bin_content_hits(
+    trash: dict,
+    blocklist: dict[str, str],
+) -> list[dict[str, object]]:
+    """Hash and inspect $R payload files still in Recycle Bin — catches cheats before bin is emptied."""
+    if platform.system() != "Windows":
+        return []
+    hits: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for item in trash.get("items") or []:
+        meta_name = str(item.get("recycle_metadata_file") or item.get("name") or "")
+        if not meta_name.startswith("$I"):
+            continue
+        location = str(item.get("location") or "")
+        if not location:
+            continue
+        data_path = Path(location) / meta_name.replace("$I", "$R", 1)
+        original_path = str(item.get("original_path") or "").strip()
+        if not data_path.is_file():
+            continue
+        labels = list(item.get("executor_name_hits") or [])
+        if original_path:
+            labels = sorted(set(labels + executor_labels_for_artifact_text(original_path)))
+        try:
+            size = data_path.stat().st_size
+        except OSError:
+            continue
+        sha = ""
+        if blocklist and 0 < size <= RECYCLE_BIN_HASH_MAX_BYTES:
+            sha = file_sha256_full(data_path, max_bytes=RECYCLE_BIN_HASH_MAX_BYTES)
+            if sha and blocklist.get(sha.lower()):
+                labels = sorted(set(labels + [blocklist[sha.lower()]]))
+        blob_labels: list[str] = []
+        try:
+            blob = data_path.read_bytes()[:4_000_000]
+            blob_labels = scan_binary_blob_for_executor_names(blob)
+            labels = sorted(set(labels + blob_labels))
+        except OSError:
+            pass
+        if not labels:
+            continue
+        _append_executor_artifact_hit(
+            hits,
+            seen,
+            path=original_path or str(data_path),
+            labels=labels,
+            occurred_at=item.get("display_at") or item.get("deleted_at"),
+            artifact_source="recycle_bin_content",
+            file_exists=True,
+            note="Recycle Bin still holds the deleted file payload ($R); hashing confirms executor identity.",
+            extra={
+                "recycle_data_file": str(data_path),
+                "sha256": sha or None,
+                "original_path": original_path or None,
+            },
+        )
+    return hits[:120]
+
+
+def scan_scheduled_tasks_executor_hits() -> list[dict[str, object]]:
+    if platform.system() != "Windows":
+        return []
+    roots = [
+        Path(os.getenv("SystemRoot", "C:\\Windows")) / "System32" / "Tasks",
+        Path(os.getenv("SystemRoot", "C:\\Windows")) / "Tasks",
+    ]
+    hits: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for root in roots:
+        if not root.is_dir():
+            continue
+        try:
+            task_files = list(root.rglob("*.xml"))[:400]
+        except OSError:
+            continue
+        for task_file in task_files:
+            try:
+                text = task_file.read_text(encoding="utf-16", errors="ignore")
+            except OSError:
+                try:
+                    text = task_file.read_text(encoding="utf-8", errors="ignore")
+                except OSError:
+                    continue
+            labels = executor_labels_for_artifact_text(text)
+            if not labels:
+                labels = scan_binary_blob_for_executor_names(text.encode("utf-8", errors="ignore")[:500000])
+            if not labels:
+                continue
+            for extracted in extract_dos_paths_from_binary(text.encode("utf-16le", errors="ignore"), limit=6):
+                path_labels = executor_labels_for_artifact_text(extracted)
+                if path_labels:
+                    labels = sorted(set(labels + path_labels))
+            try:
+                modified = datetime.fromtimestamp(task_file.stat().st_mtime, timezone.utc).isoformat()
+            except OSError:
+                modified = None
+            _append_executor_artifact_hit(
+                hits,
+                seen,
+                path=str(task_file),
+                labels=labels,
+                occurred_at=modified,
+                artifact_source="scheduled_task",
+                file_exists=True,
+                note="Task Scheduler XML references a checked executor path or name.",
+            )
+    return hits[:80]
 
 
 def scan_registry_shell_executor_hits() -> list[dict[str, object]]:
@@ -7037,6 +7262,8 @@ def build_executor_artifact_evidence(
     ingest("profile_binary_sweep", scan_profile_binary_executor_sweep())
     ingest("roblox_log", scan_roblox_log_executor_hits())
     ingest("shimcache", scan_shimcache_executor_hits())
+    ingest("recycle_bin_content", scan_recycle_bin_content_hits(trash, load_executor_sha256_blocklist()))
+    ingest("scheduled_task", scan_scheduled_tasks_executor_hits())
 
     deletion_blob = "\n".join(
         [
@@ -7076,14 +7303,15 @@ def build_executor_artifact_evidence(
     return {
         "available": True,
         "hit_count": len(hits),
-        "hits": hits[:400],
+        "hits": hits[:600],
         "by_executor": by_executor,
         "sources_used": sorted(sources_used),
         "executors_checked": EXECUTOR_NAMES,
-        "note": "Exhaustive pass: full Prefetch folder, BAM, DAM, PCA, all USN paths, Recycle Bin, Amcache, ShimCache, "
-        "MuiCache, uninstall registry, Explorer typed/recent paths, WER/crash dumps, Defender logs, Application event log, "
-        "Roblox logs, profile binary sweep, Recent/Jump Lists, downloads, UserAssist, and persistence. "
-        "Deleting files or emptying the Recycle Bin does not remove Prefetch, BAM, or registry-backed traces.",
+        "note": "Exhaustive pass: full Prefetch folder, BAM, DAM, PCA, comprehensive USN journal, Recycle Bin metadata "
+        "and $R payload hashing, Amcache path extraction, ShimCache, MuiCache, scheduled tasks, uninstall registry, "
+        "Explorer typed/recent paths, WER/crash dumps, Defender logs, Application event log, Roblox logs, profile binary "
+        "sweep, Recent/Jump Lists, downloads, UserAssist, and persistence. Deleting files or emptying the Recycle Bin "
+        "does not remove Prefetch, BAM, USN delete records, or registry-backed traces.",
     }
 
 
@@ -7354,27 +7582,90 @@ def removable_drive_letters() -> set[str]:
     return letters
 
 
-def usn_journal_enriched_sample() -> dict[str, object]:
+def usn_journal_comprehensive_read(*, force_refresh: bool = False) -> dict[str, object]:
+    """Read recent NTFS USN journal tail under the user profile — survives delete + empty Recycle Bin."""
+    global _usn_comprehensive_cache
+    if _usn_comprehensive_cache is not None and not force_refresh:
+        return _usn_comprehensive_cache
     if platform.system() != "Windows":
-        return {"available": False, "lines": [], "reason": "Windows-only"}
+        result = {"available": False, "lines": [], "delete_lines": [], "reason": "Windows-only"}
+        _usn_comprehensive_cache = result
+        return result
     script = r"""
 $ErrorActionPreference='SilentlyContinue'
+$profile = ($env:USERPROFILE + '\').ToLower()
+$maxLifecycle = 6000
+$maxDelete = 3000
 $usnList = New-Object System.Collections.Generic.List[string]
+$deleteList = New-Object System.Collections.Generic.List[string]
 foreach ($d in (Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | ForEach-Object { $_.DeviceID })) {
   try {
-    fsutil usn readjournal $d csv 2>$null |
-      Select-String -Pattern 'RENAME_|FILE_CREATE|FILE_DELETE|CLOSE|DATA_EXTEND|BASIC_INFO_CHANGE|STREAM_CHANGE|\.EXE|\.DLL|\.PS1|\.BAT|:|TEMP|TMP|Downloads' |
-      Select-Object -First 160 |
-      ForEach-Object { [void]$usnList.Add(($d + [char]9 + $_.Line)) }
+    $startUsn = 0
+    $qj = fsutil usn queryjournal $d 2>$null
+    if ($qj) {
+      foreach ($qline in ($qj -split "`n")) {
+        if ($qline -match '(?:Next|Max) USN:\s*0x([0-9a-fA-F]+)') {
+          $parsed = [Convert]::ToUInt64($matches[1], 16)
+          if ($parsed -gt 50000000) { $startUsn = $parsed - 50000000 } else { $startUsn = 0 }
+        }
+      }
+    }
+    fsutil usn readjournal $d csv start=$startUsn max=4500 2>$null | ForEach-Object {
+      $line = $_.TrimEnd("`r")
+      if (-not $line) { return }
+      $lower = $line.ToLower()
+      $inProfile = $lower.Contains($profile)
+      $isDelete = $line -match 'FILE_DELETE|0x80000002|0x80000200'
+      $isRename = $line -match 'RENAME_OLD_NAME|RENAME_NEW_NAME|0x00001000|0x00002000'
+      $isExec = $line -match '\.EXE|\.DLL|\.PS1|\.BAT|\.MSI|\.VBS|\.JS'
+      $isCheatish = $line -match '(?i)cheat|hack|exploit|inject|script.?hub|aimbot|executor|delta|solara|synapse|potassium|wave|xeno|volt|cosmic|lumen|seliware|madium|sirhurt|serotonin|severe|rbxcli|matcha|photon|vegax|codex|macsploit|opiumware|dx9ware|matrixhub|velocity'
+      if ($isDelete -and $deleteList.Count -lt $maxDelete -and ($inProfile -or $isExec -or $isCheatish)) {
+        [void]$deleteList.Add(($d + [char]9 + $line))
+      }
+      if ($usnList.Count -lt $maxLifecycle -and ($inProfile -or $isExec -or $isCheatish) -and
+          ($isDelete -or $isRename -or $line -match 'FILE_CREATE|CLOSE|DATA_EXTEND|BASIC_INFO|STREAM_CHANGE')) {
+        [void]$usnList.Add(($d + [char]9 + $line))
+      }
+    }
   } catch {}
 }
-$usnList | Select-Object -First 160 | ConvertTo-Json -Compress
+[pscustomobject]@{
+  lifecycle_lines = @($usnList)
+  delete_lines = @($deleteList)
+} | ConvertTo-Json -Compress -Depth 3
 """.strip()
-    data = forensic_powershell_json(script, timeout=28.0, max_chars=32000)
+    data = forensic_powershell_json(script, timeout=48.0, max_chars=520000)
     lines: list[str] = []
-    if isinstance(data, list):
-        lines = [str(x) for x in data]
-    return {"available": True, "lines": lines, "source": "fsutil usn readjournal (bounded)"}
+    delete_lines: list[str] = []
+    if isinstance(data, dict):
+        raw_lifecycle = data.get("lifecycle_lines")
+        raw_delete = data.get("delete_lines")
+        if isinstance(raw_lifecycle, list):
+            lines = [str(x) for x in raw_lifecycle]
+        if isinstance(raw_delete, list):
+            delete_lines = [str(x) for x in raw_delete]
+    result = {
+        "available": True,
+        "lines": lines[:USN_JOURNAL_MAX_LINES],
+        "delete_lines": delete_lines[:USN_DELETE_MAX_LINES],
+        "lifecycle_line_count": len(lines),
+        "delete_line_count": len(delete_lines),
+        "source": "fsutil usn readjournal (recent journal tail, user-profile focused)",
+    }
+    _usn_comprehensive_cache = result
+    return result
+
+
+def usn_journal_enriched_sample() -> dict[str, object]:
+    pack = usn_journal_comprehensive_read()
+    return {
+        "available": pack.get("available", False),
+        "lines": list(pack.get("lines") or []),
+        "delete_lines": list(pack.get("delete_lines") or []),
+        "source": pack.get("source"),
+        "lifecycle_line_count": pack.get("lifecycle_line_count"),
+        "delete_line_count": pack.get("delete_line_count"),
+    }
 
 
 def usn_parse_records(lines: list[str]) -> list[dict[str, object]]:
@@ -7918,10 +8209,10 @@ def assemble_forensic_detections(
     flat: list[dict[str, object]] = []
     removable = removable_drive_letters()
 
-    usn_lines = list(usn_extra.get("lines") or [])
+    usn_lines = list(usn_extra.get("lines") or []) + list(usn_extra.get("delete_lines") or [])
     usn_text = str(deletion.get("usn_delete_sample") or "")
     if usn_text:
-        usn_lines.extend(usn_text.splitlines()[:120])
+        usn_lines.extend(usn_text.splitlines()[:USN_DELETE_MAX_LINES])
     usn_records = usn_parse_records(usn_lines)
 
     bam_items = bam_struct.get("items") or []
@@ -8395,7 +8686,7 @@ def assemble_forensic_detections(
 
     return {
         "engine_version": _FORENSIC_ENGINE_VERSION,
-        "usn_file_lifecycle_rows": usn_records[:220],
+        "usn_file_lifecycle_rows": usn_records[:2000],
         "detections": detections,
         "detections_flat": flat[:500],
         "unified_correlation": correlation,
@@ -8423,10 +8714,10 @@ def build_forensic_analysis_bundle(
         pca = pca_future.result()
         sqlite_pack = sqlite_future.result()
         usn_extra = usn_future.result()
-    usn_lines = list(usn_extra.get("lines") or [])
+    usn_lines = list(usn_extra.get("lines") or []) + list(usn_extra.get("delete_lines") or [])
     usn_text = str(deletion.get("usn_delete_sample") or "")
     if usn_text:
-        usn_lines.extend(usn_text.splitlines()[:120])
+        usn_lines.extend(usn_text.splitlines()[:USN_DELETE_MAX_LINES])
     usn_records = usn_parse_records(usn_lines)
     enrich_pca_executed_records(
         pca,
@@ -9149,7 +9440,7 @@ SUSPICIOUS_STRING_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         "cleanup_language",
         re.compile(
             r"wevtutil\s+cl|Clear-EventLog|fsutil\s+usn|deletejournal|vssadmin\s+delete|Remove-Item.*Prefetch|"
-            r"cipher\s+/w|cleaner|trace\s*wipe",
+            r"cipher\s+/w|cleaner|trace\s*wipe|Clear-RecycleBin|\$Recycle\.Bin|rd\s+/s\s+/q|del\s+/[fq]",
             re.IGNORECASE,
         ),
     ),
@@ -9772,6 +10063,7 @@ def in_scan_binary_change_signals(usn_rows: list[dict], bam_items: list[dict]) -
 
 
 def build_report() -> dict:
+    _reset_usn_comprehensive_cache()
     scan_started_at = datetime.now(timezone.utc).isoformat()
     memory = psutil.virtual_memory()
     disk = psutil.disk_usage(str(Path.home().anchor or Path.home()))
