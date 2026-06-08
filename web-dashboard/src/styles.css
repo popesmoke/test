@@ -1885,3 +1885,321 @@ input {
   line-height: 1.45;
   color: #f4f4f5;
 }
+
+/* —— Structure: guide, tutorial, grouped nav (layout only) —— */
+.content-toolbar {
+  display: grid;
+  gap: 8px;
+}
+
+.content-toolbar .section-search {
+  width: 100%;
+}
+
+.search-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.result-breadcrumb {
+  margin: 0;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.tutorial-open-btn {
+  width: 100%;
+  margin-bottom: 12px;
+  min-height: 34px;
+  font-size: 13px;
+}
+
+.results-nav-grouped {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-height: min(62vh, 640px);
+  overflow-y: auto;
+  padding-right: 6px;
+}
+
+.nav-group {
+  display: grid;
+  gap: 6px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #1e1216;
+}
+
+.nav-group:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.nav-group-label {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #9eb7c0;
+}
+
+.nav-group-desc {
+  margin: 0 0 4px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #7a8f98;
+}
+
+.report-guide {
+  display: grid;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  border: 1px solid #2a2226;
+  background: rgba(10, 9, 12, 0.85);
+}
+
+.report-guide-steps {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(108px, 1fr));
+  gap: 8px;
+}
+
+.report-guide-step {
+  display: grid;
+  gap: 4px;
+  justify-items: start;
+  min-height: auto;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid #2a2226;
+  background: rgba(8, 7, 9, 0.55);
+  text-align: left;
+}
+
+.report-guide-step.active {
+  border-color: #502029;
+}
+
+.report-guide-step-num {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #9eb7c0;
+}
+
+.report-guide-step-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #f4f4f5;
+}
+
+.report-guide-detail {
+  display: grid;
+  gap: 4px;
+}
+
+.report-guide-detail p,
+.report-guide-detail small {
+  margin: 0;
+  line-height: 1.45;
+}
+
+.report-guide-detail small {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #9eb7c0;
+}
+
+.simple-tab-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+}
+
+.simple-tab-label {
+  font-size: 13px;
+  line-height: 1.2;
+}
+
+.simple-tab-step {
+  font-size: 10px;
+  opacity: 0.85;
+}
+
+.simple-tab-context {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.simple-tabs button {
+  align-items: center;
+  gap: 8px;
+}
+
+.page-search-index {
+  padding: 14px 16px;
+  border-radius: 12px;
+  border: 1px dashed #2a2226;
+  background: rgba(8, 7, 9, 0.45);
+}
+
+.page-search-index-title {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.search-keyword-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.search-keyword-chip {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid #2a2226;
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+.tutorial-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.72);
+}
+
+.tutorial-panel {
+  width: min(920px, 100%);
+  max-height: min(88vh, 900px);
+  display: flex;
+  flex-direction: column;
+  border-radius: 16px;
+  border: 1px solid #2a2226;
+  background: #121214;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+}
+
+.tutorial-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 20px;
+  border-bottom: 1px solid #1e1216;
+}
+
+.tutorial-header-title {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.tutorial-header h2 {
+  margin: 0 0 4px;
+  font-size: 20px;
+}
+
+.tutorial-header p {
+  margin: 0;
+  font-size: 13px;
+  color: #9eb7c0;
+  line-height: 1.45;
+}
+
+.tutorial-close {
+  min-height: 36px;
+  min-width: 36px;
+  padding: 0;
+  border-radius: 8px;
+}
+
+.tutorial-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 12px 20px;
+  border-bottom: 1px solid #1e1216;
+}
+
+.tutorial-kbd-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #9eb7c0;
+}
+
+.tutorial-body {
+  overflow-y: auto;
+  padding: 16px 20px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.tutorial-section h3 {
+  margin: 0 0 10px;
+  font-size: 16px;
+}
+
+.tutorial-steps,
+.tutorial-bullets {
+  margin: 0;
+  padding-left: 1.25rem;
+  display: grid;
+  gap: 8px;
+  line-height: 1.5;
+  font-size: 14px;
+}
+
+.tutorial-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.tutorial-card {
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid #2a2226;
+  background: rgba(8, 7, 9, 0.55);
+  display: grid;
+  gap: 6px;
+}
+
+.tutorial-card p,
+.tutorial-card small {
+  margin: 0;
+  line-height: 1.45;
+  font-size: 13px;
+}
+
+.tutorial-card small {
+  color: #9eb7c0;
+}
+
+kbd {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid #2a2226;
+  font-size: 11px;
+  font-family: inherit;
+}

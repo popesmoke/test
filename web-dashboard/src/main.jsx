@@ -14,6 +14,7 @@ import {
   Gauge,
   Gamepad2,
   GitBranch,
+  BookOpen,
   History,
   KeyRound,
   LogOut,
@@ -26,8 +27,10 @@ import {
   Trash2,
 } from "lucide-react";
 import "./styles.css";
+import { EXPERT_NAV_GROUPS } from "./dashboardNav.js";
 import { formatDisplayDate, normalizeIsoDateString } from "./dateFormat.js";
 import { SimpleResults } from "./SimpleResults.jsx";
+import { TutorialGuide } from "./TutorialGuide.jsx";
 
 const API_URL = import.meta.env.VITE_API_URL || "https://virello-secure.onrender.com";
 const BRAND_LOGO = "/assets/virello-scanner-logo.png";
@@ -2195,6 +2198,7 @@ function Results({ detail }) {
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
   const [expertMode, setExpertMode] = useState(false);
+  const [tutorialOpen, setTutorialOpen] = useState(false);
 
   useEffect(() => {
     if (!detail?.id) {
@@ -2203,6 +2207,7 @@ function Results({ detail }) {
     setSectionId("starter");
     setQuery("");
     setExpertMode(false);
+    setTutorialOpen(false);
   }, [detail?.id]);
 
   const report = detail?.report ?? {};
@@ -2235,28 +2240,39 @@ function Results({ detail }) {
         <button className="download-button" onClick={() => downloadReport(detail)}>
           <Download size={15} /> Download report
         </button>
+        <button type="button" className="tutorial-open-btn" onClick={() => setTutorialOpen(true)}>
+          <BookOpen size={15} /> Full tutorial
+        </button>
         {expertMode ? (
-          <nav>
-            {resultSections.map((section) => {
-              const Icon = section.icon;
-              return (
-                <button
-                  key={section.id}
-                  className={sectionId === section.id ? "active" : ""}
-                  onClick={() => setSectionId(section.id)}
-                  type="button"
-                >
-                  <Icon size={18} className="nav-tab-icon" />
-                  <span className="nav-tab-labels">
-                    <span className="nav-tab-primary">{section.label}</span>
-                  </span>
-                </button>
-              );
-            })}
+          <nav className="results-nav-grouped" aria-label="Advanced review sections">
+            {EXPERT_NAV_GROUPS.map((group) => (
+              <div className="nav-group" key={group.id}>
+                <p className="nav-group-label">{group.label}</p>
+                <p className="nav-group-desc">{group.description}</p>
+                {group.sectionIds.map((id) => {
+                  const section = resultSectionById[id];
+                  if (!section) return null;
+                  const Icon = section.icon;
+                  return (
+                    <button
+                      key={section.id}
+                      className={sectionId === section.id ? "active" : ""}
+                      onClick={() => setSectionId(section.id)}
+                      type="button"
+                    >
+                      <Icon size={18} className="nav-tab-icon" />
+                      <span className="nav-tab-labels">
+                        <span className="nav-tab-primary">{section.label}</span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
           </nav>
         ) : (
           <p className="results-nav-hint">
-            Use the tabs: Summary, Last activity, Download history, Programs run, Program list, Word matches.
+            Follow steps 1–6 in Easy results. Press <kbd>Ctrl+F</kbd> to search executor names (Potassium, Solara, …).
           </p>
         )}
       </aside>
@@ -2284,28 +2300,47 @@ function Results({ detail }) {
         </div>
         {!showSectionContent ? (
           <div className="empty-state">Waiting for the desktop client to submit results.</div>
-        ) : expertMode ? (
-          <>
-            <input
-              className="section-search"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder={`Search ${activeSection.label} keywords...`}
-            />
-            <ActiveComponent report={report} query={deferredQuery} />
-          </>
         ) : (
-          <SimpleResults
-            report={report}
-            summary={summary}
-            activity={activity}
-            activityEventSummary={activityEventSummary}
-            formatGmtPlus3={formatGmtPlus3}
-            onExpertMode={() => setExpertMode(true)}
-            onDownload={() => downloadReport(detail)}
-          />
+          <>
+            <div className="content-toolbar">
+              <input
+                className="section-search"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder={
+                  expertMode
+                    ? `Filter ${activeSection.label} — try Potassium, deleted, USN…`
+                    : "Filter this tab — or press Ctrl+F to search the whole page"
+                }
+              />
+              <p className="search-hint muted">
+                Dates: DD/MM/YYYY (GMT+3). Ctrl+F / ⌘F finds executor names anywhere on this page.
+              </p>
+            </div>
+            {expertMode ? (
+              <>
+                <p className="result-breadcrumb muted">
+                  Advanced review · {activeSection.label}
+                </p>
+                <ActiveComponent report={report} query={deferredQuery} />
+              </>
+            ) : (
+              <SimpleResults
+                report={report}
+                summary={summary}
+                activity={activity}
+                activityEventSummary={activityEventSummary}
+                formatGmtPlus3={formatGmtPlus3}
+                onExpertMode={() => setExpertMode(true)}
+                onDownload={() => downloadReport(detail)}
+                onOpenTutorial={() => setTutorialOpen(true)}
+                searchQuery={deferredQuery}
+              />
+            )}
+          </>
         )}
       </div>
+      <TutorialGuide open={tutorialOpen} onClose={() => setTutorialOpen(false)} brandName={BRAND_NAME} />
     </section>
   );
 }

@@ -8,12 +8,16 @@ import {
   FileDown,
   FileCode2,
   HelpCircle,
+  Keyboard,
   ListChecks,
   Play,
   Search,
   ShieldAlert,
   Sparkles,
 } from "lucide-react";
+import { SIMPLE_TAB_GUIDE } from "./dashboardNav.js";
+import { textMatchesSearch } from "./executorSearchTerms.js";
+import { PageSearchIndex } from "./TutorialGuide.jsx";
 import { scanReviewFromReport } from "./reportDigest.js";
 
 const VERDICT_META = {
@@ -155,8 +159,41 @@ function PathFold({ path }) {
   );
 }
 
-function OverviewTab({ verdict, problems, review, formatGmtPlus3 }) {
+function ReportGuideStrip({ tab, onSelectTab }) {
+  const active = SIMPLE_TAB_GUIDE.find((item) => item.id === tab) ?? SIMPLE_TAB_GUIDE[0];
+  return (
+    <section className="report-guide" aria-label="Report reading guide">
+      <div className="report-guide-steps">
+        {SIMPLE_TAB_GUIDE.map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            className={`report-guide-step ${tab === item.id ? "active" : ""}`}
+            onClick={() => onSelectTab(item.id)}
+          >
+            <span className="report-guide-step-num">{item.step}</span>
+            <span className="report-guide-step-label">{item.title}</span>
+          </button>
+        ))}
+      </div>
+      <div className="report-guide-detail">
+        <strong>
+          Step {active.step}: {active.title}
+        </strong>
+        <p>{active.summary}</p>
+        <small>
+          <Keyboard size={14} /> {active.searchHint}
+        </small>
+      </div>
+    </section>
+  );
+}
+
+function OverviewTab({ verdict, problems, review, formatGmtPlus3, searchQuery }) {
   const activity = review.last_computer_activity ?? {};
+  const filteredProblems = problems.filter((problem) =>
+    textMatchesSearch([problem.title, problem.detail, problem.severity].join(" "), searchQuery),
+  );
   return (
     <>
       <section className={`simple-hero simple-hero--${verdict.tone}`}>
@@ -192,12 +229,14 @@ function OverviewTab({ verdict, problems, review, formatGmtPlus3 }) {
             <p>The main things a reviewer should know, in plain words.</p>
           </div>
         </header>
-        {problems.length ? (
+        {filteredProblems.length ? (
           <div className="simple-problem-list">
-            {problems.slice(0, 12).map((problem) => (
+            {filteredProblems.slice(0, 12).map((problem) => (
               <ProblemCard key={problem.id} problem={problem} />
             ))}
           </div>
+        ) : problems.length ? (
+          <p className="muted">No warning signs match your search. Clear the filter to see all items.</p>
         ) : (
           <div className="simple-empty">
             <CheckCircle2 size={28} />
@@ -241,7 +280,7 @@ function OverviewTab({ verdict, problems, review, formatGmtPlus3 }) {
   );
 }
 
-function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 }) {
+function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3, searchQuery }) {
   const block = review.last_computer_activity ?? {};
   let events = block.events ?? [];
   if (!events.length && (activity?.events ?? []).length) {
@@ -264,6 +303,9 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
     });
   }
   events.sort((a, b) => new Date(b.occurred_at) - new Date(a.occurred_at));
+  const filteredEvents = events.filter((event) =>
+    textMatchesSearch([event.summary, event.path, event.gap_human, event.cleanup_type].join(" "), searchQuery),
+  );
 
   return (
     <section className="simple-panel">
@@ -285,9 +327,9 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
           ))}
         </ul>
       ) : null}
-      {events.length ? (
+      {filteredEvents.length ? (
         <ul className="simple-timeline">
-          {events.map((event, index) => (
+          {filteredEvents.map((event, index) => (
             <li key={`${event.path}-${event.occurred_at}-${index}`}>
               <time>{formatGmtPlus3(event.occurred_at)}</time>
               <p>{event.summary || "Activity recorded"}</p>
@@ -304,6 +346,8 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
             </li>
           ))}
         </ul>
+      ) : events.length ? (
+        <p className="muted">No activity rows match your search.</p>
       ) : (
         <p className="muted">No timed activity on this report. Try a new scan with the latest app.</p>
       )}
@@ -311,11 +355,16 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
   );
 }
 
-function DownloadsTab({ review, formatGmtPlus3 }) {
+function DownloadsTab({ review, formatGmtPlus3, searchQuery }) {
   const block = review.download_history ?? {};
   const items = block.items ?? [];
   const [onlyFlagged, setOnlyFlagged] = useState(false);
-  const shown = onlyFlagged ? items.filter((i) => i.suspicious) : items;
+  const shown = (onlyFlagged ? items.filter((i) => i.suspicious) : items).filter((row) =>
+    textMatchesSearch(
+      [row.file_name, row.target_path, row.url, row.browser, ...(row.matched_labels ?? [])].join(" "),
+      searchQuery,
+    ),
+  );
 
   return (
     <section className="simple-panel">
@@ -368,9 +417,11 @@ function DownloadsTab({ review, formatGmtPlus3 }) {
   );
 }
 
-function ExecutionTab({ review, formatGmtPlus3 }) {
+function ExecutionTab({ review, formatGmtPlus3, searchQuery }) {
   const block = review.execution_activity ?? {};
-  const items = block.items ?? [];
+  const items = (block.items ?? []).filter((row) =>
+    textMatchesSearch([row.name, row.path, row.summary, row.source].join(" "), searchQuery),
+  );
 
   return (
     <section className="simple-panel">
@@ -406,11 +457,13 @@ function ExecutionTab({ review, formatGmtPlus3 }) {
   );
 }
 
-function ProgramsTab({ review, formatGmtPlus3 }) {
+function ProgramsTab({ review, formatGmtPlus3, searchQuery }) {
   const block = review.executable_inventory ?? {};
   const items = block.items ?? [];
   const [onlyFlagged, setOnlyFlagged] = useState(true);
-  const shown = onlyFlagged ? items.filter((i) => i.suspicious) : items;
+  const shown = (onlyFlagged ? items.filter((i) => i.suspicious) : items).filter((row) =>
+    textMatchesSearch([row.name, row.path, ...(row.labels ?? []), ...(row.sources ?? [])].join(" "), searchQuery),
+  );
 
   return (
     <section className="simple-panel">
@@ -465,9 +518,14 @@ function ProgramsTab({ review, formatGmtPlus3 }) {
   );
 }
 
-function StringsTab({ review, formatGmtPlus3 }) {
+function StringsTab({ review, formatGmtPlus3, searchQuery }) {
   const block = review.string_detection ?? {};
-  const items = block.items ?? [];
+  const items = (block.items ?? []).filter((row) =>
+    textMatchesSearch(
+      [row.snippet, row.file_path, ...(row.matched_terms ?? []), ...(row.matched_groups ?? [])].join(" "),
+      searchQuery,
+    ),
+  );
 
   return (
     <section className="simple-panel">
@@ -509,6 +567,8 @@ export function SimpleResults({
   formatGmtPlus3,
   onExpertMode,
   onDownload,
+  onOpenTutorial,
+  searchQuery = "",
 }) {
   const [tab, setTab] = useState("overview");
   const sec = report.security_integrity_signals ?? {};
@@ -520,8 +580,12 @@ export function SimpleResults({
   );
   const problems = useMemo(() => buildSimpleProblems(report, summary), [report, summary]);
 
+  const activeGuide = SIMPLE_TAB_GUIDE.find((item) => item.id === tab);
+
   return (
     <div className="simple-results">
+      <ReportGuideStrip tab={tab} onSelectTab={setTab} />
+
       <nav className="simple-tabs" aria-label="Result sections">
         {TABS.map(({ id, label, icon: Icon }) => (
           <button
@@ -529,15 +593,31 @@ export function SimpleResults({
             type="button"
             className={tab === id ? "active" : ""}
             onClick={() => setTab(id)}
+            title={SIMPLE_TAB_GUIDE.find((g) => g.id === id)?.summary}
           >
             <Icon size={17} />
-            {label}
+            <span className="simple-tab-text">
+              <span className="simple-tab-label">{label}</span>
+              <span className="simple-tab-step">Step {SIMPLE_TAB_GUIDE.find((g) => g.id === id)?.step ?? "—"}</span>
+            </span>
           </button>
         ))}
       </nav>
 
+      {activeGuide ? (
+        <p className="simple-tab-context muted">
+          <strong>{activeGuide.title}:</strong> {activeGuide.summary}
+        </p>
+      ) : null}
+
       {tab === "overview" ? (
-        <OverviewTab verdict={verdict} problems={problems} review={review} formatGmtPlus3={formatGmtPlus3} />
+        <OverviewTab
+          verdict={verdict}
+          problems={problems}
+          review={review}
+          formatGmtPlus3={formatGmtPlus3}
+          searchQuery={searchQuery}
+        />
       ) : null}
       {tab === "activity" ? (
         <ActivityTab
@@ -545,14 +625,26 @@ export function SimpleResults({
           activity={activity}
           activityEventSummary={activityEventSummary}
           formatGmtPlus3={formatGmtPlus3}
+          searchQuery={searchQuery}
         />
       ) : null}
-      {tab === "downloads" ? <DownloadsTab review={review} formatGmtPlus3={formatGmtPlus3} /> : null}
-      {tab === "execution" ? <ExecutionTab review={review} formatGmtPlus3={formatGmtPlus3} /> : null}
-      {tab === "programs" ? <ProgramsTab review={review} formatGmtPlus3={formatGmtPlus3} /> : null}
-      {tab === "strings" ? <StringsTab review={review} formatGmtPlus3={formatGmtPlus3} /> : null}
+      {tab === "downloads" ? (
+        <DownloadsTab review={review} formatGmtPlus3={formatGmtPlus3} searchQuery={searchQuery} />
+      ) : null}
+      {tab === "execution" ? (
+        <ExecutionTab review={review} formatGmtPlus3={formatGmtPlus3} searchQuery={searchQuery} />
+      ) : null}
+      {tab === "programs" ? (
+        <ProgramsTab review={review} formatGmtPlus3={formatGmtPlus3} searchQuery={searchQuery} />
+      ) : null}
+      {tab === "strings" ? <StringsTab review={review} formatGmtPlus3={formatGmtPlus3} searchQuery={searchQuery} /> : null}
+
+      <PageSearchIndex />
 
       <footer className="simple-footer">
+        <button type="button" className="simple-expert-btn" onClick={onOpenTutorial}>
+          Full tutorial
+        </button>
         <button type="button" className="simple-expert-btn" onClick={onExpertMode}>
           Advanced reviewer view
         </button>
