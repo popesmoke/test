@@ -2802,13 +2802,26 @@ EXECUTOR_ALIASES: dict[str, list[str]] = {
 
 # Verified sample SHA256 (lowercase hex) -> label. Extend in code or assets/executor_sha256_blocklist.json.
 EXECUTOR_SHA256_BLOCKLIST: dict[str, str] = {}
-EXECUTOR_HASH_SCAN_MAX_FILES = 2500
+EXECUTOR_HASH_SCAN_MAX_FILES = 15_000
 EXECUTOR_HASH_MAX_FILE_BYTES = 120_000_000
 EXECUTOR_ACTIVITY_RECENT_HOURS = 72
-USN_JOURNAL_MAX_LINES = 6000
-USN_DELETE_MAX_LINES = 3000
+USN_JOURNAL_MAX_LINES = 12_000
+USN_DELETE_MAX_LINES = 6000
 RECYCLE_BIN_MAX_ITEMS = 500
 RECYCLE_BIN_HASH_MAX_BYTES = 80_000_000
+FULL_PC_SCAN_MAX_DEPTH = 16
+FULL_PC_SCAN_MAX_ENUMERATED = 800_000
+FULL_PC_SCAN_MAX_HITS = 3000
+FULL_PC_BINARY_PROBE_MAX_FILES = 12_000
+FULL_PC_BINARY_PROBE_MAX_BYTES = 8_000_000
+FULL_PC_SKIP_DIR_FRAGMENTS = (
+    "\\windows\\winsxs\\",
+    "\\windows\\servicing\\",
+    "\\windows\\softwaredistribution\\",
+    "\\system volume information\\",
+    "\\$recycle.bin\\",
+    "\\programdata\\microsoft\\windows\\deliveryoptimization\\",
+)
 
 ROBLOX_PROCESS_NAMES = frozenset({"robloxplayerbeta.exe", "robloxplayer.exe", "roblox.exe"})
 ROBLOX_MODULE_TRUSTED_FRAGMENTS = (
@@ -2863,12 +2876,15 @@ CHEAT_FILENAME_HINT_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("rbx_cheat", re.compile(r"rbx[\s._-]*cheat|rbx[\s._-]*hack", re.IGNORECASE)),
 ]
 
-USER_FOLDER_SCAN_EXTENSIONS = frozenset({".exe", ".dll", ".txt", ".json", ".log", ".bat", ".ps1"})
+USER_FOLDER_SCAN_EXTENSIONS = frozenset(
+    {".exe", ".dll", ".txt", ".json", ".log", ".bat", ".ps1", ".msi", ".vbs", ".scr", ".com", ".jar", ".zip", ".rar", ".7z"}
+)
+FULL_PC_EXECUTABLE_EXTENSIONS = frozenset({".exe", ".dll", ".msi", ".bat", ".ps1", ".vbs", ".scr", ".com"})
 # Kept for backwards reference only; the actual scan now covers the full home directory.
 USER_FOLDER_SCAN_SUBDIRS = ("Downloads", "Desktop", "Documents")
-USER_FOLDER_SCAN_MAX_DEPTH = 8
-USER_FOLDER_SCAN_MAX_ENUMERATED = 200_000
-USER_FOLDER_SCAN_MAX_HITS = 500
+USER_FOLDER_SCAN_MAX_DEPTH = 16
+USER_FOLDER_SCAN_MAX_ENUMERATED = 600_000
+USER_FOLDER_SCAN_MAX_HITS = 3000
 USER_FOLDER_TRUSTED_APP_STEMS = frozenset(
     {
         # Executables often used as disguises when dropped into user folders.
@@ -2943,22 +2959,8 @@ def file_sha256_full(path: Path, max_bytes: int = EXECUTOR_HASH_MAX_FILE_BYTES) 
 
 
 def executor_user_hash_scan_roots() -> list[tuple[Path, int]]:
-    """Cover the full user home (includes AppData, Temp, etc.) so no subfolder escapes hashing."""
-    roots: list[tuple[Path, int]] = []
-    seen: set[Path] = set()
-    for folder in designated_user_folder_roots():
-        if folder not in seen:
-            seen.add(folder)
-            roots.append((folder, USER_FOLDER_SCAN_MAX_DEPTH))
-    # Also scan system Temp in case the executor was staged outside the user profile.
-    if platform.system() == "Windows":
-        tmp = os.getenv("TEMP") or os.getenv("TMP")
-        if tmp:
-            candidate = Path(tmp)
-            if candidate.is_dir() and candidate not in seen:
-                seen.add(candidate)
-                roots.append((candidate, 6))
-    return roots
+    """Hash executables on every local and removable drive."""
+    return full_pc_scan_roots()
 
 
 def executor_name_patterns() -> dict[str, re.Pattern[str]]:
@@ -3069,12 +3071,28 @@ def loose_executor_labels_for_artifact(text: str) -> list[str]:
     return sorted(set(labels))
 
 
-def extract_dos_paths_from_binary(data: bytes, *, limit: int = 24) -> list[str]:
+def extract_dos_paths_from_binary(
+    data: bytes,
+    *,
+    limit: int = 24,
+    require_executor_label: bool = True,
+    executable_only: bool = False,
+) -> list[str]:
     """Pull drive-letter paths out of binary blobs (Prefetch, LNK, hives, logs)."""
     if not data:
         return []
     found: list[str] = []
     seen: set[str] = set()
+
+    def accept(path: str) -> bool:
+        if not path or len(path) < 6:
+            return False
+        if executable_only and not re.search(r"\.(exe|dll)\b", path, re.I):
+            return False
+        if require_executor_label and not executor_labels_for_artifact_text(path):
+            return False
+        return True
+
     patterns = (
         rb"[A-Za-z]:\\(?:[\x20-\x7e\\]|[^\x00-\x1f]){4,420}",
         rb"\\\\Device\\\\HarddiskVolume\d+\\(?:[\x20-\x7e\\]|[^\x00-\x1f]){4,420}",
@@ -3086,12 +3104,10 @@ def extract_dos_paths_from_binary(data: bytes, *, limit: int = 24) -> list[str]:
             except Exception:
                 continue
             path = device_path_to_dos_path(raw) if raw.startswith("\\") else forensic_normalize_pathish(raw)
-            if not path or len(path) < 6:
+            if not accept(path):
                 continue
             key = path.lower()
             if key in seen:
-                continue
-            if not executor_labels_for_artifact_text(path):
                 continue
             seen.add(key)
             found.append(path[:520])
@@ -3104,7 +3120,7 @@ def extract_dos_paths_from_binary(data: bytes, *, limit: int = 24) -> list[str]:
             wide = ""
         for match in re.finditer(r"([A-Za-z]:\\[^\x00-\x1f]{4,420})", wide):
             path = forensic_normalize_pathish(match.group(1))
-            if not path or not executor_labels_for_artifact_text(path):
+            if not accept(path):
                 continue
             key = path.lower()
             if key in seen:
@@ -3272,11 +3288,9 @@ def executor_blocklist_path_scan(
                         ),
                     }
                 )
-                if len(hits) >= 40:
-                    break
         except (PermissionError, OSError):
             continue
-        if hashed >= max_hashes or len(hits) >= 40:
+        if hashed >= max_hashes:
             break
     return hits, hashed
 
@@ -3677,19 +3691,67 @@ def roblox_runtime_module_scan(prefetch: dict | None = None) -> dict:
 
 
 def designated_user_folder_roots() -> list[Path]:
-    """Return the entire user home directory so no subfolder can be used as a hiding spot."""
+    """Return scan roots: all accessible local/removable drive letters plus user home."""
     roots: list[Path] = []
+    seen: set[str] = set()
+    for drive_root in all_logical_drive_roots(include_removable=True, include_network=False):
+        key = str(drive_root).lower()
+        if key not in seen:
+            seen.add(key)
+            roots.append(drive_root)
     if platform.system() == "Windows":
         base = os.getenv("USERPROFILE")
         if base:
             home = Path(base)
-            if home.is_dir():
-                roots.append(home)
+            if home.is_dir() and str(home).lower() not in seen:
+                roots.insert(0, home)
     else:
         home = Path.home()
         if home.is_dir():
-            roots.append(home)
+            roots.insert(0, home)
     return roots
+
+
+def all_logical_drive_roots(
+    *,
+    include_removable: bool = True,
+    include_network: bool = False,
+) -> list[Path]:
+    """Enumerate fixed (C:, D:, …) and optional USB/removable volumes for full-PC scans."""
+    if platform.system() != "Windows":
+        return [Path.home()]
+    allowed_types = {3}
+    if include_removable:
+        allowed_types.add(2)
+    if include_network:
+        allowed_types.add(4)
+    script = (
+        "Get-CimInstance Win32_LogicalDisk -ErrorAction SilentlyContinue | "
+        f"Where-Object {{ $_.DriveType -in @({','.join(str(t) for t in sorted(allowed_types))}) }} | "
+        "ForEach-Object { $_.DeviceID + '\\' } | ConvertTo-Json -Compress"
+    )
+    data = forensic_powershell_json(script, timeout=12.0, max_chars=4000)
+    roots: list[Path] = []
+    letters: list[str] = []
+    if isinstance(data, list):
+        letters = [str(x) for x in data if isinstance(x, str)]
+    elif isinstance(data, str) and data.endswith(":\\"):
+        letters = [data]
+    for letter in letters:
+        candidate = Path(letter)
+        if candidate.is_dir():
+            roots.append(candidate)
+    if not roots:
+        system_drive = os.getenv("SystemDrive", "C:") + "\\"
+        fallback = Path(system_drive)
+        if fallback.is_dir():
+            roots.append(fallback)
+    return roots
+
+
+def full_pc_scan_roots() -> list[tuple[Path, int]]:
+    """Every local/removable drive with a generous depth budget."""
+    return [(root, FULL_PC_SCAN_MAX_DEPTH) for root in all_logical_drive_roots(include_removable=True)]
 
 
 def walk_files_depth_limited(root: Path, max_depth: int):
@@ -3701,6 +3763,10 @@ def walk_files_depth_limited(root: Path, max_depth: int):
         return
     for dirpath, dirnames, filenames in os.walk(root, topdown=True, followlinks=False):
         current = Path(dirpath)
+        current_low = str(current).lower().replace("/", "\\")
+        if any(skip in current_low for skip in FULL_PC_SKIP_DIR_FRAGMENTS):
+            dirnames.clear()
+            continue
         try:
             rel_depth = len(current.relative_to(root).parts)
         except ValueError:
@@ -3710,6 +3776,36 @@ def walk_files_depth_limited(root: Path, max_depth: int):
             dirnames.clear()
         for fn in filenames:
             yield current / fn
+
+
+def _path_is_user_writable_execution_zone(path_str: str) -> bool:
+    low = path_str.lower().replace("/", "\\")
+    zones = (
+        "\\downloads\\",
+        "\\desktop\\",
+        "\\documents\\",
+        "\\appdata\\",
+        "\\temp\\",
+        "\\tmp\\",
+        "\\users\\",
+    )
+    return any(zone in low for zone in zones)
+
+
+def _probe_executable_binary_labels(path: Path) -> list[str]:
+    """Read PE/binary content and match embedded executor branding (survives renames)."""
+    try:
+        if not path.is_file():
+            return []
+        size = path.stat().st_size
+        if size <= 0 or size > FULL_PC_BINARY_PROBE_MAX_BYTES:
+            return []
+        data = path.read_bytes()[:FULL_PC_BINARY_PROBE_MAX_BYTES]
+    except OSError:
+        return []
+    labels = scan_binary_blob_for_executor_names(data)
+    labels.extend(loose_executor_labels_for_artifact(data.decode("utf-16le", errors="ignore")[:500000]))
+    return sorted(set(labels))
 
 
 def weird_filename_reasons(stem: str, full_name: str) -> list[str]:
@@ -3754,86 +3850,174 @@ def match_executor_labels(text: str, patterns: dict[str, re.Pattern[str]]) -> li
     return [name for name, pattern in patterns.items() if pattern.search(text)]
 
 
-def combined_user_folder_security_scans(max_hashes: int = EXECUTOR_HASH_SCAN_MAX_FILES) -> tuple[dict, dict]:
-    """Designated-folder name hits plus full-file SHA256 blocklist scan (renames / disguised folders)."""
+def full_pc_filesystem_executor_scan() -> dict:
+    """Walk every local/removable drive for executor names, cheat hints, and embedded binary branding."""
+    if platform.system() != "Windows":
+        return {"available": False, "reason": "Full-PC scan is Windows-only", "hits": []}
     patterns = executor_name_patterns()
-    roots = designated_user_folder_roots()
     hits: list[dict] = []
     enumerated = 0
-    enumeration_reached_cap = False
+    binary_probes = 0
     skipped_permission = 0
-    blocklist = load_executor_sha256_blocklist()
-    sha_hits, hashed = executor_blocklist_path_scan(blocklist, max_hashes=max_hashes)
-
-    for root in roots:
+    roots_scanned: list[str] = []
+    for root, max_depth in full_pc_scan_roots():
+        roots_scanned.append(str(root))
         try:
-            for path in walk_files_depth_limited(root, USER_FOLDER_SCAN_MAX_DEPTH):
+            for path in walk_files_depth_limited(root, max_depth):
                 enumerated += 1
-                if enumerated > USER_FOLDER_SCAN_MAX_ENUMERATED:
-                    enumeration_reached_cap = True
+                if enumerated > FULL_PC_SCAN_MAX_ENUMERATED:
                     break
                 try:
                     if not path.is_file():
                         continue
                 except OSError:
                     continue
-
                 ext = path.suffix.lower()
-                if ext not in USER_FOLDER_SCAN_EXTENSIONS:
+                if ext not in USER_FOLDER_SCAN_EXTENSIONS and ext not in FULL_PC_EXECUTABLE_EXTENSIONS:
                     continue
-                stem = path.stem
-                full_name = path.name
+                if executor_scan_path_excluded(str(path)):
+                    continue
                 path_str = str(path)
                 executor_labels = sorted(set(match_executor_labels(path_str, patterns)))
-                weird = list(weird_filename_reasons(stem, full_name))
+                cheat_hints = cheat_path_hint_labels(path_str)
+                weird = list(weird_filename_reasons(path.stem, path.name))
                 for part in path.parts[:-1]:
                     weird.extend(weird_filename_reasons(part, part))
                 weird = sorted(set(weird))
-                cheat_hints = cheat_path_hint_labels(path_str)
-                if not executor_labels and not weird and not cheat_hints:
+                binary_labels: list[str] = []
+                if ext in {".exe", ".dll"} and binary_probes < FULL_PC_BINARY_PROBE_MAX_FILES:
+                    binary_labels = _probe_executable_binary_labels(path)
+                    binary_probes += 1
+                    if binary_labels:
+                        executor_labels = sorted(set(executor_labels + binary_labels))
+                if not executor_labels and not cheat_hints and not weird:
                     continue
                 try:
                     stat = path.stat()
+                    modified = datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()
+                    accessed = datetime.fromtimestamp(stat.st_atime, timezone.utc).isoformat()
                 except OSError:
-                    continue
-                entry = {
-                    "path": str(path),
-                    "name": full_name,
-                    "extension": ext,
-                    "size_bytes": stat.st_size,
-                    "modified": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
-                    "executor_name_hits": executor_labels,
-                    "name_anomaly_reasons": weird,
-                    "cheat_filename_hints": cheat_hints,
-                    "path_allowlisted": path_is_allowlisted(str(path)),
-                }
-                hits.append(entry)
-                if len(hits) >= USER_FOLDER_SCAN_MAX_HITS:
+                    modified = None
+                    accessed = None
+                hits.append(
+                    {
+                        "path": path_str,
+                        "name": path.name,
+                        "extension": ext,
+                        "size_bytes": stat.st_size if modified else None,
+                        "modified": modified,
+                        "accessed": accessed,
+                        "executor_name_hits": executor_labels,
+                        "cheat_filename_hints": cheat_hints,
+                        "name_anomaly_reasons": weird,
+                        "binary_embedded_labels": binary_labels,
+                        "path_allowlisted": path_is_allowlisted(path_str),
+                        "scan_source": "full_pc_drive_walk",
+                    }
+                )
+                if len(hits) >= FULL_PC_SCAN_MAX_HITS:
                     break
         except PermissionError:
             skipped_permission += 1
         except OSError:
             skipped_permission += 1
-        if len(hits) >= USER_FOLDER_SCAN_MAX_HITS or enumeration_reached_cap:
+        if enumerated > FULL_PC_SCAN_MAX_ENUMERATED or len(hits) >= FULL_PC_SCAN_MAX_HITS:
             break
+    return {
+        "available": True,
+        "hit_count": len(hits),
+        "hits": hits,
+        "enumerated_files": enumerated,
+        "binary_probes": binary_probes,
+        "roots_scanned": roots_scanned,
+        "skipped_permission_roots": skipped_permission,
+        "note": "Full-PC walk of all fixed and removable drives; probes .exe/.dll binaries for embedded executor strings.",
+    }
 
-    executor_hits = sum(1 for item in hits if item["executor_name_hits"])
+
+def scan_execution_artifact_binaries(
+    *,
+    bam: dict,
+    dam: dict | None,
+    blocklist: dict[str, str],
+) -> list[dict[str, object]]:
+    """Inspect BAM/DAM execution paths — catches renamed executors via binary branding and hashes."""
+    hits: list[dict[str, object]] = []
+    seen: set[str] = set()
+    sources = [("bam_execution_binary", bam), ("dam_execution_binary", dam or {})]
+    for artifact_source, struct in sources:
+        for item in struct.get("items") or []:
+            path = str(item.get("normalized_path") or "")
+            if not path or not re.search(r"\.(exe|dll)\b", path, re.I):
+                continue
+            labels = list(item.get("executor_name_hits") or [])
+            labels = sorted(set(labels + executor_labels_for_artifact_text(path)))
+            file_exists = bool(item.get("file_exists"))
+            sha = ""
+            if file_exists:
+                file_path = Path(path)
+                if not labels:
+                    labels = _probe_executable_binary_labels(file_path)
+                if blocklist:
+                    sha = file_sha256_full(file_path)
+                    block_label = blocklist.get(sha.lower()) if sha else None
+                    if block_label:
+                        labels = sorted(set(labels + [block_label]))
+            if not labels and file_exists and _path_is_user_writable_execution_zone(path):
+                profile = suspicious_path_profile(path)
+                if profile["cheat_filename_hints"] or profile["name_anomaly_reasons"]:
+                    labels = ["suspicious_executed_binary"]
+            if not labels:
+                continue
+            _append_executor_artifact_hit(
+                hits,
+                seen,
+                path=path,
+                labels=labels,
+                occurred_at=item.get("last_execution_utc"),
+                artifact_source=artifact_source,
+                timestamp_source="bam_execution",
+                file_exists=file_exists,
+                note="Execution record path matched via name, embedded binary string, or hash.",
+                extra={"sha256": sha or None},
+            )
+    return hits
+
+
+def combined_user_folder_security_scans(max_hashes: int = EXECUTOR_HASH_SCAN_MAX_FILES) -> tuple[dict, dict]:
+    """Full-PC name/binary hits plus SHA256 blocklist scan across all drives."""
+    full_pc = full_pc_filesystem_executor_scan()
+    blocklist = load_executor_sha256_blocklist()
+    sha_hits, hashed = executor_blocklist_path_scan(blocklist, max_hashes=max_hashes)
+
+    merged_hits = list(full_pc.get("hits") or [])
+    merged_hits.sort(key=lambda row: str(row.get("modified") or ""), reverse=True)
     cheat_only = sum(
         1
-        for item in hits
+        for item in merged_hits
         if (item.get("cheat_filename_hints") or [])
-        and not item["executor_name_hits"]
-        and not item["name_anomaly_reasons"]
+        and not item.get("executor_name_hits")
+        and not item.get("name_anomaly_reasons")
     )
-    weird_only = sum(1 for item in hits if not item["executor_name_hits"] and item["name_anomaly_reasons"])
+    weird_only = sum(
+        1
+        for item in merged_hits
+        if not item.get("executor_name_hits") and item.get("name_anomaly_reasons")
+    )
 
     designated = {
-        "hit_count": len(hits),
-        "executor_name_hits": executor_hits,
+        "hit_count": len(merged_hits),
+        "executor_name_hits": sum(1 for item in merged_hits if item.get("executor_name_hits")),
         "cheat_filename_only_hits": cheat_only,
         "weird_name_only_hits": weird_only,
-        "skipped_roots_permission_errors": skipped_permission,
-        "hits": hits,
+        "skipped_roots_permission_errors": full_pc.get("skipped_permission_roots", 0),
+        "hits": merged_hits[:FULL_PC_SCAN_MAX_HITS],
+        "full_pc_scan": {
+            "enumerated_files": full_pc.get("enumerated_files"),
+            "binary_probes": full_pc.get("binary_probes"),
+            "roots_scanned": full_pc.get("roots_scanned"),
+            "hit_count": full_pc.get("hit_count"),
+        },
     }
     if not blocklist:
         sha_blocklist = {
@@ -4455,34 +4639,70 @@ def recent_items_metadata() -> dict:
         appdata = os.getenv("APPDATA")
         if appdata:
             folders.append(Path(appdata) / "Microsoft" / "Windows" / "Recent")
+            folders.append(Path(appdata) / "Microsoft" / "Windows" / "Recent" / "AutomaticDestinations")
+            folders.append(Path(appdata) / "Microsoft" / "Windows" / "Recent" / "CustomDestinations")
         userprofile = os.getenv("USERPROFILE")
         if userprofile:
-            folders.extend([Path(userprofile) / "Downloads", Path(userprofile) / "Desktop"])
+            folders.extend(
+                [
+                    Path(userprofile) / "Downloads",
+                    Path(userprofile) / "Desktop",
+                    Path(userprofile) / "Documents",
+                ]
+            )
     else:
         folders.extend([Path.home() / "Downloads", Path.home() / "Desktop"])
 
     items = []
     patterns = executor_name_patterns()
+    seen: set[str] = set()
     for folder in folders:
         if not folder.exists():
             continue
         try:
-            paths = [path for path in folder.iterdir() if path.is_file()]
+            paths = list(folder.rglob("*"))[:500] if folder.name in {"Recent", "AutomaticDestinations", "CustomDestinations"} else list(folder.iterdir())
         except Exception:
             continue
         for path in paths:
             try:
+                if not path.is_file():
+                    continue
                 stat = path.stat()
                 fname = path.name
                 full_path = str(path)
                 matched_exec = [label for label, pat in patterns.items() if pat.search(full_path)]
                 cheat_hints = cheat_path_hint_labels(full_path)
+                target_path = full_path
+                if path.suffix.lower() == ".lnk":
+                    try:
+                        lnk_data = path.read_bytes()[:1_500_000]
+                        for extracted in extract_dos_paths_from_binary(
+                            lnk_data,
+                            limit=4,
+                            require_executor_label=False,
+                            executable_only=True,
+                        ):
+                            matched_exec = sorted(
+                                set(matched_exec + executor_labels_for_artifact_text(extracted))
+                            )
+                            if not matched_exec:
+                                matched_exec = _probe_executable_binary_labels(Path(extracted)) if Path(extracted).exists() else []
+                            if matched_exec:
+                                target_path = extracted
+                                break
+                    except OSError:
+                        pass
                 if not matched_exec and not cheat_hints:
                     continue
+                dedupe = target_path.lower()
+                if dedupe in seen:
+                    continue
+                seen.add(dedupe)
                 items.append(
                     {
                         "name": fname,
                         "folder": str(folder),
+                        "path": target_path,
                         "modified": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
                         "accessed": datetime.fromtimestamp(stat.st_atime, timezone.utc).isoformat(),
                         "size_bytes": stat.st_size,
@@ -4493,7 +4713,11 @@ def recent_items_metadata() -> dict:
             except Exception:
                 continue
     items.sort(key=lambda item: item["modified"], reverse=True)
-    return {"count": len(items[:120]), "items": items[:120], "note": "Only files whose names match known executor brands or cheat/hack filename hints are listed (not every file in these folders)."}
+    return {
+        "count": len(items[:400]),
+        "items": items[:400],
+        "note": "Recent shortcuts and folders; .lnk targets are parsed for executor paths and binary branding.",
+    }
 
 
 def command_history_keyword_hits() -> dict:
@@ -5222,20 +5446,12 @@ def executor_indicator_scan() -> dict:
     roots_spec: list[tuple[Path, int | None]] = []
 
     if platform.system() == "Windows":
-        la = os.getenv("LOCALAPPDATA")
-        if la:
-            roots_spec.append((Path(la), 8))
-        ap = os.getenv("APPDATA")
-        if ap:
-            roots_spec.append((Path(ap), 6))
-        tmp = os.getenv("TEMP")
-        if tmp:
-            roots_spec.append((Path(tmp), 4))
-        up = os.getenv("USERPROFILE")
-        if up:
-            home_root = Path(up)
-            if home_root.is_dir():
-                roots_spec.append((home_root, USER_FOLDER_SCAN_MAX_DEPTH))
+        seen_roots: set[str] = set()
+        for drive_root, depth in full_pc_scan_roots():
+            key = str(drive_root).lower()
+            if key not in seen_roots:
+                seen_roots.add(key)
+                roots_spec.append((drive_root, depth))
         roots_spec.append((Path(os.getenv("SystemRoot", "C:\\Windows")) / "Prefetch", None))
     elif platform.system() == "Darwin":
         roots_spec.extend(
@@ -5262,7 +5478,7 @@ def executor_indicator_scan() -> dict:
 
             for path in path_iter:
                 try:
-                    if len(file_hits) >= 200 and len(traceback_hits) >= 80:
+                    if len(file_hits) >= 800 and len(traceback_hits) >= 200:
                         break
                     name_text = str(path)
                     if executor_scan_path_excluded(name_text):
@@ -5321,8 +5537,8 @@ def executor_indicator_scan() -> dict:
         "cheat_filename_patterns": [label for label, _ in CHEAT_FILENAME_HINT_PATTERNS],
         "roots_checked": [str(r[0]) for r in roots_spec],
         "scanned_text_files": scanned_files,
-        "file_hits": file_hits[:200],
-        "traceback_or_log_hits": traceback_hits[:80],
+        "file_hits": file_hits[:800],
+        "traceback_or_log_hits": traceback_hits[:200],
     }
 
 
@@ -5747,10 +5963,10 @@ foreach($sid in Get-ChildItem $base){
     $rows.Add([pscustomobject]@{ Sid=$sid.PSChildName; RegValueName=$n; FileTimeUtc=$ft })
   }
 }
-$rows | Select-Object -First 320 | ConvertTo-Json -Compress -Depth 3
+$rows | Select-Object -First 2500 | ConvertTo-Json -Compress -Depth 3
 }
 """.strip()
-    data = forensic_powershell_json(script, timeout=26.0, max_chars=32000)
+    data = forensic_powershell_json(script, timeout=36.0, max_chars=180000)
     items: list[dict[str, object]] = []
     if isinstance(data, list):
         items = [dict(x) for x in data if isinstance(x, dict)]
@@ -5816,10 +6032,10 @@ foreach($sid in Get-ChildItem $base){
     $rows.Add([pscustomobject]@{ Sid=$sid.PSChildName; RegValueName=$n; FileTimeUtc=$ft })
   }
 }
-$rows | Select-Object -First 320 | ConvertTo-Json -Compress -Depth 3
+$rows | Select-Object -First 2500 | ConvertTo-Json -Compress -Depth 3
 }
 """.strip()
-    data = forensic_powershell_json(script, timeout=26.0, max_chars=32000)
+    data = forensic_powershell_json(script, timeout=36.0, max_chars=180000)
     items: list[dict[str, object]] = []
     if isinstance(data, list):
         items = [dict(x) for x in data if isinstance(x, dict)]
@@ -6529,28 +6745,31 @@ def scan_entire_prefetch_executor_hits() -> list[dict[str, object]]:
             labels = executor_labels_for_artifact_text(stem)
         pf_bytes: bytes = b""
         try:
-            if not labels:
-                pf_bytes = pf_file.read_bytes()[:2_000_000]
-                labels = scan_binary_blob_for_executor_names(pf_bytes)
-            elif pf_file.is_file():
-                pf_bytes = pf_file.read_bytes()[:2_000_000]
-                labels = sorted(set(labels + scan_binary_blob_for_executor_names(pf_bytes)))
+            pf_bytes = pf_file.read_bytes()[:2_000_000]
+            labels = sorted(set(labels + scan_binary_blob_for_executor_names(pf_bytes)))
         except OSError:
             if not labels:
                 continue
+        extracted_paths = extract_dos_paths_from_binary(
+            pf_bytes,
+            limit=16,
+            require_executor_label=False,
+            executable_only=True,
+        ) if pf_bytes else []
+        for extracted in extracted_paths:
+            path_labels = executor_labels_for_artifact_text(extracted)
+            if path_labels:
+                labels = sorted(set(labels + path_labels))
+            elif Path(extracted).exists():
+                labels = sorted(set(labels + _probe_executable_binary_labels(Path(extracted))))
         if not labels:
             continue
         try:
             modified = datetime.fromtimestamp(pf_file.stat().st_mtime, timezone.utc).isoformat()
         except OSError:
             modified = None
-        original_guess = ""
-        original_exists = False
-        if pf_bytes:
-            for extracted in extract_dos_paths_from_binary(pf_bytes, limit=8):
-                original_guess = extracted
-                original_exists = path_exists_on_disk(extracted)
-                break
+        original_guess = extracted_paths[0] if extracted_paths else ""
+        original_exists = path_exists_on_disk(original_guess) if original_guess else False
         display_path = original_guess or str(pf_file)
         _append_executor_artifact_hit(
             hits,
@@ -6881,19 +7100,15 @@ def scan_application_event_log_executor_hits() -> list[dict[str, object]]:
 PROFILE_BINARY_SWEEP_EXTENSIONS = frozenset(
     {".log", ".txt", ".json", ".cfg", ".xml", ".lua", ".dat", ".ini", ".bat", ".ps1", ".ldb", ".sqlite", ".db"}
 )
-PROFILE_BINARY_SWEEP_MAX_FILES = 12_000
-PROFILE_BINARY_SWEEP_MAX_HITS = 120
+PROFILE_BINARY_SWEEP_MAX_FILES = 40_000
+PROFILE_BINARY_SWEEP_MAX_HITS = 300
 
 
 def scan_profile_binary_executor_sweep() -> list[dict[str, object]]:
-    """Search user profile + temp for leftover strings/paths after delete."""
+    """Search all drives for leftover strings/paths after delete."""
     if platform.system() != "Windows":
         return []
-    roots: list[Path] = []
-    for env_key in ("USERPROFILE", "LOCALAPPDATA", "APPDATA", "TEMP"):
-        val = os.getenv(env_key)
-        if val:
-            roots.append(Path(val))
+    roots = [root for root, _depth in full_pc_scan_roots()]
     hits: list[dict[str, object]] = []
     seen: set[str] = set()
     enumerated = 0
@@ -7052,6 +7267,11 @@ def build_executor_artifact_evidence(
             sources_used.add(source)
         hits.extend(rows)
 
+    blocklist = load_executor_sha256_blocklist()
+    ingest(
+        "bam_execution_binary",
+        scan_execution_artifact_binaries(bam=bam, dam=dam, blocklist=blocklist),
+    )
     for item in bam.get("items") or []:
         path = str(item.get("normalized_path") or "")
         labels = list(item.get("executor_name_hits") or []) or executor_labels_for_artifact_text(path)
@@ -7089,6 +7309,27 @@ def build_executor_artifact_evidence(
         )
     if any(h.get("artifact_source") == "dam_execution" for h in hits):
         sources_used.add("dam_execution")
+
+    for item in designated.get("hits") or []:
+        if item.get("removed_artifact"):
+            continue
+        path = str(item.get("path") or "")
+        labels = list(item.get("executor_name_hits") or [])
+        if not labels:
+            continue
+        _append_executor_artifact_hit(
+            hits,
+            seen,
+            path=path,
+            labels=labels,
+            occurred_at=item.get("modified") or item.get("accessed"),
+            artifact_source="full_pc_filesystem",
+            file_exists=path_exists_on_disk(path),
+            note="Full-PC drive walk found this executor on disk.",
+            extra={"binary_embedded_labels": item.get("binary_embedded_labels")},
+        )
+    if any(h.get("artifact_source") == "full_pc_filesystem" for h in hits):
+        sources_used.add("full_pc_filesystem")
 
     ingest("prefetch_execution", scan_prefetch_executor_artifact_hits(prefetch))
     ingest("usn_journal", scan_all_usn_executor_path_hits(forensic_bundle, deletion))
@@ -7303,7 +7544,7 @@ def build_executor_artifact_evidence(
     return {
         "available": True,
         "hit_count": len(hits),
-        "hits": hits[:600],
+        "hits": hits[:1200],
         "by_executor": by_executor,
         "sources_used": sorted(sources_used),
         "executors_checked": EXECUTOR_NAMES,
@@ -7598,7 +7839,7 @@ $maxLifecycle = 6000
 $maxDelete = 3000
 $usnList = New-Object System.Collections.Generic.List[string]
 $deleteList = New-Object System.Collections.Generic.List[string]
-foreach ($d in (Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | ForEach-Object { $_.DeviceID })) {
+foreach ($d in (Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3 OR DriveType=2' | ForEach-Object { $_.DeviceID })) {
   try {
     $startUsn = 0
     $qj = fsutil usn queryjournal $d 2>$null
@@ -7619,10 +7860,10 @@ foreach ($d in (Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | ForEac
       $isRename = $line -match 'RENAME_OLD_NAME|RENAME_NEW_NAME|0x00001000|0x00002000'
       $isExec = $line -match '\.EXE|\.DLL|\.PS1|\.BAT|\.MSI|\.VBS|\.JS'
       $isCheatish = $line -match '(?i)cheat|hack|exploit|inject|script.?hub|aimbot|executor|delta|solara|synapse|potassium|wave|xeno|volt|cosmic|lumen|seliware|madium|sirhurt|serotonin|severe|rbxcli|matcha|photon|vegax|codex|macsploit|opiumware|dx9ware|matrixhub|velocity'
-      if ($isDelete -and $deleteList.Count -lt $maxDelete -and ($inProfile -or $isExec -or $isCheatish)) {
+      if ($isDelete -and $deleteList.Count -lt $maxDelete -and ($isExec -or $isCheatish -or $inProfile)) {
         [void]$deleteList.Add(($d + [char]9 + $line))
       }
-      if ($usnList.Count -lt $maxLifecycle -and ($inProfile -or $isExec -or $isCheatish) -and
+      if ($usnList.Count -lt $maxLifecycle -and ($isExec -or $isCheatish -or $inProfile) -and
           ($isDelete -or $isRename -or $line -match 'FILE_CREATE|CLOSE|DATA_EXTEND|BASIC_INFO|STREAM_CHANGE')) {
         [void]$usnList.Add(($d + [char]9 + $line))
       }
@@ -9521,20 +9762,15 @@ def recent_disk_executable_scan() -> dict:
     if platform.system() != "Windows":
         return {"available": False, "reason": "Recent executable enumeration is Windows-only"}
     script = (
-        "$cut=(Get-Date).AddDays(-21);"
-        "$roots=@("
-        "(Join-Path $env:USERPROFILE 'Downloads'),"
-        "(Join-Path $env:USERPROFILE 'Desktop'),"
-        "(Join-Path $env:USERPROFILE 'Documents'),"
-        "$env:TEMP,"
-        "(Join-Path $env:LOCALAPPDATA 'Temp')"
-        ");"
+        "$cut=(Get-Date).AddDays(-45);"
+        "$roots = Get-CimInstance Win32_LogicalDisk -ErrorAction SilentlyContinue | "
+        "Where-Object { $_.DriveType -in 2,3 } | ForEach-Object { $_.DeviceID + '\\' };"
         "$out=@();"
         "foreach($root in $roots){"
         " if(-not(Test-Path -LiteralPath $root)){continue}"
         " Get-ChildItem -LiteralPath $root -Recurse -File -ErrorAction SilentlyContinue |"
-        " Where-Object { $_.Extension -match '^\\.(exe|dll|bat|ps1)$' -and $_.LastWriteTime -ge $cut } |"
-        " Select-Object -First 120 | ForEach-Object {"
+        " Where-Object { $_.Extension -match '^\\.(exe|dll|bat|ps1|msi|vbs|scr|com)$' -and $_.LastWriteTime -ge $cut } |"
+        " Select-Object -First 200 | ForEach-Object {"
         "  $out += [pscustomobject]@{"
         "    Path=$_.FullName;"
         "    Name=$_.Name;"
@@ -9543,28 +9779,45 @@ def recent_disk_executable_scan() -> dict:
         "  }"
         " }"
         "};"
-        "$out | Sort-Object Modified -Descending | Select-Object -First 100 | ConvertTo-Json -Compress"
+        "$out | Sort-Object Modified -Descending | Select-Object -First 300 | ConvertTo-Json -Compress"
     )
-    raw = run_command(["powershell", "-NoProfile", "-Command", script], timeout=22, max_chars=28000)
+    raw = run_command(["powershell", "-NoProfile", "-Command", script], timeout=90, max_chars=120000)
     items: list[dict] = []
+    patterns = executor_name_patterns()
     try:
         if raw and not raw.startswith("Unavailable:"):
             parsed = json.loads(raw)
             rows = parsed if isinstance(parsed, list) else [parsed]
             for row in rows:
-                if isinstance(row, dict) and row.get("Path"):
-                    items.append(
-                        {
-                            "path": str(row.get("Path")),
-                            "name": str(row.get("Name") or _digest_basename(str(row.get("Path")))),
-                            "modified": row.get("Modified"),
-                            "size_bytes": row.get("SizeBytes"),
-                            "source": "disk_enumeration",
-                        }
-                    )
+                if not isinstance(row, dict) or not row.get("Path"):
+                    continue
+                path = str(row.get("Path"))
+                labels = sorted(set(match_executor_labels(path, patterns)))
+                binary_labels: list[str] = []
+                if not labels and path.lower().endswith((".exe", ".dll")):
+                    binary_labels = _probe_executable_binary_labels(Path(path))
+                    labels = binary_labels
+                items.append(
+                    {
+                        "path": path,
+                        "name": str(row.get("Name") or _digest_basename(path)),
+                        "modified": row.get("Modified"),
+                        "size_bytes": row.get("SizeBytes"),
+                        "source": "full_pc_disk_enumeration",
+                        "executor_name_hits": labels,
+                        "binary_embedded_labels": binary_labels,
+                    }
+                )
     except json.JSONDecodeError:
         pass
-    return {"available": True, "count": len(items), "items": items}
+    executor_items = [item for item in items if item.get("executor_name_hits")]
+    return {
+        "available": True,
+        "count": len(items),
+        "executor_match_count": len(executor_items),
+        "items": items,
+        "executor_items": executor_items,
+    }
 
 
 def build_executable_inventory(
@@ -10112,7 +10365,7 @@ def build_report() -> dict:
             bam_paths = [
                 str(item.get("normalized_path") or "")
                 for item in (bam_registry.get("items") or [])
-                if item.get("file_exists")
+                if re.search(r"\.(exe|dll)\b", str(item.get("normalized_path") or ""), re.I)
             ]
             artifact_hits = executor_blocklist_hash_known_paths(
                 blocklist, bam_paths, source="bam_execution_path"
