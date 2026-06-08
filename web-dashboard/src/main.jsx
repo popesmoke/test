@@ -27,7 +27,6 @@ import {
   Trash2,
 } from "lucide-react";
 import "./styles.css";
-import { EXPERT_NAV_GROUPS } from "./dashboardNav.js";
 import { formatDisplayDate, normalizeIsoDateString } from "./dateFormat.js";
 import { SimpleResults } from "./SimpleResults.jsx";
 import { TutorialGuide } from "./TutorialGuide.jsx";
@@ -1352,13 +1351,37 @@ function RobloxSection({ report, query }) {
   const roblox = report.application_diagnostics?.roblox ?? {};
   const logs = roblox.logs ?? [];
   const accounts = [];
+  const seen = new Set();
+  const pushAccount = (label, detail) => {
+    const key = `${label}|${detail}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    accounts.push({ label, detail });
+  };
+  for (const account of roblox.accounts ?? []) {
+    if (account.user_id) {
+      pushAccount(
+        account.username || `User ID ${account.user_id}`,
+        `https://www.roblox.com/users/${account.user_id}/profile` +
+          (account.sources?.length ? ` · ${account.sources.join(", ")}` : ""),
+      );
+    } else if (account.username) {
+      pushAccount(account.username, (account.sources ?? []).join(", ") || "Recovered from browser artifacts");
+    }
+  }
+  for (const userId of roblox.aggregate_user_ids ?? []) {
+    pushAccount(`User ID ${userId}`, `https://www.roblox.com/users/${userId}/profile`);
+  }
+  for (const username of roblox.aggregate_usernames ?? []) {
+    pushAccount(username, "Recovered from Roblox client or browser artifacts");
+  }
   for (const log of logs) {
     const signals = log.signals ?? {};
     for (const username of signals.usernames ?? []) {
-      accounts.push({ label: username, detail: `Found in ${log.name}` });
+      pushAccount(username, `Found in ${log.name}`);
     }
     for (const userId of signals.user_ids ?? []) {
-      accounts.push({ label: `User ID ${userId}`, detail: `https://www.roblox.com/users/${userId}/profile` });
+      pushAccount(`User ID ${userId}`, `https://www.roblox.com/users/${userId}/profile`);
     }
   }
 
@@ -1380,6 +1403,22 @@ function RobloxSection({ report, query }) {
             ))
           )}
         </div>
+      </Card>
+      <Card icon={Gamepad2} title="Browser Roblox Artifacts">
+        <TerminalBlock query={query}>
+          {lines(roblox.browser_scan?.artifacts ?? [], (artifact) => {
+            const sources = (artifact.sources ?? []).join(", ") || "none";
+            return [
+              `Browser: ${artifact.browser ?? "unknown"} (${artifact.profile ?? "profile"})`,
+              `User IDs: ${(artifact.user_ids ?? []).join(", ") || "none"}`,
+              `Usernames: ${(artifact.usernames ?? []).join(", ") || "none"}`,
+              `Authenticated session: ${artifact.authenticated ? "yes (.ROBLOSECURITY cookie)" : "not detected"}`,
+              `History hits: ${artifact.history_hits ?? 0}; Cookie hits: ${artifact.cookie_hits ?? 0}`,
+              `Sources: ${sources}`,
+              "------------------------------------------------------------",
+            ].join("\n");
+          })}
+        </TerminalBlock>
       </Card>
       <Card icon={Gamepad2} title="Roblox Logs">
         <TerminalBlock query={query}>
@@ -2208,7 +2247,7 @@ function Results({ detail }) {
     setQuery("");
     setExpertMode(false);
     setTutorialOpen(false);
-  }, [detail?.id]);
+  }, [detail?.id]); // keep tutorialOpen reset on session change
 
   const report = detail?.report ?? {};
   // Large reports can make tab switches feel sluggish if recomputed on every render.
@@ -2244,35 +2283,27 @@ function Results({ detail }) {
           <BookOpen size={15} /> Full tutorial
         </button>
         {expertMode ? (
-          <nav className="results-nav-grouped" aria-label="Advanced review sections">
-            {EXPERT_NAV_GROUPS.map((group) => (
-              <div className="nav-group" key={group.id}>
-                <p className="nav-group-label">{group.label}</p>
-                <p className="nav-group-desc">{group.description}</p>
-                {group.sectionIds.map((id) => {
-                  const section = resultSectionById[id];
-                  if (!section) return null;
-                  const Icon = section.icon;
-                  return (
-                    <button
-                      key={section.id}
-                      className={sectionId === section.id ? "active" : ""}
-                      onClick={() => setSectionId(section.id)}
-                      type="button"
-                    >
-                      <Icon size={18} className="nav-tab-icon" />
-                      <span className="nav-tab-labels">
-                        <span className="nav-tab-primary">{section.label}</span>
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            ))}
+          <nav>
+            {resultSections.map((section) => {
+              const Icon = section.icon;
+              return (
+                <button
+                  key={section.id}
+                  className={sectionId === section.id ? "active" : ""}
+                  onClick={() => setSectionId(section.id)}
+                  type="button"
+                >
+                  <Icon size={18} className="nav-tab-icon" />
+                  <span className="nav-tab-labels">
+                    <span className="nav-tab-primary">{section.label}</span>
+                  </span>
+                </button>
+              );
+            })}
           </nav>
         ) : (
           <p className="results-nav-hint">
-            Follow steps 1–6 in Easy results. Press <kbd>Ctrl+F</kbd> to search executor names (Potassium, Solara, …).
+            Use the tabs: Summary, Last activity, Download history, Programs run, Program list, Word matches.
           </p>
         )}
       </aside>
@@ -2300,44 +2331,26 @@ function Results({ detail }) {
         </div>
         {!showSectionContent ? (
           <div className="empty-state">Waiting for the desktop client to submit results.</div>
-        ) : (
+        ) : expertMode ? (
           <>
-            <div className="content-toolbar">
-              <input
-                className="section-search"
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder={
-                  expertMode
-                    ? `Filter ${activeSection.label} — try Potassium, deleted, USN…`
-                    : "Filter this tab — or press Ctrl+F to search the whole page"
-                }
-              />
-              <p className="search-hint muted">
-                Dates: DD/MM/YYYY (GMT+3). Ctrl+F / ⌘F finds executor names anywhere on this page.
-              </p>
-            </div>
-            {expertMode ? (
-              <>
-                <p className="result-breadcrumb muted">
-                  Advanced review · {activeSection.label}
-                </p>
-                <ActiveComponent report={report} query={deferredQuery} />
-              </>
-            ) : (
-              <SimpleResults
-                report={report}
-                summary={summary}
-                activity={activity}
-                activityEventSummary={activityEventSummary}
-                formatGmtPlus3={formatGmtPlus3}
-                onExpertMode={() => setExpertMode(true)}
-                onDownload={() => downloadReport(detail)}
-                onOpenTutorial={() => setTutorialOpen(true)}
-                searchQuery={deferredQuery}
-              />
-            )}
+            <input
+              className="section-search"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder={`Search ${activeSection.label} keywords...`}
+            />
+            <ActiveComponent report={report} query={deferredQuery} />
           </>
+        ) : (
+          <SimpleResults
+            report={report}
+            summary={summary}
+            activity={activity}
+            activityEventSummary={activityEventSummary}
+            formatGmtPlus3={formatGmtPlus3}
+            onExpertMode={() => setExpertMode(true)}
+            onDownload={() => downloadReport(detail)}
+          />
         )}
       </div>
       <TutorialGuide open={tutorialOpen} onClose={() => setTutorialOpen(false)} brandName={BRAND_NAME} />

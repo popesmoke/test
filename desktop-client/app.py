@@ -16,7 +16,9 @@ import time
 import webbrowser
 import zlib
 import math
+import shutil
 import sqlite3
+import tempfile
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -3133,12 +3135,38 @@ def extract_dos_paths_from_binary(
     return found
 
 
+def _iter_windows_drive_letters() -> list[str]:
+    if platform.system() != "Windows":
+        return ["C"]
+    letters: list[str] = []
+    for code in range(ord("C"), ord("Z") + 1):
+        letter = chr(code)
+        try:
+            if Path(f"{letter}:\\").exists():
+                letters.append(letter)
+        except OSError:
+            continue
+    return letters or ["C"]
+
+
 def device_path_to_dos_path(path: str) -> str:
-    """Best-effort Device HarddiskVolume path to C:\\Users\\... conversion."""
+    """Best-effort \\Device\\HarddiskVolumeN\\... to drive-letter path conversion."""
     s = str(path or "").replace("/", "\\").strip()
     if not s:
         return ""
     upper = s.upper()
+    tail_match = re.match(r"^\\Device\\HarddiskVolume\d+\\(.+)$", s, re.IGNORECASE)
+    if tail_match:
+        tail = tail_match.group(1)
+        for letter in _iter_windows_drive_letters():
+            candidate = f"{letter}:\\{tail}"
+            try:
+                if Path(candidate).exists():
+                    return candidate
+            except OSError:
+                continue
+        if tail.upper().startswith("WINDOWS\\"):
+            return f"C:\\{tail}"
     idx = upper.find("\\USERS\\")
     if idx != -1:
         profile = os.getenv("USERPROFILE")
@@ -3148,6 +3176,45 @@ def device_path_to_dos_path(path: str) -> str:
     if m:
         return m.group(1)
     return s
+
+
+BAM_BENIGN_EXECUTABLE_NAMES = frozenset(
+    {
+        "powershell.exe",
+        "pwsh.exe",
+        "conhost.exe",
+        "cmd.exe",
+        "explorer.exe",
+        "svchost.exe",
+        "runtimebroker.exe",
+        "dllhost.exe",
+        "searchhost.exe",
+        "sihost.exe",
+        "taskhostw.exe",
+        "dwm.exe",
+        "fontdrvhost.exe",
+        "audiodg.exe",
+        "spoolsv.exe",
+        "wudfhost.exe",
+        "backgroundtaskhost.exe",
+        "smartscreen.exe",
+        "openwith.exe",
+        "mmc.exe",
+        "msiexec.exe",
+        "setup.exe",
+        "werfault.exe",
+        "consent.exe",
+    }
+)
+
+
+def bam_path_is_benign_system(path: str) -> bool:
+    if not path:
+        return True
+    if path_is_allowlisted(path):
+        return True
+    name = Path(path.replace("/", "\\")).name.lower()
+    return name in BAM_BENIGN_EXECUTABLE_NAMES
 
 
 def executor_labels_for_artifact_text(text: str) -> list[str]:
@@ -4137,6 +4204,20 @@ def chrome_webkit_time_to_iso(value: object) -> str | None:
         epoch = datetime(1601, 1, 1, tzinfo=timezone.utc)
         return (epoch + timedelta(microseconds=micros)).isoformat()
     except (OverflowError, ValueError):
+        return None
+
+
+def firefox_pr_time_to_iso(value: object) -> str | None:
+    """Firefox PRTime: microseconds since Unix epoch."""
+    try:
+        micros = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if micros <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(micros / 1_000_000, tz=timezone.utc).isoformat()
+    except (OSError, OverflowError, ValueError):
         return None
 
 
@@ -6139,6 +6220,276 @@ def executor_indicator_scan() -> dict:
     }
 
 
+_ROBLOX_URL_USER_ID = re.compile(
+    r"roblox\.com/(?:users/|profile(?:\?[^#\"']*?userId=))(\d{6,})",
+    re.IGNORECASE,
+)
+_ROBLOX_USERNAME_FROM_TITLE = re.compile(
+    r"^([A-Za-z0-9_]{3,20})(?:\s*['\u2019]s)?(?:\s+Profile|\s+on Roblox|\s*-\s*Roblox)?$",
+    re.IGNORECASE,
+)
+
+
+def _roblox_user_ids_from_text(text: str) -> list[str]:
+    return sorted(set(_ROBLOX_URL_USER_ID.findall(str(text or ""))))
+
+
+def _sqlite_open_readonly(db_path: Path) -> sqlite3.Connection | None:
+    if not db_path.is_file():
+        return None
+    uri = f"file:{db_path.as_posix()}?mode=ro"
+    for opener in (
+        lambda: sqlite3.connect(uri, uri=True, timeout=2.5),
+        lambda: sqlite3.connect(str(db_path), timeout=2.5),
+    ):
+        try:
+            conn = opener()
+            conn.execute("SELECT 1")
+            return conn
+        except sqlite3.Error:
+            continue
+    try:
+        tmp_dir = tempfile.mkdtemp(prefix="vs-sqlite-")
+        tmp_root = Path(tmp_dir)
+        copied = tmp_root / db_path.name
+        shutil.copy2(db_path, copied)
+        for suffix in ("-wal", "-shm"):
+            sidecar = db_path.parent / (db_path.name + suffix)
+            if sidecar.is_file():
+                shutil.copy2(sidecar, tmp_root / (db_path.name + suffix))
+        for opener in (
+            lambda: sqlite3.connect(f"file:{copied.as_posix()}?mode=ro", uri=True, timeout=2.5),
+            lambda: sqlite3.connect(str(copied), timeout=2.5),
+        ):
+            try:
+                conn = opener()
+                conn.execute("SELECT 1")
+                return conn
+            except sqlite3.Error:
+                continue
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+    except OSError:
+        pass
+    return None
+
+
+def _chromium_profile_names(base: Path) -> list[str]:
+    names: list[str] = []
+    if not base.is_dir():
+        return names
+    try:
+        for entry in sorted(base.iterdir()):
+            if not entry.is_dir():
+                continue
+            if entry.name == "Default" or entry.name.startswith("Profile "):
+                if (entry / "History").is_file() or (entry / "Cookies").is_file() or (entry / "Web Data").is_file():
+                    names.append(entry.name)
+    except OSError:
+        pass
+    return names or ["Default"]
+
+
+def _scan_chromium_roblox_profile(browser: str, profile: str, profile_dir: Path) -> dict:
+    artifact: dict[str, object] = {
+        "browser": browser,
+        "profile": profile,
+        "user_ids": [],
+        "usernames": [],
+        "authenticated": False,
+        "history_hits": 0,
+        "cookie_hits": 0,
+        "sources": [],
+    }
+    user_ids: set[str] = set()
+    usernames: set[str] = set()
+    history_db = profile_dir / "History"
+    conn = _sqlite_open_readonly(history_db)
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT url, title FROM urls
+                WHERE url LIKE '%roblox.com%'
+                ORDER BY last_visit_time DESC
+                LIMIT 150
+                """
+            )
+            rows = cur.fetchall()
+            artifact["history_hits"] = len(rows)
+            if rows:
+                artifact["sources"] = list(artifact.get("sources") or []) + ["history"]
+            for url, title in rows:
+                user_ids.update(_roblox_user_ids_from_text(str(url or "")))
+                title_text = str(title or "").strip()
+                if title_text:
+                    title_match = _ROBLOX_USERNAME_FROM_TITLE.match(title_text)
+                    if title_match:
+                        usernames.add(title_match.group(1))
+        except sqlite3.Error:
+            pass
+        finally:
+            conn.close()
+    cookies_db = profile_dir / "Cookies"
+    conn = _sqlite_open_readonly(cookies_db)
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT host_key, name FROM cookies
+                WHERE host_key LIKE '%roblox%'
+                LIMIT 80
+                """
+            )
+            rows = cur.fetchall()
+            artifact["cookie_hits"] = len(rows)
+            if rows:
+                artifact["sources"] = list(artifact.get("sources") or []) + ["cookies"]
+            for _host, name in rows:
+                cookie_name = str(name or "")
+                if cookie_name.upper() == ".ROBLOSECURITY":
+                    artifact["authenticated"] = True
+                for uid in re.findall(r"(\d{6,})", cookie_name):
+                    if len(uid) >= 6:
+                        user_ids.add(uid)
+        except sqlite3.Error:
+            pass
+        finally:
+            conn.close()
+    artifact["user_ids"] = sorted(user_ids)
+    artifact["usernames"] = sorted(usernames)
+    return artifact
+
+
+def _scan_firefox_roblox_profile(profile_name: str, profile_dir: Path) -> dict:
+    artifact: dict[str, object] = {
+        "browser": "Firefox",
+        "profile": profile_name,
+        "user_ids": [],
+        "usernames": [],
+        "authenticated": False,
+        "history_hits": 0,
+        "cookie_hits": 0,
+        "sources": [],
+    }
+    user_ids: set[str] = set()
+    usernames: set[str] = set()
+    places_db = profile_dir / "places.sqlite"
+    conn = _sqlite_open_readonly(places_db)
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT url, title FROM moz_places
+                WHERE url LIKE '%roblox.com%'
+                ORDER BY last_visit_date DESC
+                LIMIT 150
+                """
+            )
+            rows = cur.fetchall()
+            artifact["history_hits"] = len(rows)
+            if rows:
+                artifact["sources"] = list(artifact.get("sources") or []) + ["history"]
+            for url, title in rows:
+                user_ids.update(_roblox_user_ids_from_text(str(url or "")))
+                title_text = str(title or "").strip()
+                if title_text:
+                    title_match = _ROBLOX_USERNAME_FROM_TITLE.match(title_text)
+                    if title_match:
+                        usernames.add(title_match.group(1))
+        except sqlite3.Error:
+            pass
+        finally:
+            conn.close()
+    cookies_db = profile_dir / "cookies.sqlite"
+    conn = _sqlite_open_readonly(cookies_db)
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT host, name FROM moz_cookies
+                WHERE host LIKE '%roblox%'
+                LIMIT 80
+                """
+            )
+            rows = cur.fetchall()
+            artifact["cookie_hits"] = len(rows)
+            if rows:
+                artifact["sources"] = list(artifact.get("sources") or []) + ["cookies"]
+            for _host, name in rows:
+                cookie_name = str(name or "")
+                if cookie_name.upper() == ".ROBLOSECURITY":
+                    artifact["authenticated"] = True
+        except sqlite3.Error:
+            pass
+        finally:
+            conn.close()
+    artifact["user_ids"] = sorted(user_ids)
+    artifact["usernames"] = sorted(usernames)
+    return artifact
+
+
+def roblox_browser_account_scan() -> dict:
+    if platform.system() != "Windows":
+        return {"available": False, "reason": "Browser Roblox scan is Windows-focused in this build"}
+    artifacts: list[dict] = []
+    for browser, base in _chromium_user_data_roots():
+        for profile in _chromium_profile_names(base):
+            profile_dir = base / profile
+            row = _scan_chromium_roblox_profile(browser, profile, profile_dir)
+            if row.get("user_ids") or row.get("usernames") or row.get("authenticated"):
+                artifacts.append(row)
+    appdata = os.getenv("APPDATA")
+    if appdata:
+        profiles_root = Path(appdata) / "Mozilla" / "Firefox" / "Profiles"
+        if profiles_root.is_dir():
+            try:
+                for entry in profiles_root.iterdir():
+                    if entry.is_dir():
+                        row = _scan_firefox_roblox_profile(entry.name, entry)
+                        if row.get("user_ids") or row.get("usernames") or row.get("authenticated"):
+                            artifacts.append(row)
+            except OSError:
+                pass
+    accounts_by_id: dict[str, dict] = {}
+    accounts_by_name: dict[str, dict] = {}
+    for art in artifacts:
+        browser = str(art.get("browser") or "Browser")
+        profile = str(art.get("profile") or "unknown")
+        source_bits = [f"{browser}/{profile}:{src}" for src in (art.get("sources") or [])]
+        for uid in art.get("user_ids") or []:
+            key = str(uid)
+            entry = accounts_by_id.setdefault(
+                key,
+                {"user_id": key, "username": None, "sources": [], "authenticated": False},
+            )
+            entry["sources"] = sorted(set(entry["sources"]) | set(source_bits))
+            entry["authenticated"] = entry["authenticated"] or bool(art.get("authenticated"))
+        for username in art.get("usernames") or []:
+            key = str(username)
+            entry = accounts_by_name.setdefault(
+                key,
+                {"user_id": None, "username": key, "sources": [], "authenticated": False},
+            )
+            entry["sources"] = sorted(set(entry["sources"]) | set(source_bits))
+            entry["authenticated"] = entry["authenticated"] or bool(art.get("authenticated"))
+    accounts = list(accounts_by_id.values()) + [
+        acct for acct in accounts_by_name.values() if acct["username"] not in {a.get("username") for a in accounts_by_id.values()}
+    ]
+    return {
+        "available": True,
+        "artifact_count": len(artifacts),
+        "artifacts": artifacts[:30],
+        "accounts": accounts[:40],
+        "aggregate_user_ids": sorted(accounts_by_id.keys()),
+        "aggregate_usernames": sorted(accounts_by_name.keys()),
+        "note": "Recovers Roblox user IDs and usernames from Chrome, Edge, Brave, Opera, and Firefox history/cookies.",
+    }
+
+
 def extract_roblox_signals(text: str) -> dict:
     user_ids = sorted(set(re.findall(r"\b(?:userId|UserId|userid|uid)[=: ]+(\d{3,})\b", text)))[:40]
     usernames = sorted(set(re.findall(r"\b(?:username|Username|userName|UserName)[=: ]+([A-Za-z0-9_]{3,20})\b", text)))[:40]
@@ -6184,7 +6535,26 @@ def roblox_diagnostics() -> dict:
                 except Exception as exc:
                     logs.append({"name": path.name, "error": str(exc)})
 
-    return {"detected": bool(logs), "log_locations_checked": [str(path) for path in candidates], "logs": logs}
+    browser_scan = roblox_browser_account_scan()
+    aggregate_user_ids: set[str] = set()
+    aggregate_usernames: set[str] = set()
+    for log in logs:
+        signals = log.get("signals") or {}
+        aggregate_user_ids.update(str(uid) for uid in signals.get("user_ids") or [])
+        aggregate_usernames.update(str(name) for name in signals.get("usernames") or [])
+    if browser_scan.get("available"):
+        aggregate_user_ids.update(str(uid) for uid in browser_scan.get("aggregate_user_ids") or [])
+        aggregate_usernames.update(str(name) for name in browser_scan.get("aggregate_usernames") or [])
+
+    return {
+        "detected": bool(logs) or bool(browser_scan.get("accounts")),
+        "log_locations_checked": [str(path) for path in candidates],
+        "logs": logs,
+        "browser_scan": browser_scan,
+        "accounts": browser_scan.get("accounts") or [],
+        "aggregate_user_ids": sorted(aggregate_user_ids),
+        "aggregate_usernames": sorted(aggregate_usernames),
+    }
 
 
 
@@ -6656,6 +7026,7 @@ $rows | Select-Object -First 2500 | ConvertTo-Json -Compress -Depth 3
                 "normalized_path": norm,
                 "last_execution_utc": iso,
                 "file_exists": exists,
+                "path_allowlisted": bam_path_is_benign_system(norm) if norm else True,
                 "sid": it.get("Sid"),
                 "executor_name_hits": profile["executor_name_hits"],
                 "cheat_filename_hints": profile["cheat_filename_hints"],
@@ -6725,6 +7096,7 @@ $rows | Select-Object -First 2500 | ConvertTo-Json -Compress -Depth 3
                 "normalized_path": norm,
                 "last_execution_utc": iso,
                 "file_exists": exists,
+                "path_allowlisted": bam_path_is_benign_system(norm) if norm else True,
                 "sid": it.get("Sid"),
                 "executor_name_hits": profile["executor_name_hits"],
                 "cheat_filename_hints": profile["cheat_filename_hints"],
@@ -8646,6 +9018,9 @@ def _chromium_user_data_roots() -> list[tuple[str, Path]]:
         ("Chrome", Path(la) / "Google" / "Chrome" / "User Data"),
         ("Edge", Path(la) / "Microsoft" / "Edge" / "User Data"),
         ("Brave", Path(la) / "BraveSoftware" / "Brave-Browser" / "User Data"),
+        ("Opera", Path(la) / "Opera Software" / "Opera Stable" / "User Data"),
+        ("Opera GX", Path(la) / "Opera Software" / "Opera GX Stable" / "User Data"),
+        ("Vivaldi", Path(la) / "Vivaldi" / "User Data"),
     )
     for label, base in mapping:
         if base.is_dir():
@@ -8656,7 +9031,7 @@ def _chromium_user_data_roots() -> list[tuple[str, Path]]:
 def _chromium_history_database_paths() -> list[tuple[str, str, Path]]:
     paths: list[tuple[str, str, Path]] = []
     for browser, base in _chromium_user_data_roots():
-        for prof in ("Default", "Profile 1", "Profile 2", "Profile 3"):
+        for prof in _chromium_profile_names(base):
             hp = base / prof / "History"
             if hp.is_file():
                 paths.append((browser, prof, hp))
@@ -8695,14 +9070,9 @@ def _download_row_matches(path: str, url: str, patterns: dict[str, re.Pattern[st
 
 def _read_chromium_downloads(browser: str, profile: str, history_db: Path, patterns: dict[str, re.Pattern[str]]) -> list[dict]:
     items: list[dict] = []
-    uri = f"file:{history_db.as_posix()}?mode=ro"
-    try:
-        conn = sqlite3.connect(uri, uri=True, timeout=2.5)
-    except sqlite3.Error:
-        try:
-            conn = sqlite3.connect(str(history_db), timeout=2.5)
-        except sqlite3.Error:
-            return items
+    conn = _sqlite_open_readonly(history_db)
+    if not conn:
+        return items
     try:
         cur = conn.cursor()
         cur.execute(
@@ -8758,14 +9128,9 @@ def _read_chromium_downloads(browser: str, profile: str, history_db: Path, patte
 
 def _read_firefox_downloads(profile_name: str, db_path: Path, patterns: dict[str, re.Pattern[str]]) -> list[dict]:
     items: list[dict] = []
-    uri = f"file:{db_path.as_posix()}?mode=ro"
-    try:
-        conn = sqlite3.connect(uri, uri=True, timeout=2.5)
-    except sqlite3.Error:
-        try:
-            conn = sqlite3.connect(str(db_path), timeout=2.5)
-        except sqlite3.Error:
-            return items
+    conn = _sqlite_open_readonly(db_path)
+    if not conn:
+        return items
     queries = (
         """
         SELECT content, source, start_time, end_time, state, total_bytes, fileSize
@@ -8798,8 +9163,8 @@ def _read_firefox_downloads(profile_name: str, db_path: Path, patterns: dict[str
             source_field = str(row[1] or "") if len(row) > 1 else ""
             start_time = row[2] if len(row) > 2 else None
             end_time = row[3] if len(row) > 3 else None
-            started = chrome_webkit_time_to_iso(start_time)
-            ended = chrome_webkit_time_to_iso(end_time)
+            started = firefox_pr_time_to_iso(start_time)
+            ended = firefox_pr_time_to_iso(end_time)
             url = source_field if source_field.startswith("http") else ""
             suspicious, labels = _download_row_matches(path, url, patterns)
             items.append(
@@ -8856,8 +9221,8 @@ def browser_download_history_scan() -> dict[str, object]:
         "suspicious_count": suspicious_count,
         "browsers_probed": browsers_probed[:20],
         "items": items[:250],
-        "note": "Reads Chrome, Edge, Brave (History downloads table) and Firefox (downloads.sqlite). "
-        "Includes completed and interrupted downloads when the browser database is accessible.",
+        "note": "Reads Chrome, Edge, Brave, Opera, and Vivaldi (History downloads table) and Firefox "
+        "(downloads.sqlite). Copies locked databases when needed.",
     }
 
 
@@ -9827,13 +10192,16 @@ def build_user_activity_timeline(
 
     for item in bam.get("items") or []:
         path = str(item.get("normalized_path") or item.get("registry_path_value") or "")
-        if not path:
+        if not path or item.get("path_allowlisted") or bam_path_is_benign_system(path):
+            continue
+        labels = list(item.get("executor_name_hits") or [])
+        if not labels and not item.get("cheat_filename_hints"):
             continue
         _append_activity_event(
             events,
             category="execution",
             kind="bam_execution",
-            label="Program executed",
+            label=", ".join(labels) if labels else "Program executed",
             path=path,
             occurred_at=item.get("last_execution_utc"),
             timestamp_source="bam_registry",
@@ -10561,8 +10929,12 @@ def build_executable_inventory(
 
     for item in bam.get("items") or []:
         path = str(item.get("normalized_path") or item.get("registry_path_value") or "")
+        if not path or item.get("path_allowlisted") or bam_path_is_benign_system(path):
+            continue
         labels = match_executor_labels(path, patterns)
         labels.extend(cheat_filename_hint_labels(_digest_basename(path)))
+        if not labels:
+            continue
         upsert(
             path,
             source="execution_history",
@@ -10654,9 +11026,11 @@ def build_execution_activity_feed(
     patterns = executor_name_patterns()
     for item in bam.get("items") or []:
         path = str(item.get("normalized_path") or "")
-        if not path:
+        if not path or item.get("path_allowlisted") or bam_path_is_benign_system(path):
             continue
         labels = match_executor_labels(path, patterns)
+        if not labels and not item.get("cheat_filename_hints"):
+            continue
         suspicious = bool(labels) or item.get("file_exists") is False
         add(
             path=path,

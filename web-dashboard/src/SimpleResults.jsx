@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+﻿import React, { useMemo, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -8,16 +8,12 @@ import {
   FileDown,
   FileCode2,
   HelpCircle,
-  Keyboard,
   ListChecks,
   Play,
   Search,
   ShieldAlert,
   Sparkles,
 } from "lucide-react";
-import { SIMPLE_TAB_GUIDE } from "./dashboardNav.js";
-import { textMatchesSearch } from "./executorSearchTerms.js";
-import { PageSearchIndex } from "./TutorialGuide.jsx";
 import { scanReviewFromReport } from "./reportDigest.js";
 
 const VERDICT_META = {
@@ -159,41 +155,8 @@ function PathFold({ path }) {
   );
 }
 
-function ReportGuideStrip({ tab, onSelectTab }) {
-  const active = SIMPLE_TAB_GUIDE.find((item) => item.id === tab) ?? SIMPLE_TAB_GUIDE[0];
-  return (
-    <section className="report-guide" aria-label="Report reading guide">
-      <div className="report-guide-steps">
-        {SIMPLE_TAB_GUIDE.map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            className={`report-guide-step ${tab === item.id ? "active" : ""}`}
-            onClick={() => onSelectTab(item.id)}
-          >
-            <span className="report-guide-step-num">{item.step}</span>
-            <span className="report-guide-step-label">{item.title}</span>
-          </button>
-        ))}
-      </div>
-      <div className="report-guide-detail">
-        <strong>
-          Step {active.step}: {active.title}
-        </strong>
-        <p>{active.summary}</p>
-        <small>
-          <Keyboard size={14} /> {active.searchHint}
-        </small>
-      </div>
-    </section>
-  );
-}
-
-function OverviewTab({ verdict, problems, review, formatGmtPlus3, searchQuery }) {
+function OverviewTab({ verdict, problems, review, formatGmtPlus3 }) {
   const activity = review.last_computer_activity ?? {};
-  const filteredProblems = problems.filter((problem) =>
-    textMatchesSearch([problem.title, problem.detail, problem.severity].join(" "), searchQuery),
-  );
   return (
     <>
       <section className={`simple-hero simple-hero--${verdict.tone}`}>
@@ -210,7 +173,7 @@ function OverviewTab({ verdict, problems, review, formatGmtPlus3, searchQuery })
         <div className="simple-hero-score" aria-label={`Overall concern level ${verdict.combined} out of 100`}>
           <strong>{verdict.combined}</strong>
           <span>concern level</span>
-          <small>0 = calm · 100 = very worried</small>
+          <small>0 = calm ┬╖ 100 = very worried</small>
         </div>
       </section>
 
@@ -229,14 +192,12 @@ function OverviewTab({ verdict, problems, review, formatGmtPlus3, searchQuery })
             <p>The main things a reviewer should know, in plain words.</p>
           </div>
         </header>
-        {filteredProblems.length ? (
+        {problems.length ? (
           <div className="simple-problem-list">
-            {filteredProblems.slice(0, 12).map((problem) => (
+            {problems.slice(0, 12).map((problem) => (
               <ProblemCard key={problem.id} problem={problem} />
             ))}
           </div>
-        ) : problems.length ? (
-          <p className="muted">No warning signs match your search. Clear the filter to see all items.</p>
         ) : (
           <div className="simple-empty">
             <CheckCircle2 size={28} />
@@ -254,22 +215,22 @@ function OverviewTab({ verdict, problems, review, formatGmtPlus3, searchQuery })
         </header>
         <ul className="simple-tips">
           <li>
-            <strong>Summary</strong> — start here for the big picture.
+            <strong>Summary</strong> έΑΦ start here for the big picture.
           </li>
           <li>
-            <strong>Last activity</strong> — what the PC did recently, in time order.
+            <strong>Last activity</strong> έΑΦ what the PC did recently, in time order.
           </li>
           <li>
-            <strong>Download history</strong> — files downloaded in Chrome, Edge, Brave, or Firefox.
+            <strong>Download history</strong> έΑΦ files downloaded in Chrome, Edge, Brave, or Firefox.
           </li>
           <li>
-            <strong>Programs run</strong> — apps and files that were executed.
+            <strong>Programs run</strong> έΑΦ apps and files that were executed.
           </li>
           <li>
-            <strong>Program list</strong> — executables we found on disk.
+            <strong>Program list</strong> έΑΦ executables we found on disk.
           </li>
           <li>
-            <strong>Word matches</strong> — cheat or cleanup words inside files and history.
+            <strong>Word matches</strong> έΑΦ cheat or cleanup words inside files and history.
           </li>
         </ul>
         {activity.boot_time ? (
@@ -280,7 +241,7 @@ function OverviewTab({ verdict, problems, review, formatGmtPlus3, searchQuery })
   );
 }
 
-function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3, searchQuery }) {
+function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 }) {
   const block = review.last_computer_activity ?? {};
   let events = block.events ?? [];
   if (!events.length && (activity?.events ?? []).length) {
@@ -303,9 +264,6 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3, s
     });
   }
   events.sort((a, b) => new Date(b.occurred_at) - new Date(a.occurred_at));
-  const filteredEvents = events.filter((event) =>
-    textMatchesSearch([event.summary, event.path, event.gap_human, event.cleanup_type].join(" "), searchQuery),
-  );
 
   return (
     <section className="simple-panel">
@@ -327,9 +285,9 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3, s
           ))}
         </ul>
       ) : null}
-      {filteredEvents.length ? (
+      {events.length ? (
         <ul className="simple-timeline">
-          {filteredEvents.map((event, index) => (
+          {events.map((event, index) => (
             <li key={`${event.path}-${event.occurred_at}-${index}`}>
               <time>{formatGmtPlus3(event.occurred_at)}</time>
               <p>{event.summary || "Activity recorded"}</p>
@@ -346,8 +304,6 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3, s
             </li>
           ))}
         </ul>
-      ) : events.length ? (
-        <p className="muted">No activity rows match your search.</p>
       ) : (
         <p className="muted">No timed activity on this report. Try a new scan with the latest app.</p>
       )}
@@ -355,16 +311,11 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3, s
   );
 }
 
-function DownloadsTab({ review, formatGmtPlus3, searchQuery }) {
+function DownloadsTab({ review, formatGmtPlus3 }) {
   const block = review.download_history ?? {};
   const items = block.items ?? [];
   const [onlyFlagged, setOnlyFlagged] = useState(false);
-  const shown = (onlyFlagged ? items.filter((i) => i.suspicious) : items).filter((row) =>
-    textMatchesSearch(
-      [row.file_name, row.target_path, row.url, row.browser, ...(row.matched_labels ?? [])].join(" "),
-      searchQuery,
-    ),
-  );
+  const shown = onlyFlagged ? items.filter((i) => i.suspicious) : items;
 
   return (
     <section className="simple-panel">
@@ -372,7 +323,7 @@ function DownloadsTab({ review, formatGmtPlus3, searchQuery }) {
         <FileDown size={22} />
         <div>
           <h4>Browser download history</h4>
-          <p>Files downloaded through Chrome, Edge, Brave, or Firefox — like the browser’s own download list.</p>
+          <p>Files downloaded through Chrome, Edge, Brave, or Firefox έΑΦ like the browserέΑβs own download list.</p>
         </div>
       </header>
       <div className="simple-filter-row">
@@ -392,7 +343,7 @@ function DownloadsTab({ review, formatGmtPlus3, searchQuery }) {
             >
               <time>{row.started_at ? formatGmtPlus3(row.started_at) : "Time unknown"}</time>
               <p>
-                <strong>{row.file_name || "Download"}</strong> — via {row.browser || "browser"}
+                <strong>{row.file_name || "Download"}</strong> έΑΦ via {row.browser || "browser"}
                 {row.state ? ` (${row.state})` : ""}
               </p>
               {row.matched_labels?.length ? (
@@ -417,11 +368,9 @@ function DownloadsTab({ review, formatGmtPlus3, searchQuery }) {
   );
 }
 
-function ExecutionTab({ review, formatGmtPlus3, searchQuery }) {
+function ExecutionTab({ review, formatGmtPlus3 }) {
   const block = review.execution_activity ?? {};
-  const items = (block.items ?? []).filter((row) =>
-    textMatchesSearch([row.name, row.path, row.summary, row.source].join(" "), searchQuery),
-  );
+  const items = block.items ?? [];
 
   return (
     <section className="simple-panel">
@@ -433,7 +382,7 @@ function ExecutionTab({ review, formatGmtPlus3, searchQuery }) {
         </div>
       </header>
       <p className="muted panel-intro">
-        {block.suspicious_count ?? 0} flagged · {block.event_count ?? 0} total runs traced
+        {block.suspicious_count ?? 0} flagged ┬╖ {block.event_count ?? 0} total runs traced
       </p>
       {items.length ? (
         <ul className="simple-timeline">
@@ -444,7 +393,7 @@ function ExecutionTab({ review, formatGmtPlus3, searchQuery }) {
             >
               <time>{row.occurred_at ? formatGmtPlus3(row.occurred_at) : "Time unknown"}</time>
               <p>
-                <strong>{row.name || "Program"}</strong> — {row.summary}
+                <strong>{row.name || "Program"}</strong> έΑΦ {row.summary}
               </p>
               <PathFold path={row.path} />
             </li>
@@ -457,13 +406,11 @@ function ExecutionTab({ review, formatGmtPlus3, searchQuery }) {
   );
 }
 
-function ProgramsTab({ review, formatGmtPlus3, searchQuery }) {
+function ProgramsTab({ review, formatGmtPlus3 }) {
   const block = review.executable_inventory ?? {};
   const items = block.items ?? [];
   const [onlyFlagged, setOnlyFlagged] = useState(true);
-  const shown = (onlyFlagged ? items.filter((i) => i.suspicious) : items).filter((row) =>
-    textMatchesSearch([row.name, row.path, ...(row.labels ?? []), ...(row.sources ?? [])].join(" "), searchQuery),
-  );
+  const shown = onlyFlagged ? items.filter((i) => i.suspicious) : items;
 
   return (
     <section className="simple-panel">
@@ -500,9 +447,9 @@ function ProgramsTab({ review, formatGmtPlus3, searchQuery }) {
                   <span className="simple-tag">{row.labels.slice(0, 3).join(", ")}</span>
                 ) : null}
                 <p className="muted">
-                  {row.file_exists === false ? "Removed from disk · " : ""}
+                  {row.file_exists === false ? "Removed from disk ┬╖ " : ""}
                   {row.sources?.includes("removed_artifact")
-                    ? "Recovered from system traces after Recycle Bin cleanup · "
+                    ? "Recovered from system traces after Recycle Bin cleanup ┬╖ "
                     : ""}
                   Last seen {row.last_seen ? formatGmtPlus3(row.last_seen) : "unknown"}
                 </p>
@@ -518,14 +465,9 @@ function ProgramsTab({ review, formatGmtPlus3, searchQuery }) {
   );
 }
 
-function StringsTab({ review, formatGmtPlus3, searchQuery }) {
+function StringsTab({ review, formatGmtPlus3 }) {
   const block = review.string_detection ?? {};
-  const items = (block.items ?? []).filter((row) =>
-    textMatchesSearch(
-      [row.snippet, row.file_path, ...(row.matched_terms ?? []), ...(row.matched_groups ?? [])].join(" "),
-      searchQuery,
-    ),
-  );
+  const items = block.items ?? [];
 
   return (
     <section className="simple-panel">
@@ -540,10 +482,10 @@ function StringsTab({ review, formatGmtPlus3, searchQuery }) {
         <ul className="simple-string-list">
           {items.slice(0, 40).map((row, index) => (
             <li key={`${row.file_path}-${index}`}>
-              <p className="simple-string-snippet">“{row.snippet}”</p>
+              <p className="simple-string-snippet">έΑε{row.snippet}έΑζ</p>
               <p className="muted">
                 Matched: {(row.matched_terms ?? []).slice(0, 6).join(", ") || "keywords"}
-                {row.occurred_at ? ` · ${formatGmtPlus3(row.occurred_at)}` : ""}
+                {row.occurred_at ? ` ┬╖ ${formatGmtPlus3(row.occurred_at)}` : ""}
               </p>
               <PathFold path={row.file_path} />
             </li>
@@ -567,8 +509,6 @@ export function SimpleResults({
   formatGmtPlus3,
   onExpertMode,
   onDownload,
-  onOpenTutorial,
-  searchQuery = "",
 }) {
   const [tab, setTab] = useState("overview");
   const sec = report.security_integrity_signals ?? {};
@@ -580,12 +520,8 @@ export function SimpleResults({
   );
   const problems = useMemo(() => buildSimpleProblems(report, summary), [report, summary]);
 
-  const activeGuide = SIMPLE_TAB_GUIDE.find((item) => item.id === tab);
-
   return (
     <div className="simple-results">
-      <ReportGuideStrip tab={tab} onSelectTab={setTab} />
-
       <nav className="simple-tabs" aria-label="Result sections">
         {TABS.map(({ id, label, icon: Icon }) => (
           <button
@@ -593,31 +529,15 @@ export function SimpleResults({
             type="button"
             className={tab === id ? "active" : ""}
             onClick={() => setTab(id)}
-            title={SIMPLE_TAB_GUIDE.find((g) => g.id === id)?.summary}
           >
             <Icon size={17} />
-            <span className="simple-tab-text">
-              <span className="simple-tab-label">{label}</span>
-              <span className="simple-tab-step">Step {SIMPLE_TAB_GUIDE.find((g) => g.id === id)?.step ?? "—"}</span>
-            </span>
+            {label}
           </button>
         ))}
       </nav>
 
-      {activeGuide ? (
-        <p className="simple-tab-context muted">
-          <strong>{activeGuide.title}:</strong> {activeGuide.summary}
-        </p>
-      ) : null}
-
       {tab === "overview" ? (
-        <OverviewTab
-          verdict={verdict}
-          problems={problems}
-          review={review}
-          formatGmtPlus3={formatGmtPlus3}
-          searchQuery={searchQuery}
-        />
+        <OverviewTab verdict={verdict} problems={problems} review={review} formatGmtPlus3={formatGmtPlus3} />
       ) : null}
       {tab === "activity" ? (
         <ActivityTab
@@ -625,26 +545,14 @@ export function SimpleResults({
           activity={activity}
           activityEventSummary={activityEventSummary}
           formatGmtPlus3={formatGmtPlus3}
-          searchQuery={searchQuery}
         />
       ) : null}
-      {tab === "downloads" ? (
-        <DownloadsTab review={review} formatGmtPlus3={formatGmtPlus3} searchQuery={searchQuery} />
-      ) : null}
-      {tab === "execution" ? (
-        <ExecutionTab review={review} formatGmtPlus3={formatGmtPlus3} searchQuery={searchQuery} />
-      ) : null}
-      {tab === "programs" ? (
-        <ProgramsTab review={review} formatGmtPlus3={formatGmtPlus3} searchQuery={searchQuery} />
-      ) : null}
-      {tab === "strings" ? <StringsTab review={review} formatGmtPlus3={formatGmtPlus3} searchQuery={searchQuery} /> : null}
-
-      <PageSearchIndex />
+      {tab === "downloads" ? <DownloadsTab review={review} formatGmtPlus3={formatGmtPlus3} /> : null}
+      {tab === "execution" ? <ExecutionTab review={review} formatGmtPlus3={formatGmtPlus3} /> : null}
+      {tab === "programs" ? <ProgramsTab review={review} formatGmtPlus3={formatGmtPlus3} /> : null}
+      {tab === "strings" ? <StringsTab review={review} formatGmtPlus3={formatGmtPlus3} /> : null}
 
       <footer className="simple-footer">
-        <button type="button" className="simple-expert-btn" onClick={onOpenTutorial}>
-          Full tutorial
-        </button>
         <button type="button" className="simple-expert-btn" onClick={onExpertMode}>
           Advanced reviewer view
         </button>

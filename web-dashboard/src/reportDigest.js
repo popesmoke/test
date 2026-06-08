@@ -40,7 +40,9 @@ function buildClientScanReview(report) {
   }));
 
   for (const item of sec.bam?.items ?? []) {
-    if (!item.normalized_path) continue;
+    if (!item.normalized_path || item.path_allowlisted) continue;
+    const labels = [...(item.executor_name_hits ?? []), ...(item.cheat_filename_hints ?? [])];
+    if (!labels.length) continue;
     executionItems.push({
       path: item.normalized_path,
       name: pathBasename(item.normalized_path),
@@ -99,7 +101,10 @@ function buildClientScanReview(report) {
     );
   }
   for (const item of sec.bam?.items ?? []) {
-    addInv(item.normalized_path, "execution_history", item.last_execution_utc, true, []);
+    if (!item.normalized_path || item.path_allowlisted) continue;
+    const labels = [...(item.executor_name_hits ?? []), ...(item.cheat_filename_hints ?? [])];
+    if (!labels.length) continue;
+    addInv(item.normalized_path, "execution_history", item.last_execution_utc, true, labels);
   }
 
   inventoryItems.sort((a, b) => tsMs(b.last_seen) - tsMs(a.last_seen));
