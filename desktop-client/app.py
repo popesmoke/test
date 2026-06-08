@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import ctypes
 import hashlib
 import json
 import os
@@ -5718,6 +5719,96 @@ def forensic_file_peek(path: Path, max_bytes: int = 1_572_864) -> tuple[str, flo
     return sha, ent, size
 
 
+_AUTHENTICODE_STATUS_BY_HRESULT: dict[int, str] = {
+    0x00000000: "Valid",
+    0x800B0100: "NotSigned",  # TRUST_E_NOSIGNATURE
+    0x80096010: "HashMismatch",  # TRUST_E_BAD_DIGEST
+    0x800B0003: "NotSupportedFileFormat",  # TRUST_E_SUBJECT_FORM_UNKNOWN
+    0x800B0004: "NotTrusted",  # TRUST_E_SUBJECT_NOT_TRUSTED
+    0x800B0109: "NotTrusted",  # CERT_E_UNTRUSTEDROOT
+    0x800B010A: "NotTrusted",  # CERT_E_CHAINING
+    0x80096004: "NotTrusted",  # CERT_E_EXPIRED
+    0x80096005: "NotTrusted",  # CERT_E_VALIDITYPERIODNESTING
+    0x80096019: "NotTrusted",  # CERT_E_UNTRUSTEDTESTROOT
+}
+
+
+def _hresult_to_authenticode_status(code: int) -> str:
+    return _AUTHENTICODE_STATUS_BY_HRESULT.get(code & 0xFFFFFFFF, "UnknownError")
+
+
+def _win_authenticode_status(path: str) -> str:
+    if not os.path.isfile(path):
+        return "Missing"
+    try:
+        from ctypes import wintypes
+
+        class GUID(ctypes.Structure):
+            _fields_ = [
+                ("Data1", wintypes.DWORD),
+                ("Data2", wintypes.WORD),
+                ("Data3", wintypes.WORD),
+                ("Data4", wintypes.BYTE * 8),
+            ]
+
+        class WINTRUST_FILE_INFO(ctypes.Structure):
+            _fields_ = [
+                ("cbStruct", wintypes.DWORD),
+                ("pcwszFilePath", wintypes.LPCWSTR),
+                ("hFile", wintypes.HANDLE),
+                ("pgKnownSubject", ctypes.c_void_p),
+            ]
+
+        class WINTRUST_DATA(ctypes.Structure):
+            _fields_ = [
+                ("cbStruct", wintypes.DWORD),
+                ("pPolicyCallbackData", ctypes.c_void_p),
+                ("pSIPClientData", ctypes.c_void_p),
+                ("dwUIChoice", wintypes.DWORD),
+                ("fdwRevocationChecks", wintypes.DWORD),
+                ("dwUnionChoice", wintypes.DWORD),
+                ("pFile", ctypes.POINTER(WINTRUST_FILE_INFO)),
+                ("dwStateAction", wintypes.DWORD),
+                ("hWVTStateData", wintypes.HANDLE),
+                ("pwszURLReference", wintypes.LPCWSTR),
+                ("dwProvFlags", wintypes.DWORD),
+                ("dwUIContext", wintypes.DWORD),
+                ("pSignatureSettings", ctypes.c_void_p),
+            ]
+
+        action = GUID(
+            0x00AAC56B,
+            0xCD44,
+            0x11D0,
+            (ctypes.c_ubyte * 8)(0x8C, 0xC2, 0x00, 0xC0, 0x4F, 0xC2, 0x95, 0xEE),
+        )
+        file_info = WINTRUST_FILE_INFO(ctypes.sizeof(WINTRUST_FILE_INFO), path, None, None)
+        trust_data = WINTRUST_DATA(
+            ctypes.sizeof(WINTRUST_DATA),
+            None,
+            None,
+            2,  # WTD_UI_NONE
+            0,  # WTD_REVOKE_NONE
+            1,  # WTD_CHOICE_FILE
+            ctypes.pointer(file_info),
+            1,  # WTD_STATEACTION_VERIFY
+            None,
+            None,
+            0,
+            0,
+            None,
+        )
+        wintrust = ctypes.windll.wintrust
+        result = wintrust.WinVerifyTrust(None, ctypes.byref(action), ctypes.byref(trust_data))
+        trust_data.dwStateAction = 2  # WTD_STATEACTION_CLOSE
+        wintrust.WinVerifyTrust(None, ctypes.byref(action), ctypes.byref(trust_data))
+        return _hresult_to_authenticode_status(result)
+    except OSError:
+        return "Error"
+    except Exception:
+        return "Error"
+
+
 def forensic_authenticode_status(path: str) -> str:
     if platform.system() != "Windows" or not path:
         return "skipped_non_windows"
@@ -5741,43 +5832,11 @@ def forensic_authenticode_status_batch(paths: list[str]) -> dict[str, str]:
         unique.append(path)
     if not unique:
         return {}
-    if len(unique) == 1:
-        path = unique[0]
-        safe = path.replace("'", "''")
-        script = (
-            f"try {{ (Get-AuthenticodeSignature -LiteralPath '{safe}' -ErrorAction Stop).Status.ToString() }} "
-            f"catch {{ 'Error:' + $_.Exception.Message }}"
-        )
-        out = run_command(["powershell", "-NoProfile", "-Command", script], timeout=12, max_chars=400)
-        return {path: (out or "unknown").strip()[:120]}
+    workers = min(8, max(1, len(unique)))
     results: dict[str, str] = {}
-    chunk_size = 28
-    for start in range(0, len(unique), chunk_size):
-        chunk = unique[start : start + chunk_size]
-        paths_json = json.dumps(chunk)
-        script = (
-            f"$paths = @({paths_json} | ConvertFrom-Json); "
-            "$out = @{}; "
-            "foreach ($p in $paths) { "
-            "  if (Test-Path -LiteralPath $p) { "
-            "    try { $out[$p] = (Get-AuthenticodeSignature -LiteralPath $p -ErrorAction Stop).Status.ToString() } "
-            "    catch { $out[$p] = 'Error' } "
-            "  } else { $out[$p] = 'Missing' } "
-            "}; "
-            "$out | ConvertTo-Json -Compress"
-        )
-        raw = run_command(
-            ["powershell", "-NoProfile", "-Command", script],
-            timeout=min(18 + len(chunk), 45),
-            max_chars=12000,
-        )
-        try:
-            parsed = json.loads(raw or "{}")
-        except json.JSONDecodeError:
-            parsed = {}
-        if isinstance(parsed, dict):
-            for key, value in parsed.items():
-                results[str(key)] = str(value).strip()[:120]
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for path, status in pool.map(lambda p: (p, _win_authenticode_status(p)), unique):
+            results[path] = status[:120]
     return results
 
 
