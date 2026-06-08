@@ -271,7 +271,7 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
         <Clock3 size={22} />
         <div>
           <h4>Last computer activity</h4>
-          <p>What this PC did lately. Newest first (GMT+3).</p>
+          <p>What this PC did lately. Newest first (DD/MM/YYYY, GMT+3).</p>
         </div>
       </header>
       {(block.milestones ?? []).length ? (
@@ -291,6 +291,15 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
             <li key={`${event.path}-${event.occurred_at}-${index}`}>
               <time>{formatGmtPlus3(event.occurred_at)}</time>
               <p>{event.summary || "Activity recorded"}</p>
+              {event.gap_human ? (
+                <p className="muted">
+                  Recycle Bin was emptied <strong>{event.gap_human}</strong> after this delete
+                  {event.cleanup_at_display || event.cleanup_at
+                    ? ` (${event.cleanup_at_display || formatGmtPlus3(event.cleanup_at)})`
+                    : ""}
+                  .
+                </p>
+              ) : null}
               <PathFold path={event.path} />
             </li>
           ))}

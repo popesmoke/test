@@ -4932,6 +4932,602 @@ def deletion_and_log_clearing_signals() -> dict:
     }
 
 
+def _event_log_items(raw: object) -> list[dict]:
+    if isinstance(raw, list):
+        return [item for item in raw if isinstance(item, dict)]
+    if isinstance(raw, dict):
+        return [raw]
+    return []
+
+
+def _iso_epoch_seconds(value: str | None) -> float | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def _duration_human(seconds: float) -> str:
+    if seconds < 0:
+        seconds = abs(seconds)
+    if seconds < 90:
+        return f"{int(round(seconds))} seconds"
+    if seconds < 5400:
+        minutes = max(1, int(round(seconds / 60)))
+        return f"{minutes} minute{'s' if minutes != 1 else ''}"
+    if seconds < 172800:
+        hours = round(seconds / 3600, 1)
+        return f"{hours} hours"
+    days = round(seconds / 86400, 1)
+    return f"{days} days"
+
+
+def _format_report_datetime_dd_mm_yyyy(value: str | None) -> str | None:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.strftime("%d/%m/%Y %H:%M:%S UTC")
+    except ValueError:
+        return None
+
+
+def probe_usn_journal_health() -> dict[str, object]:
+    if platform.system() != "Windows":
+        return {"available": False, "drives": [], "disabled_drives": []}
+    drives: list[dict[str, object]] = []
+    for letter in string.ascii_uppercase:
+        root = Path(f"{letter}:\\")
+        if not root.exists():
+            continue
+        out = run_command(["fsutil", "usn", "queryjournal", f"{letter}:"], timeout=10, max_chars=4000)
+        entry: dict[str, object] = {"drive": f"{letter}:", "raw_head": (out or "")[:600]}
+        low = (out or "").lower()
+        if not out or out.startswith("Unavailable"):
+            entry["status"] = "unreadable"
+            entry["impact"] = "Could not read USN journal status on this volume."
+        elif any(
+            phrase in low
+            for phrase in (
+                "no usn journal",
+                "journal not active",
+                "does not have a usn journal",
+                "usn journal is not active",
+            )
+        ):
+            entry["status"] = "disabled_or_missing"
+            entry["impact"] = (
+                "NTFS change journaling is off or missing on this volume. Create, rename, and delete "
+                "activity cannot be reconstructed from USN here."
+            )
+        else:
+            entry["status"] = "active"
+            for pattern, key in (
+                (r"Max USN\s*:\s*(0x[0-9a-fA-F]+|\d+)", "max_usn"),
+                (r"Next USN\s*:\s*(0x[0-9a-fA-F]+|\d+)", "next_usn"),
+                (r"Usn Journal ID\s*:\s*(0x[0-9a-fA-F]+|\d+)", "journal_id"),
+            ):
+                match = re.search(pattern, out, re.I)
+                if match:
+                    entry[key] = match.group(1)
+            max_match = re.search(r"Max USN\s*:\s*(0x[0-9a-fA-F]+|\d+)", out, re.I)
+            if max_match:
+                raw = max_match.group(1)
+                try:
+                    max_val = int(raw, 16) if str(raw).lower().startswith("0x") else int(raw)
+                    if max_val < 1_000_000:
+                        entry["possibly_recreated"] = True
+                        entry["impact"] = (
+                            "USN Max USN is unusually low — the journal may have been deleted and recreated recently."
+                        )
+                except ValueError:
+                    pass
+        drives.append(entry)
+    disabled = [str(item.get("drive") or "") for item in drives if item.get("status") != "active"]
+    return {"available": True, "drives": drives, "disabled_drives": disabled}
+
+
+def build_filesystem_evidence_integrity(
+    *,
+    deletion: dict,
+    command_history: dict,
+    services: dict | None = None,
+) -> dict[str, object]:
+    if platform.system() != "Windows":
+        return {"available": False, "reason": "Filesystem evidence integrity checks are Windows-only"}
+
+    usn_health = probe_usn_journal_health()
+    findings: list[dict[str, object]] = []
+    evidence = deletion.get("deleted_file_evidence")
+    raw_sample = str(deletion.get("raw_sample") or "")
+    clearing_blob = f"{raw_sample}\n{deletion.get('usn_delete_sample') or ''}"
+
+    def add_finding(
+        *,
+        severity: str,
+        category: str,
+        action: str,
+        detail: str,
+        impact: str,
+        occurred_at: str | None = None,
+        evidence_source: str | None = None,
+    ) -> None:
+        findings.append(
+            {
+                "severity": severity,
+                "category": category,
+                "action": action,
+                "detail": detail,
+                "impact": impact,
+                "occurred_at": occurred_at,
+                "occurred_at_display": _format_report_datetime_dd_mm_yyyy(occurred_at),
+                "evidence_source": evidence_source,
+            }
+        )
+
+    for drive_row in usn_health.get("drives") or []:
+        status = str(drive_row.get("status") or "")
+        drive = str(drive_row.get("drive") or "")
+        if status == "disabled_or_missing":
+            add_finding(
+                severity="high",
+                category="usn_journal",
+                action="disabled",
+                detail=f"USN Change Journal is not active on {drive}.",
+                impact=(
+                    "File create, rename, and delete reconstruction from USN is unavailable on this volume. "
+                    "Reviews must rely on Recycle Bin metadata, BAM, Prefetch, PCA, registry artifacts, and event logs."
+                ),
+                evidence_source="fsutil usn queryjournal",
+            )
+        elif status == "unreadable":
+            add_finding(
+                severity="medium",
+                category="usn_journal",
+                action="unreadable",
+                detail=f"USN journal status could not be read on {drive}.",
+                impact="USN-based delete timelines for this volume may be incomplete in this scan.",
+                evidence_source="fsutil usn queryjournal",
+            )
+        elif drive_row.get("possibly_recreated"):
+            add_finding(
+                severity="high",
+                category="usn_journal",
+                action="recreated",
+                detail=f"USN journal on {drive} shows a very low Max USN value.",
+                impact=(
+                    "A deleted and recreated USN journal wipes prior NTFS lifecycle history on that volume. "
+                    "Only activity after recreation can be reconstructed from USN."
+                ),
+                evidence_source="fsutil usn queryjournal",
+            )
+
+    tamper_patterns = (
+        (r"fsutil\s+usn\s+deletejournal", "deleted", "usn_journal", "high"),
+        (r"deletejournal\s+/d", "deleted", "usn_journal", "high"),
+        (r"wevtutil\s+cl|Clear-EventLog", "cleared", "event_log", "high"),
+        (r"vssadmin\s+delete\s+shadows", "deleted", "volume_shadow_copy", "high"),
+        (r"Clear-RecycleBin", "emptied", "recycle_bin", "medium"),
+    )
+    for hit in (command_history.get("hits") or [])[:80]:
+        line = str(hit.get("line") or "")
+        for pattern, action, category, severity in tamper_patterns:
+            if re.search(pattern, line, re.I):
+                add_finding(
+                    severity=severity,
+                    category=category,
+                    action=action,
+                    detail=f"PowerShell history contains: {line[:240]}",
+                    impact=_filesystem_tamper_impact(category, action),
+                    occurred_at=normalize_event_time(hit.get("occurred_at")),
+                    evidence_source="powershell_history",
+                )
+                break
+
+    for match in re.finditer(
+        r"TimeCreated[^}]*?(\d{4}-\d{2}-\d{2}T[^\"\\]+).*?(?:Id[\"']?\s*:\s*(\d+)).*?(?:Message[\"']?\s*:\s*\"([^\"]{0,400}))",
+        raw_sample,
+        re.I | re.S,
+    ):
+        event_id = match.group(2)
+        message = match.group(3)
+        occurred_at = normalize_event_time(match.group(1))
+        if event_id == "3079" or re.search(r"usn.*journal.*delet", message, re.I):
+            add_finding(
+                severity="high",
+                category="usn_journal",
+                action="deleted",
+                detail=f"System event ID {event_id or '?'} references USN journal deletion.",
+                impact=_filesystem_tamper_impact("usn_journal", "deleted"),
+                occurred_at=occurred_at,
+                evidence_source="windows_event_log",
+            )
+        elif event_id in {"104", "1102", "1100"}:
+            add_finding(
+                severity="medium",
+                category="event_log",
+                action="cleared",
+                detail=f"System event ID {event_id} indicates log clearing or logging service interruption.",
+                impact=_filesystem_tamper_impact("event_log", "cleared"),
+                occurred_at=occurred_at,
+                evidence_source="windows_event_log",
+            )
+
+    if re.search(r"fsutil\s+usn\s+deletejournal|deletejournal\s+/d", clearing_blob, re.I):
+        add_finding(
+            severity="high",
+            category="usn_journal",
+            action="deleted",
+            detail="Collected Windows event text mentions fsutil USN deletejournal activity.",
+            impact=_filesystem_tamper_impact("usn_journal", "deleted"),
+            evidence_source="deletion_event_sample",
+        )
+
+    services_raw = str((services or {}).get("raw") or "")
+    if services_raw and re.search(r'"Name"\s*:\s*"EventLog"[^}]*"Status"\s*:\s*(?:1|"Stopped")', services_raw, re.I):
+        add_finding(
+            severity="high",
+            category="event_log",
+            action="service_stopped",
+            detail="Windows Event Log service is not running.",
+            impact=(
+                "Security audit deletes, Recycle Bin emptying logs, and USN deletion events may not be recorded "
+                "while the service is stopped."
+            ),
+            evidence_source="windows_services",
+        )
+    if services_raw and not re.search(r"Sysmon", services_raw, re.I):
+        sysmon_log_missing = True
+        if isinstance(evidence, dict):
+            sysmon_rows = _event_log_items(evidence.get("sysmon_file_delete_events"))
+            sysmon_log_missing = len(sysmon_rows) == 0
+        if sysmon_log_missing:
+            add_finding(
+                severity="medium",
+                category="sysmon",
+                action="unavailable",
+                detail="Sysmon file-delete telemetry was not collected (service absent or log empty).",
+                impact=(
+                    "Independent Sysmon delete events will be missing. USN, Security audit, Recycle Bin metadata, "
+                    "BAM, and Prefetch become more important for delete reconstruction."
+                ),
+                evidence_source="windows_services_and_event_log",
+            )
+
+    usn_lines_read = int(deletion.get("usn_delete_line_count") or 0)
+    active_drives = [
+        str(row.get("drive") or "")
+        for row in (usn_health.get("drives") or [])
+        if row.get("status") == "active"
+    ]
+    if active_drives and usn_lines_read == 0:
+        add_finding(
+            severity="medium",
+            category="usn_journal",
+            action="no_delete_rows",
+            detail="USN journal is active but this scan recovered zero delete rows from the sampled journal tail.",
+            impact=(
+                "Recent delete reconstruction may be limited to Recycle Bin metadata, BAM, Prefetch, and event logs. "
+                "The journal tail may have rotated past older deletes."
+            ),
+            evidence_source="usn_journal_scan",
+        )
+
+    confidence = "normal"
+    if any(item.get("category") == "usn_journal" and item.get("action") in {"disabled", "deleted", "recreated"} for item in findings):
+        confidence = "severely_limited"
+    elif findings:
+        confidence = "reduced"
+
+    return {
+        "available": True,
+        "usn_journal_health": usn_health,
+        "finding_count": len(findings),
+        "findings": findings[:40],
+        "reconstruction_confidence": confidence,
+        "impact_summary": _filesystem_reconstruction_summary(findings, usn_health),
+        "note": "Summarizes whether USN journaling, event logs, and related services appear intact for delete reconstruction.",
+    }
+
+
+def _filesystem_tamper_impact(category: str, action: str) -> str:
+    impacts = {
+        ("usn_journal", "disabled"): (
+            "With USN journaling disabled, NTFS no longer records a durable change history on that volume. "
+            "Delete and rename timelines must be rebuilt from Recycle Bin metadata, BAM, Prefetch, PCA, registry, "
+            "and Windows event logs only."
+        ),
+        ("usn_journal", "deleted"): (
+            "Deleting the USN journal erases prior NTFS change history on that volume. Deletes that happened before "
+            "the wipe cannot be reconstructed from USN."
+        ),
+        ("usn_journal", "recreated"): (
+            "A recreated USN journal starts history from scratch. Only filesystem activity after recreation remains "
+            "visible in USN samples."
+        ),
+        ("event_log", "cleared"): (
+            "Cleared event logs remove Recycle Bin emptying records, audit delete entries, and USN deletion events "
+            "that reviewers would normally use to time cover-up activity."
+        ),
+        ("event_log", "service_stopped"): (
+            "While the Event Log service is stopped, new delete and cleanup events may never be written."
+        ),
+        ("volume_shadow_copy", "deleted"): (
+            "Deleted shadow copies can remove volume snapshots that might otherwise preserve older file metadata."
+        ),
+        ("recycle_bin", "emptied"): (
+            "Manual Recycle Bin emptying is normal, but when paired with suspicious deletes it shortens the window "
+            "where $I metadata is still available."
+        ),
+        ("sysmon", "unavailable"): (
+            "Without Sysmon delete telemetry, reviewers depend more heavily on USN, Security audit, and artifact traces."
+        ),
+    }
+    return impacts.get(
+        (category, action),
+        "This change can reduce how completely file deletion and cleanup activity can be reconstructed.",
+    )
+
+
+def _filesystem_reconstruction_summary(findings: list[dict], usn_health: dict) -> str:
+    if not findings and not (usn_health.get("disabled_drives") or []):
+        return (
+            "USN journaling and sampled event-log sources look intact. Delete reconstruction can use Recycle Bin "
+            "metadata, USN delete rows, BAM, Prefetch, and audit events together."
+        )
+    parts: list[str] = []
+    if usn_health.get("disabled_drives"):
+        parts.append(
+            f"USN journaling is disabled or unreadable on {', '.join(usn_health['disabled_drives'])}."
+        )
+    categories = sorted({str(item.get("category") or "") for item in findings if item.get("category")})
+    if categories:
+        parts.append(f"Tamper or integrity alerts were recorded for: {', '.join(categories)}.")
+    parts.append(
+        "When USN or event logs are disabled, cleared, or recreated, delete timelines fall back to surviving artifacts "
+        "such as Recycle Bin $I metadata (while items remain), BAM, Prefetch, PCA, and registry traces."
+    )
+    return " ".join(parts)
+
+
+def build_deletion_cleanup_analysis(
+    *,
+    trash: dict,
+    deletion: dict,
+    forensic_bundle: dict | None = None,
+) -> dict[str, object]:
+    if platform.system() != "Windows":
+        return {"available": False, "reason": "Deletion cleanup timing is Windows-only"}
+
+    evidence = deletion.get("deleted_file_evidence")
+    recycle_empty_events: list[dict[str, object]] = []
+    for row in _event_log_items((evidence or {}).get("recycle_empty_events")):
+        occurred_at = normalize_event_time(row.get("TimeCreated"))
+        if not occurred_at:
+            continue
+        recycle_empty_events.append(
+            {
+                "occurred_at": occurred_at,
+                "occurred_at_display": _format_report_datetime_dd_mm_yyyy(occurred_at),
+                "source": "application_event_log",
+                "event_id": row.get("Id"),
+                "message": str(row.get("Message") or "")[:320],
+            }
+        )
+    recycle_empty_events.sort(key=lambda row: row.get("occurred_at") or "")
+
+    permanent_cleanup_events: list[dict[str, object]] = []
+    for row in _event_log_items((evidence or {}).get("security_object_deletion_events")):
+        message = str(row.get("Message") or "")
+        if not re.search(r"(?i)recycle|\$recycle\.bin|\$I", message):
+            continue
+        occurred_at = normalize_event_time(row.get("TimeCreated"))
+        if not occurred_at:
+            continue
+        permanent_cleanup_events.append(
+            {
+                "occurred_at": occurred_at,
+                "occurred_at_display": _format_report_datetime_dd_mm_yyyy(occurred_at),
+                "source": "security_audit",
+                "event_id": row.get("Id"),
+                "message": message[:320],
+            }
+        )
+    permanent_cleanup_events.sort(key=lambda row: row.get("occurred_at") or "")
+
+    trash_paths_now = {
+        _artifact_path_key(str(item.get("original_path") or ""))
+        for item in (trash or {}).get("items") or []
+        if item.get("original_path")
+    }
+    file_deletions: list[dict[str, object]] = []
+    seen_delete_paths: set[str] = set()
+
+    def register_deletion(*, path: str, deleted_at: str | None, source: str, still_in_recycle_bin: bool) -> None:
+        normalized = forensic_normalize_pathish(path)
+        if not normalized:
+            return
+        ts = normalize_event_time(deleted_at)
+        if not ts:
+            return
+        key = _artifact_path_key(normalized)
+        if key in seen_delete_paths:
+            return
+        seen_delete_paths.add(key)
+        file_deletions.append(
+            {
+                "path": normalized,
+                "deleted_at": ts,
+                "deleted_at_display": _format_report_datetime_dd_mm_yyyy(ts),
+                "source": source,
+                "still_in_recycle_bin": still_in_recycle_bin,
+            }
+        )
+
+    for item in (trash or {}).get("items") or []:
+        original = str(item.get("original_path") or "").strip()
+        if not original:
+            continue
+        register_deletion(
+            path=original,
+            deleted_at=item.get("display_at") or item.get("deleted_at") or item.get("modified"),
+            source="recycle_bin_metadata",
+            still_in_recycle_bin=True,
+        )
+
+    usn_records = _collect_usn_records_for_removed_artifact_merge(forensic_bundle or {}, deletion or {})
+    for row in usn_records:
+        reasons = [str(reason).upper() for reason in (row.get("reasons") or [])]
+        if not any("DELETE" in reason for reason in reasons):
+            continue
+        path = str(row.get("path") or "")
+        if not path:
+            continue
+        key = _artifact_path_key(path)
+        register_deletion(
+            path=path,
+            deleted_at=row.get("display_at") or row.get("timestamp_utc"),
+            source="usn_delete",
+            still_in_recycle_bin=key in trash_paths_now,
+        )
+
+    correlations: list[dict[str, object]] = []
+    for deletion_row in sorted(file_deletions, key=lambda row: row.get("deleted_at") or "", reverse=True):
+        path = str(deletion_row.get("path") or "")
+        deleted_at = str(deletion_row.get("deleted_at") or "")
+        deleted_epoch = _iso_epoch_seconds(deleted_at)
+        if deleted_epoch is None:
+            continue
+        name = Path(path).name or path
+        cleanup_at: str | None = None
+        cleanup_type = "awaiting_cleanup"
+        cleanup_source = None
+        if deletion_row.get("still_in_recycle_bin"):
+            cleanup_type = "still_in_recycle_bin"
+        else:
+            next_empty = next(
+                (
+                    event
+                    for event in recycle_empty_events
+                    if (_iso_epoch_seconds(str(event.get("occurred_at") or "")) or 0) >= deleted_epoch
+                ),
+                None,
+            )
+            if next_empty:
+                cleanup_at = str(next_empty.get("occurred_at") or "")
+                cleanup_type = "recycle_bin_emptied"
+                cleanup_source = str(next_empty.get("source") or "")
+            else:
+                next_permanent = next(
+                    (
+                        event
+                        for event in permanent_cleanup_events
+                        if (_iso_epoch_seconds(str(event.get("occurred_at") or "")) or 0) >= deleted_epoch
+                    ),
+                    None,
+                )
+                if next_permanent:
+                    cleanup_at = str(next_permanent.get("occurred_at") or "")
+                    cleanup_type = "permanent_recycle_removal"
+                    cleanup_source = str(next_permanent.get("source") or "")
+                else:
+                    cleanup_type = "removed_without_logged_empty"
+
+        gap_seconds: float | None = None
+        gap_human: str | None = None
+        if cleanup_at:
+            cleanup_epoch = _iso_epoch_seconds(cleanup_at)
+            if cleanup_epoch is not None:
+                gap_seconds = max(0.0, cleanup_epoch - deleted_epoch)
+                gap_human = _duration_human(gap_seconds)
+
+        summary = _deletion_cleanup_summary_text(
+            name=name,
+            deleted_at_display=deletion_row.get("deleted_at_display"),
+            cleanup_at_display=_format_report_datetime_dd_mm_yyyy(cleanup_at),
+            cleanup_type=cleanup_type,
+            gap_human=gap_human,
+        )
+        correlations.append(
+            {
+                "path": path,
+                "deleted_at": deleted_at,
+                "deleted_at_display": deletion_row.get("deleted_at_display"),
+                "cleanup_at": cleanup_at,
+                "cleanup_at_display": _format_report_datetime_dd_mm_yyyy(cleanup_at),
+                "cleanup_type": cleanup_type,
+                "cleanup_source": cleanup_source,
+                "gap_seconds": gap_seconds,
+                "gap_human": gap_human,
+                "still_in_recycle_bin": bool(deletion_row.get("still_in_recycle_bin")),
+                "summary": summary,
+            }
+        )
+
+    insights: list[str] = []
+    timed = [row for row in correlations if row.get("gap_human")]
+    if timed:
+        sample = timed[0]
+        insights.append(
+            f"{Path(str(sample.get('path') or '')).name or 'A deleted file'} was removed from the Recycle Bin "
+            f"{sample.get('gap_human')} after it was first deleted."
+        )
+    if recycle_empty_events:
+        latest = recycle_empty_events[-1]
+        insights.append(
+            f"Recycle Bin emptying was logged on {latest.get('occurred_at_display') or latest.get('occurred_at')}."
+        )
+    if not correlations:
+        insights.append("No per-file delete timestamps were available to measure cleanup timing.")
+
+    return {
+        "available": True,
+        "recycle_empty_event_count": len(recycle_empty_events),
+        "recycle_empty_events": recycle_empty_events[:20],
+        "permanent_cleanup_event_count": len(permanent_cleanup_events),
+        "file_deletion_count": len(file_deletions),
+        "correlations": correlations[:80],
+        "insights": insights,
+        "note": (
+            "Measures the time between a file delete (Recycle Bin $I metadata or USN FILE_DELETE) and the next "
+            "logged Recycle Bin emptying or permanent Recycle Bin cleanup event."
+        ),
+    }
+
+
+def _deletion_cleanup_summary_text(
+    *,
+    name: str,
+    deleted_at_display: str | None,
+    cleanup_at_display: str | None,
+    cleanup_type: str,
+    gap_human: str | None,
+) -> str:
+    deleted_text = deleted_at_display or "an unknown time"
+    if cleanup_type == "still_in_recycle_bin":
+        return f"{name} was deleted on {deleted_text} and is still in the Recycle Bin."
+    if cleanup_type == "recycle_bin_emptied" and gap_human and cleanup_at_display:
+        return (
+            f"{name} was deleted on {deleted_text}; the Recycle Bin was emptied {gap_human} later "
+            f"on {cleanup_at_display}."
+        )
+    if cleanup_type == "permanent_recycle_removal" and gap_human and cleanup_at_display:
+        return (
+            f"{name} was deleted on {deleted_text}; permanent Recycle Bin cleanup was logged {gap_human} later "
+            f"on {cleanup_at_display}."
+        )
+    if cleanup_type == "removed_without_logged_empty":
+        return (
+            f"{name} was deleted on {deleted_text}, is no longer in the Recycle Bin, and no Recycle Bin emptying "
+            "event was logged after that delete."
+        )
+    return f"{name} was deleted on {deleted_text}."
+
+
 def bypass_resilience_signals(
     *,
     prefetch: dict,
@@ -10234,9 +10830,15 @@ def _gather_priority_deletion_events(
     executor_artifact_evidence: dict | None = None,
     forensic_bundle: dict | None = None,
     deletion: dict | None = None,
+    deletion_cleanup_analysis: dict | None = None,
 ) -> list[dict]:
     events: list[dict] = []
     seen: set[tuple[str, str]] = set()
+    cleanup_by_path = {
+        _artifact_path_key(str(row.get("path") or "")): row
+        for row in (deletion_cleanup_analysis or {}).get("correlations") or []
+        if isinstance(row, dict)
+    }
 
     def add(*, occurred_at: str | None, path: str, kind: str, removed_only: bool = False) -> None:
         path = str(path or "").strip()
@@ -10247,15 +10849,27 @@ def _gather_priority_deletion_events(
         if key in seen:
             return
         seen.add(key)
-        events.append(
-            {
-                "occurred_at": ts,
-                "category": "deletions",
-                "kind": kind,
-                "summary": _deletion_activity_summary(path, removed_only=removed_only),
-                "path": path,
-            }
-        )
+        cleanup = cleanup_by_path.get(_artifact_path_key(path)) or {}
+        summary = str(cleanup.get("summary") or "") or _deletion_activity_summary(path, removed_only=removed_only)
+        payload = {
+            "occurred_at": ts,
+            "category": "deletions",
+            "kind": kind,
+            "summary": summary,
+            "path": path,
+        }
+        if cleanup:
+            payload.update(
+                {
+                    "cleanup_at": cleanup.get("cleanup_at"),
+                    "cleanup_at_display": cleanup.get("cleanup_at_display"),
+                    "cleanup_type": cleanup.get("cleanup_type"),
+                    "gap_seconds": cleanup.get("gap_seconds"),
+                    "gap_human": cleanup.get("gap_human"),
+                    "still_in_recycle_bin": cleanup.get("still_in_recycle_bin"),
+                }
+            )
+        events.append(payload)
 
     for item in (trash or {}).get("items") or []:
         original = str(item.get("original_path") or "").strip()
@@ -10319,6 +10933,8 @@ def build_last_computer_activity(
     executor_artifact_evidence: dict | None = None,
     forensic_bundle: dict | None = None,
     deletion: dict | None = None,
+    deletion_cleanup_analysis: dict | None = None,
+    filesystem_evidence_integrity: dict | None = None,
 ) -> dict:
     milestones: list[dict] = []
     if boot_time:
@@ -10352,6 +10968,7 @@ def build_last_computer_activity(
         executor_artifact_evidence=executor_artifact_evidence,
         forensic_bundle=forensic_bundle,
         deletion=deletion,
+        deletion_cleanup_analysis=deletion_cleanup_analysis,
     )
     other_events: list[dict] = []
     for dl in (download_history or {}).get("items") or []:
@@ -10373,14 +10990,24 @@ def build_last_computer_activity(
         cat = str(event.get("category") or "")
         if cat == "deletions":
             continue
-        other_events.append(
-            {
-                "occurred_at": event.get("occurred_at"),
-                "category": cat,
-                "summary": category_plain.get(cat) or "Activity was recorded on this PC.",
-                "path": event.get("path"),
-            }
-        )
+        payload = {
+            "occurred_at": event.get("occurred_at"),
+            "category": cat,
+            "summary": event.get("summary") or category_plain.get(cat) or "Activity was recorded on this PC.",
+            "path": event.get("path"),
+        }
+        for extra_key in (
+            "cleanup_at",
+            "cleanup_at_display",
+            "cleanup_type",
+            "gap_seconds",
+            "gap_human",
+            "still_in_recycle_bin",
+            "kind",
+        ):
+            if event.get(extra_key) is not None:
+                payload[extra_key] = event.get(extra_key)
+        other_events.append(payload)
     other_events.sort(key=_digest_sort_ts, reverse=True)
     deletion_cap = 80
     other_cap = max(0, 120 - min(len(priority_deletions), deletion_cap))
@@ -10400,6 +11027,8 @@ def build_last_computer_activity(
         + user_activity.get("recent_deletion_count", 0),
         "execution_count": execution_activity.get("event_count", 0),
         "events": events[:120],
+        "deletion_cleanup_insights": (deletion_cleanup_analysis or {}).get("insights") or [],
+        "filesystem_evidence_integrity": filesystem_evidence_integrity or {"available": False},
     }
 
 
@@ -10424,6 +11053,8 @@ def build_scan_review_bundle(
     trash: dict | None = None,
     executor_artifact_evidence: dict | None = None,
     deletion: dict | None = None,
+    deletion_cleanup_analysis: dict | None = None,
+    filesystem_evidence_integrity: dict | None = None,
 ) -> dict:
     execution_activity = build_execution_activity_feed(
         generated_at=generated_at,
@@ -10460,6 +11091,8 @@ def build_scan_review_bundle(
         executor_artifact_evidence=executor_artifact_evidence,
         forensic_bundle=forensic_bundle,
         deletion=deletion,
+        deletion_cleanup_analysis=deletion_cleanup_analysis,
+        filesystem_evidence_integrity=filesystem_evidence_integrity,
     )
     return {
         "available": True,
@@ -10576,6 +11209,17 @@ def build_report() -> dict:
         roblox = fut_roblox.result()
         command_history = fut_cmdhist.result()
         browser_download_history = fut_browser_downloads.result()
+        services_snapshot = fut_services.result()
+        deletion_cleanup_analysis = build_deletion_cleanup_analysis(
+            trash=trash,
+            deletion=deletion_signals,
+            forensic_bundle=forensic_bundle,
+        )
+        filesystem_evidence_integrity = build_filesystem_evidence_integrity(
+            deletion=deletion_signals,
+            command_history=command_history,
+            services=services_snapshot,
+        )
         usn_rows = forensic_bundle.get("usn_file_lifecycle_rows") or []
         merge_removed_executor_artifact_hits(
             designated,
@@ -10701,6 +11345,8 @@ def build_report() -> dict:
             trash=trash,
             executor_artifact_evidence=executor_artifact_evidence,
             deletion=deletion_signals,
+            deletion_cleanup_analysis=deletion_cleanup_analysis,
+            filesystem_evidence_integrity=filesystem_evidence_integrity,
         )
 
     processes = []
@@ -10755,6 +11401,8 @@ def build_report() -> dict:
             "usb_events": fut_usb.result(),
             "shellbag_clear_signal": fut_shellbag.result(),
             "deletion_and_log_clearing_signals": deletion_signals,
+            "deletion_cleanup_analysis": deletion_cleanup_analysis,
+            "filesystem_evidence_integrity": filesystem_evidence_integrity,
             "prefetch_health": prefetch_health,
             "roblox_executor_indicators": executor_indicators,
             "executor_artifact_evidence": executor_artifact_evidence,

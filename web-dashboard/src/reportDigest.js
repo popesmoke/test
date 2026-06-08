@@ -127,15 +127,35 @@ function buildClientScanReview(report) {
       path,
     });
   };
+  const cleanupByPath = new Map(
+    (sec.deletion_cleanup_analysis?.correlations ?? []).map((row) => [String(row.path || "").toLowerCase(), row]),
+  );
   for (const item of trashItems) {
     const path = item.original_path || "";
     if (!path) continue;
+    const cleanup = cleanupByPath.get(path.toLowerCase());
     const name = pathBasename(path);
     addDeletion(
       item.display_at || item.deleted_at || item.modified,
       path,
-      `${name} was deleted or moved to the Recycle Bin.`,
+      cleanup?.summary || `${name} was deleted or moved to the Recycle Bin.`,
     );
+  }
+  for (const row of sec.deletion_cleanup_analysis?.correlations ?? []) {
+    if (!row.path || !row.deleted_at) continue;
+    const key = `${String(row.path).toLowerCase()}|${row.deleted_at}`;
+    if (seenDeletion.has(key)) continue;
+    seenDeletion.add(key);
+    deletionEvents.push({
+      occurred_at: row.deleted_at,
+      category: "deletions",
+      summary: row.summary,
+      path: row.path,
+      cleanup_at: row.cleanup_at,
+      cleanup_at_display: row.cleanup_at_display,
+      cleanup_type: row.cleanup_type,
+      gap_human: row.gap_human,
+    });
   }
   for (const hit of sec.executor_artifact_evidence?.hits ?? []) {
     if (hit.file_exists !== false) continue;

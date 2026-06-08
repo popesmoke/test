@@ -26,22 +26,13 @@ import {
   Trash2,
 } from "lucide-react";
 import "./styles.css";
+import { formatDisplayDate, normalizeIsoDateString } from "./dateFormat.js";
 import { SimpleResults } from "./SimpleResults.jsx";
 
 const API_URL = import.meta.env.VITE_API_URL || "https://virello-secure.onrender.com";
 const BRAND_LOGO = "/assets/virello-scanner-logo.png";
 const BRAND_NAME = "Virello Scanner";
 const DISCORD_INVITE_URL = import.meta.env.VITE_DISCORD_INVITE_URL || "https://discord.gg/wPZXKaPyWY";
-const GMT_PLUS3_FORMATTER = new Intl.DateTimeFormat("en-GB", {
-  timeZone: "Etc/GMT-3",
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-  hour: "2-digit",
-  minute: "2-digit",
-  second: "2-digit",
-  hour12: false,
-});
 
 function authHeaders(token) {
   return { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
@@ -220,10 +211,6 @@ function isIsoDateString(value) {
   return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(value) && !Number.isNaN(new Date(normalizeIsoDateString(value)).getTime());
 }
 
-function normalizeIsoDateString(value) {
-  return String(value).replace(/\.(\d{3})\d+/, ".$1");
-}
-
 function dateMs(value) {
   if (!value) return null;
   const ms = new Date(normalizeIsoDateString(value)).getTime();
@@ -231,11 +218,7 @@ function dateMs(value) {
 }
 
 function formatGmtPlus3(value) {
-  if (!value) return "unknown";
-  const date = new Date(normalizeIsoDateString(value));
-  if (Number.isNaN(date.getTime())) return String(value);
-  const formatted = GMT_PLUS3_FORMATTER.format(date);
-  return `${formatted.replace(",", "")} GMT+3`;
+  return formatDisplayDate(value);
 }
 
 function isScanWindowAccess(report, value) {
@@ -1139,7 +1122,7 @@ function UserActivitySection({ report, query }) {
             </div>
           ) : null}
           <p className="muted activity-note">
-            Every row shows when the action happened (GMT+3). Deleted items use Recycle Bin $I metadata first, then
+            Every row shows when the action happened (DD/MM/YYYY, GMT+3). Deleted items use Recycle Bin $I metadata first, then
             metadata or data-file fallbacks — so null timestamps are resolved when any OS trace remains.
           </p>
         </div>
@@ -1322,7 +1305,7 @@ function StarterSection({ report }) {
           ))}
         </div>
       </Card>
-      <Card icon={Clock3} title="Tracked files (modified + OS access, GMT+3)">
+      <Card icon={Clock3} title="Tracked files (modified + OS access, DD/MM/YYYY)">
         <p className="muted opened-files-intro">
           Primary time is <strong>file modified (mtime)</strong> — when the file last changed on disk. Secondary line is{" "}
           <strong>OS last access (atime)</strong>; Windows updates this when <em>any</em> program reads the file (games,
@@ -1606,19 +1589,115 @@ function CrashLogsSection({ report, query }) {
   );
 }
 
+const CLEANUP_TYPE_LABELS = {
+  still_in_recycle_bin: "Still in Recycle Bin",
+  recycle_bin_emptied: "Recycle Bin emptied",
+  permanent_recycle_removal: "Permanent Recycle Bin removal",
+  removed_without_logged_empty: "Removed without logged emptying",
+  awaiting_cleanup: "Awaiting cleanup",
+};
+
 function DeletionsSection({ report, query }) {
   const sec = report.security_integrity_signals ?? {};
   const trash = report.performance_environment?.trash ?? {};
   const activity = userActivityFromReport(report);
+  const cleanup = sec.deletion_cleanup_analysis ?? {};
+  const integrity = sec.filesystem_evidence_integrity ?? {};
   const deletionEvents = (activity.events ?? []).filter((e) => e.category === "deletions");
+  const cleanupRows = cleanup.correlations ?? [];
   const trashItems = (trash.items ?? []).filter((item) => item.original_path || item.name?.startsWith?.("$I"));
 
   return (
     <>
+      <Card icon={Shield} title="Filesystem evidence integrity">
+        <p className="muted opened-files-intro">
+          Dates use <strong>DD/MM/YYYY</strong> (GMT+3). This section records whether USN journaling, event logs, and
+          related services look intact — or were disabled, cleared, deleted, or recreated.
+        </p>
+        {integrity.available ? (
+          <>
+            <p className="plain-summary">
+              Reconstruction confidence: <strong>{integrity.reconstruction_confidence ?? "unknown"}</strong>
+            </p>
+            {integrity.impact_summary ? <p className="muted">{integrity.impact_summary}</p> : null}
+            {(integrity.findings ?? []).length ? (
+              <div className="executor-event-list">
+                {integrity.findings.slice(0, 12).map((finding, index) => (
+                  <div className="executor-event-row" key={`integrity-${finding.category}-${index}`}>
+                    <div>
+                      <span className={`recency-pill ${finding.severity ?? "medium"}`}>
+                        {finding.category ?? "signal"} · {finding.action ?? "changed"}
+                      </span>
+                      <p className="plain-summary">{finding.detail}</p>
+                      <small className="muted">{finding.impact}</small>
+                      {finding.evidence_source ? (
+                        <small className="timestamp-source">Source: {formatTimestampSource(finding.evidence_source)}</small>
+                      ) : null}
+                    </div>
+                    <time>{finding.occurred_at ? formatGmtPlus3(finding.occurred_at) : "—"}</time>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="muted">No USN, event-log, or service tamper signals were detected in this scan.</p>
+            )}
+          </>
+        ) : (
+          <p className="muted">Filesystem evidence integrity was not collected on this report.</p>
+        )}
+      </Card>
+
+      <Card icon={Clock3} title="Delete-to-cleanup timing">
+        <p className="muted opened-files-intro">
+          Measures the gap between when a file was deleted (Recycle Bin $I metadata or USN FILE_DELETE) and when the
+          Recycle Bin was emptied or items were permanently removed.
+        </p>
+        {(cleanupRows.length ? cleanupRows : deletionEvents).length ? (
+          <div className="executor-event-list">
+            {(cleanupRows.length ? cleanupRows : deletionEvents).slice(0, 40).map((row, index) => (
+              <div className="executor-event-row" key={`cleanup-${row.path}-${index}`}>
+                <div>
+                  <span className={`recency-pill ${row.cleanup_type ?? row.recency ?? "unknown"}`}>
+                    {CLEANUP_TYPE_LABELS[row.cleanup_type] ??
+                      (row.recency ?? "unknown").replace?.(/_/g, " ") ??
+                      "Deletion"}
+                  </span>
+                  <p className="plain-summary">{row.summary || activityEventSummary(row)}</p>
+                  <p className="executor-event-path">{row.path}</p>
+                  {row.gap_human ? (
+                    <small className="muted">
+                      Time between delete and cleanup: <strong>{row.gap_human}</strong>
+                      {row.cleanup_at_display || row.cleanup_at
+                        ? ` · cleanup logged ${row.cleanup_at_display || formatGmtPlus3(row.cleanup_at)}`
+                        : ""}
+                    </small>
+                  ) : null}
+                  {row.timestamp_source ? (
+                    <small className="timestamp-source">
+                      Time reference: {formatTimestampSourceWithHint(row.timestamp_source, row)}
+                    </small>
+                  ) : null}
+                </div>
+                <time>{row.deleted_at_display || (row.occurred_at ? formatGmtPlus3(row.occurred_at) : "No timestamp")}</time>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="muted">No delete-to-cleanup timing could be calculated for this scan.</p>
+        )}
+        {(cleanup.insights ?? []).length ? (
+          <ul className="simple-tips">
+            {cleanup.insights.map((line) => (
+              <li key={line}>{line}</li>
+            ))}
+          </ul>
+        ) : null}
+      </Card>
+
       <Card icon={Trash2} title="Deleted files (resolved timestamps)">
         <p className="muted opened-files-intro">
-          Times are shown in <strong>GMT+3</strong>. When Recycle Bin $I metadata is missing or zeroed, {BRAND_NAME} falls
-          back to metadata file mtime or companion $R data file mtime so reviewers still see an approximate delete window.
+          Times use <strong>DD/MM/YYYY</strong> (GMT+3). When Recycle Bin $I metadata is missing or zeroed, {BRAND_NAME}{" "}
+          falls back to metadata file mtime, USN delete rows, or companion $R data file mtime.
         </p>
         {deletionEvents.length ? (
           <div className="executor-event-list">
@@ -1628,8 +1707,13 @@ function DeletionsSection({ report, query }) {
                   <span className={`recency-pill ${event.recency ?? "unknown"}`}>
                     {(event.recency ?? "unknown").replace(/_/g, " ")}
                   </span>
-                  <p className="plain-summary">{activityEventSummary(event)}</p>
+                  <p className="plain-summary">{event.summary || activityEventSummary(event)}</p>
                   <p className="executor-event-path">{event.path}</p>
+                  {event.gap_human ? (
+                    <small className="muted">
+                      Recycle Bin cleanup followed <strong>{event.gap_human}</strong> later.
+                    </small>
+                  ) : null}
                   <small className="muted">{event.detail}</small>
                   {event.timestamp_source ? (
                     <small className="timestamp-source">
