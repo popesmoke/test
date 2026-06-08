@@ -113,15 +113,51 @@ function buildClientScanReview(report) {
     occurred_at: h.occurred_at || h.history_file_modified_utc,
   }));
 
-  const activityEvents = (activity.events ?? [])
-    .filter((e) => e.occurred_at)
-    .map((e) => ({
-      occurred_at: e.occurred_at,
-      category: e.category,
-      summary: e.label || e.detail,
-      path: e.path,
-    }))
-    .sort((a, b) => tsMs(b.occurred_at) - tsMs(a.occurred_at));
+  const trashItems = perf.trash?.items ?? [];
+  const deletionEvents = [];
+  const seenDeletion = new Set();
+  const addDeletion = (occurredAt, path, summary) => {
+    const key = `${String(path || "").toLowerCase()}|${occurredAt || ""}`;
+    if (!occurredAt || !path || seenDeletion.has(key)) return;
+    seenDeletion.add(key);
+    deletionEvents.push({
+      occurred_at: occurredAt,
+      category: "deletions",
+      summary,
+      path,
+    });
+  };
+  for (const item of trashItems) {
+    const path = item.original_path || "";
+    if (!path) continue;
+    const name = pathBasename(path);
+    addDeletion(
+      item.display_at || item.deleted_at || item.modified,
+      path,
+      `${name} was deleted or moved to the Recycle Bin.`,
+    );
+  }
+  for (const hit of sec.executor_artifact_evidence?.hits ?? []) {
+    if (hit.file_exists !== false) continue;
+    const path = hit.path || "";
+    const name = pathBasename(path);
+    addDeletion(
+      hit.display_at || hit.modified,
+      path,
+      `${name} is no longer on disk or in the Recycle Bin; Windows activity traces still record the deletion.`,
+    );
+  }
+  const activityEvents = [
+    ...deletionEvents,
+    ...(activity.events ?? [])
+      .filter((e) => e.occurred_at && e.category !== "deletions")
+      .map((e) => ({
+        occurred_at: e.occurred_at,
+        category: e.category,
+        summary: e.label || e.detail,
+        path: e.path,
+      })),
+  ].sort((a, b) => tsMs(b.occurred_at) - tsMs(a.occurred_at));
 
   const downloadItems = (sec.browser_download_history?.items ?? []).map((dl) => ({
     browser: dl.browser,

@@ -9200,10 +9200,22 @@ def build_user_activity_timeline(
         )
 
     usn_rows = (forensic_bundle.get("usn_file_lifecycle_rows") or []) if isinstance(forensic_bundle, dict) else []
-    for row in usn_rows[:160]:
+    usn_delete_rows: list[dict] = []
+    usn_other_rows: list[dict] = []
+    for row in usn_rows:
+        if not isinstance(row, dict):
+            continue
         reasons = row.get("reasons") or []
         if not reasons:
             continue
+        path = str(row.get("path") or "")
+        is_delete = any("DELETE" in str(r) for r in reasons)
+        if is_delete and (path_is_suspicious_profile(path) or executor_labels_for_artifact_text(path)):
+            usn_delete_rows.append(row)
+        else:
+            usn_other_rows.append(row)
+    for row in usn_delete_rows + usn_other_rows[:160]:
+        reasons = row.get("reasons") or []
         category = "deletions" if any("DELETE" in str(r) for r in reasons) else "filesystem"
         _append_activity_event(
             events,
@@ -10205,6 +10217,96 @@ def build_string_detection_hits(
     }
 
 
+def _deletion_activity_summary(path: str, *, removed_only: bool = False) -> str:
+    name = Path(str(path or "")).name or "a file"
+    if removed_only:
+        return (
+            f"{name} is no longer on disk or in the Recycle Bin; "
+            "Windows activity traces still record the deletion."
+        )
+    return f"{name} was deleted or moved to the Recycle Bin."
+
+
+def _gather_priority_deletion_events(
+    *,
+    trash: dict | None = None,
+    designated: dict | None = None,
+    executor_artifact_evidence: dict | None = None,
+    forensic_bundle: dict | None = None,
+    deletion: dict | None = None,
+) -> list[dict]:
+    events: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(*, occurred_at: str | None, path: str, kind: str, removed_only: bool = False) -> None:
+        path = str(path or "").strip()
+        ts = normalize_event_time(occurred_at)
+        if not path or not ts:
+            return
+        key = (_artifact_path_key(path), ts)
+        if key in seen:
+            return
+        seen.add(key)
+        events.append(
+            {
+                "occurred_at": ts,
+                "category": "deletions",
+                "kind": kind,
+                "summary": _deletion_activity_summary(path, removed_only=removed_only),
+                "path": path,
+            }
+        )
+
+    for item in (trash or {}).get("items") or []:
+        original = str(item.get("original_path") or "").strip()
+        if original:
+            add(
+                occurred_at=item.get("display_at") or item.get("deleted_at") or item.get("modified"),
+                path=original,
+                kind="recycle_bin",
+            )
+
+    for item in (designated or {}).get("hits") or []:
+        if not item.get("removed_artifact"):
+            continue
+        add(
+            occurred_at=item.get("display_at") or item.get("modified"),
+            path=str(item.get("path") or ""),
+            kind="removed_executor_artifact",
+            removed_only=True,
+        )
+
+    for hit in (executor_artifact_evidence or {}).get("hits") or []:
+        if hit.get("file_exists") is not False:
+            continue
+        path = str(hit.get("path") or "")
+        source = str(hit.get("artifact_source") or "removed_artifact")
+        add(
+            occurred_at=hit.get("display_at") or hit.get("modified"),
+            path=path,
+            kind=source,
+            removed_only=source != "recycle_bin",
+        )
+
+    usn_records = _collect_usn_records_for_removed_artifact_merge(forensic_bundle or {}, deletion or {})
+    for row in usn_records:
+        reasons = [str(r).upper() for r in (row.get("reasons") or [])]
+        if not any("DELETE" in reason or "RENAME_OLD" in reason for reason in reasons):
+            continue
+        path = str(row.get("path") or "")
+        if not path_is_suspicious_profile(path) and not executor_labels_for_artifact_text(path):
+            continue
+        add(
+            occurred_at=row.get("display_at") or row.get("timestamp_utc"),
+            path=path,
+            kind="usn_delete" if any("DELETE" in reason for reason in reasons) else "usn_rename",
+            removed_only=True,
+        )
+
+    events.sort(key=_digest_sort_ts, reverse=True)
+    return events
+
+
 def build_last_computer_activity(
     *,
     generated_at: str,
@@ -10212,6 +10314,11 @@ def build_last_computer_activity(
     user_activity: dict,
     execution_activity: dict,
     download_history: dict | None = None,
+    trash: dict | None = None,
+    designated: dict | None = None,
+    executor_artifact_evidence: dict | None = None,
+    forensic_bundle: dict | None = None,
+    deletion: dict | None = None,
 ) -> dict:
     milestones: list[dict] = []
     if boot_time:
@@ -10231,7 +10338,6 @@ def build_last_computer_activity(
     )
 
     category_plain = {
-        "deletions": "A file was deleted or moved to the Recycle Bin.",
         "execution": "A program was run or launched on this PC.",
         "files": "A file in a watched folder was touched or matched.",
         "persistence": "Something was set to start with Windows.",
@@ -10240,13 +10346,20 @@ def build_last_computer_activity(
         "browser": "Browser history matched reviewed words.",
         "filesystem": "A filesystem change was logged.",
     }
-    events: list[dict] = []
+    priority_deletions = _gather_priority_deletion_events(
+        trash=trash,
+        designated=designated,
+        executor_artifact_evidence=executor_artifact_evidence,
+        forensic_bundle=forensic_bundle,
+        deletion=deletion,
+    )
+    other_events: list[dict] = []
     for dl in (download_history or {}).get("items") or []:
         started = dl.get("started_at") or dl.get("ended_at")
         if not started:
             continue
         fname = str(dl.get("file_name") or "a file")
-        events.append(
+        other_events.append(
             {
                 "occurred_at": started,
                 "category": "browser",
@@ -10258,7 +10371,9 @@ def build_last_computer_activity(
         if not event.get("occurred_at"):
             continue
         cat = str(event.get("category") or "")
-        events.append(
+        if cat == "deletions":
+            continue
+        other_events.append(
             {
                 "occurred_at": event.get("occurred_at"),
                 "category": cat,
@@ -10266,7 +10381,12 @@ def build_last_computer_activity(
                 "path": event.get("path"),
             }
         )
-    events.sort(key=lambda e: _digest_sort_ts(e), reverse=True)
+    other_events.sort(key=_digest_sort_ts, reverse=True)
+    deletion_cap = 80
+    other_cap = max(0, 120 - min(len(priority_deletions), deletion_cap))
+    events = priority_deletions[:deletion_cap] + other_events[:other_cap]
+    events.sort(key=_digest_sort_ts, reverse=True)
+    total_event_count = len(priority_deletions) + len(other_events)
 
     return {
         "available": True,
@@ -10274,7 +10394,8 @@ def build_last_computer_activity(
         "scan_time": generated_at,
         "milestone_count": len(milestones),
         "milestones": milestones,
-        "event_count": len(events),
+        "event_count": total_event_count,
+        "deletion_event_count": len(priority_deletions),
         "recent_event_count": user_activity.get("recent_execution_count", 0)
         + user_activity.get("recent_deletion_count", 0),
         "execution_count": execution_activity.get("event_count", 0),
@@ -10300,6 +10421,9 @@ def build_scan_review_bundle(
     user_activity: dict,
     disk_executables: dict,
     browser_download_history: dict | None = None,
+    trash: dict | None = None,
+    executor_artifact_evidence: dict | None = None,
+    deletion: dict | None = None,
 ) -> dict:
     execution_activity = build_execution_activity_feed(
         generated_at=generated_at,
@@ -10331,6 +10455,11 @@ def build_scan_review_bundle(
         user_activity=user_activity,
         execution_activity=execution_activity,
         download_history=browser_download_history,
+        trash=trash,
+        designated=designated,
+        executor_artifact_evidence=executor_artifact_evidence,
+        forensic_bundle=forensic_bundle,
+        deletion=deletion,
     )
     return {
         "available": True,
@@ -10569,6 +10698,9 @@ def build_report() -> dict:
             user_activity=user_activity,
             disk_executables=disk_executables,
             browser_download_history=browser_download_history,
+            trash=trash,
+            executor_artifact_evidence=executor_artifact_evidence,
+            deletion=deletion_signals,
         )
 
     processes = []
