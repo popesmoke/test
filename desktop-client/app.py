@@ -2743,7 +2743,8 @@ def resource_path(relative_path: str) -> Path:
         base_path = Path(__file__).resolve().parent
     return base_path / relative_path
 
-# Curated from the project's executor catalog (Windows script, Windows external, Mac, mobile).
+# Curated executor catalog — every name below is checked with identical rules (paths, BAM,
+# Prefetch, downloads, hashes, full-PC walk). No single brand is weighted or prioritized.
 EXECUTOR_NAMES = [
     # Windows script executors
     "Volt",
@@ -4861,7 +4862,6 @@ def command_history_keyword_hits() -> dict:
         "Set-MpPreference",
         "Add-MpPreference",
         "Unblock-File",
-        "Potassium",
         "Clear-RecycleBin",
         "$Recycle.Bin",
         "Remove-Item",

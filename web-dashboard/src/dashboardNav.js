@@ -39,7 +39,7 @@ export const SIMPLE_TAB_GUIDE = [
     step: 2,
     title: "Last activity",
     summary: "Deletes, runs, and downloads in time order (MM/DD/YY).",
-    searchHint: "Try Potassium, deleted, Recycle Bin, or a file path.",
+    searchHint: "Try an executor name, deleted, Recycle Bin, or a file path.",
   },
   {
     id: "downloads",

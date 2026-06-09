@@ -10,7 +10,7 @@ const TUTORIAL_SECTIONS = [
     steps: [
       "Open Summary — read the verdict and warning list.",
       "Open Last activity — check deletes and recent runs (newest at top).",
-      "Press Ctrl+F (Windows) or ⌘F (Mac) and search an executor name (e.g. Potassium, Solara).",
+      "Press Ctrl+F (Windows) or ⌘F (Mac) and search any executor name from the catalog (e.g. Solara, Wave, Volt).",
       "If something looks deleted, open Advanced review → Deletions for cleanup timing and USN integrity.",
     ],
   },
@@ -148,7 +148,7 @@ export function PageSearchIndex() {
     <aside className="page-search-index" aria-label="Searchable keywords for browser find">
       <p className="page-search-index-title">Search this page (Ctrl+F / ⌘F)</p>
       <p className="muted">
-        Try executor names, file paths, Recycle Bin, deleted, USN, or dates like 08/06/2026.
+        Try any executor name, file paths, Recycle Bin, deleted, USN, or dates like 06/08/26.
       </p>
       <div className="search-keyword-grid">
         {EXECUTOR_SEARCH_TERMS.map((term) => (
