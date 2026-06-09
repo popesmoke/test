@@ -349,7 +349,7 @@ function DownloadsTab({ review, formatGmtPlus3 }) {
         <FileDown size={22} />
         <div>
           <h4>Browser download history</h4>
-          <p>Files downloaded through Chrome, Edge, Brave, or Firefox έΑΦ like the browserέΑβs own download list.</p>
+          <p>Files downloaded through Chrome, Edge, Brave, or Firefox — like the browser's own download list.</p>
         </div>
       </header>
       <div className="simple-filter-row">
@@ -369,7 +369,7 @@ function DownloadsTab({ review, formatGmtPlus3 }) {
             >
               <time>{row.started_at ? formatGmtPlus3(row.started_at) : "Time unknown"}</time>
               <p>
-                <strong>{row.file_name || "Download"}</strong> έΑΦ via {row.browser || "browser"}
+                <strong>{row.file_name || "Download"}</strong> — via {row.browser || "browser"}
                 {row.state ? ` (${row.state})` : ""}
               </p>
               {row.matched_labels?.length ? (
@@ -408,7 +408,7 @@ function ExecutionTab({ review, formatGmtPlus3 }) {
         </div>
       </header>
       <p className="muted panel-intro">
-        {block.suspicious_count ?? 0} flagged ┬╖ {block.event_count ?? 0} total runs traced
+        {block.suspicious_count ?? 0} flagged · {block.event_count ?? 0} total runs traced
       </p>
       {items.length ? (
         <ul className="simple-timeline">
@@ -419,7 +419,7 @@ function ExecutionTab({ review, formatGmtPlus3 }) {
             >
               <time>{row.occurred_at ? formatGmtPlus3(row.occurred_at) : "Time unknown"}</time>
               <p>
-                <strong>{row.name || "Program"}</strong> έΑΦ {row.summary}
+                <strong>{row.name || "Program"}</strong> — {row.summary}
               </p>
               <PathFold path={row.path} />
             </li>
@@ -508,10 +508,10 @@ function StringsTab({ review, formatGmtPlus3 }) {
         <ul className="simple-string-list">
           {items.slice(0, 40).map((row, index) => (
             <li key={`${row.file_path}-${index}`}>
-              <p className="simple-string-snippet">έΑε{row.snippet}έΑζ</p>
+              <p className="simple-string-snippet">"{row.snippet}"</p>
               <p className="muted">
                 Matched: {(row.matched_terms ?? []).slice(0, 6).join(", ") || "keywords"}
-                {row.occurred_at ? ` ┬╖ ${formatGmtPlus3(row.occurred_at)}` : ""}
+                {row.occurred_at ? ` · ${formatGmtPlus3(row.occurred_at)}` : ""}
               </p>
               <PathFold path={row.file_path} />
             </li>
