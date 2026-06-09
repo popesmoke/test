@@ -181,31 +181,31 @@ function OverviewTab({ verdict, problems, review, formatGmtPlus3 }) {
             {verdict.emoji}
           </span>
           <div>
-            <p className="simple-hero-eyebrow">Overall Assessment</p>
+            <p className="simple-hero-eyebrow">What we think</p>
             <h3>{verdict.label}</h3>
             <p>{verdict.blurb}</p>
           </div>
         </div>
         <div className="simple-hero-score" aria-label={`Overall concern level ${verdict.combined} out of 100`}>
           <strong>{verdict.combined}</strong>
-          <span>Risk Score</span>
-          <small>0 = Safe · 100 = High Risk</small>
+          <span>concern level</span>
+          <small>0 = calm · 100 = very worried</small>
         </div>
       </section>
 
       <section className="simple-stats-row">
-        <SimpleStat label="Issues Found" value={problems.length} hint="Items needing review" />
-        <SimpleStat label="Activity Events" value={activity.event_count ?? 0} hint="Recent system activity" />
-        <SimpleStat label="Deleted Items" value={deletionCount} hint="Files removed from disk" />
-        <SimpleStat label="Suspicious Words" value={review.string_detection?.hit_count ?? 0} hint="Flagged keywords found" />
+        <SimpleStat label="Warning signs" value={problems.length} hint="Read the list below" />
+        <SimpleStat label="Timeline events" value={activity.event_count ?? 0} hint="Chronological log" />
+        <SimpleStat label="Deleted traces" value={deletionCount} hint="Removed but still logged" />
+        <SimpleStat label="Word matches" value={review.string_detection?.hit_count ?? 0} hint="In logs & files" />
       </section>
 
       <section className="simple-panel">
         <header className="simple-panel-head">
           <ListChecks size={22} />
           <div>
-            <h4>Key Findings</h4>
-            <p>Important items that require attention during review.</p>
+            <h4>What stood out</h4>
+            <p>The main things a reviewer should know, in plain words.</p>
           </div>
         </header>
         {problems.length ? (
@@ -217,7 +217,7 @@ function OverviewTab({ verdict, problems, review, formatGmtPlus3 }) {
         ) : (
           <div className="simple-empty">
             <CheckCircle2 size={28} />
-            <p>No significant issues detected on this scan.</p>
+            <p>Nothing scary jumped out on this scan.</p>
           </div>
         )}
       </section>
@@ -226,32 +226,31 @@ function OverviewTab({ verdict, problems, review, formatGmtPlus3 }) {
         <header className="simple-panel-head">
           <Sparkles size={22} />
           <div>
-            <h4>How to Review This Report</h4>
-            <p>Follow these steps to understand the scan results.</p>
+            <h4>Quick guide</h4>
           </div>
         </header>
         <ul className="simple-tips">
           <li>
-            <strong>Summary</strong> — Start here for the overall risk assessment and key findings.
+            <strong>Summary</strong> — start here for the big picture.
           </li>
           <li>
-            <strong>Last activity</strong> — Review recent system events in chronological order.
+            <strong>Last activity</strong> — what the PC did recently, in time order.
           </li>
           <li>
-            <strong>Download history</strong> — Check files downloaded from web browsers.
+            <strong>Download history</strong> — files downloaded in Chrome, Edge, Brave, or Firefox.
           </li>
           <li>
-            <strong>Programs run</strong> — See which applications were recently executed.
+            <strong>Programs run</strong> — apps and files that were executed.
           </li>
           <li>
-            <strong>Program list</strong> — Browse all executables found on the system.
+            <strong>Program list</strong> — executables we found on disk.
           </li>
           <li>
-            <strong>Word matches</strong> — Search for suspicious keywords in files and logs.
+            <strong>Word matches</strong> — cheat or cleanup words inside files and history.
           </li>
         </ul>
         {activity.boot_time ? (
-          <p className="muted small-note">System last booted: {formatGmtPlus3(activity.boot_time)}</p>
+          <p className="muted small-note">PC last turned on: {formatGmtPlus3(activity.boot_time)}</p>
         ) : null}
       </section>
     </>
