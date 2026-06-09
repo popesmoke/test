@@ -2773,7 +2773,6 @@ def resource_path(relative_path: str) -> Path:
 EXECUTOR_NAMES = [
     # Windows script executors
     "Volt",
-    "Potassium",
     "Wave",
     "Synapse Z",
     "Seliware",
@@ -2804,7 +2803,6 @@ EXECUTOR_NAMES = [
 # Extra tokens commonly seen in paths, prefetch stems, or renamed folders.
 EXECUTOR_ALIASES: dict[str, list[str]] = {
     "Volt": ["volt", "voltexecutor", "volt.exe"],
-    "Potassium": ["potassium", "potass", "kpotassium", "potassiumware", "potassium.exe"],
     "Wave": ["waveexecutor", "wave.exe"],
     "Synapse Z": ["synapse", "synapsez", "synapse z"],
     "Seliware": ["seliware", "seliware.exe"],
