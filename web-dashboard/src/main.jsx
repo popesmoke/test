@@ -28,6 +28,8 @@ import {
 } from "lucide-react";
 import "./styles.css";
 import { formatDisplayDate, normalizeIsoDateString } from "./dateFormat.js";
+import { AdminPanel } from "./AdminPanel.jsx";
+import { defenderHasActionableSignal, defenderSummary } from "./defenderSignals.js";
 import { SimpleResults } from "./SimpleResults.jsx";
 import { TutorialGuide } from "./TutorialGuide.jsx";
 
@@ -342,7 +344,6 @@ function buildSuspicionSummary(report) {
     (item) =>
       (item.matched_indicator_names?.length ?? 0) > 0 || (item.matched_cheat_filename_hints?.length ?? 0) > 0,
   );
-  const defenderText = `${sec.defender?.settings ?? ""}\n${sec.defender?.protection_history ?? ""}`;
   const clearingText = sec.deletion_and_log_clearing_signals?.raw_sample ?? "";
   const userAssistText = sec.userassist?.raw_sample ?? "";
   const bamText = sec.bam?.raw_sample ?? "";
@@ -577,12 +578,19 @@ function buildSuspicionSummary(report) {
       detail: "BAM registry output included paths matching reviewed keywords.",
     });
   }
-  if (/exclusion|DisableRealtimeMonitoring|threat|detected|quarantine/i.test(defenderText)) {
-    score += 8;
+  if (defenderHasActionableSignal(sec.defender)) {
+    const view = defenderSummary(sec.defender);
+    const points = view.quarantineCount > 0 ? 12 : view.userExclusions.length ? 6 : 8;
+    score += points;
     reasons.push({
       label: "Defender signal",
-      points: 8,
-      detail: "Windows Defender settings or history had security-relevant entries.",
+      points,
+      detail:
+        view.quarantineCount > 0
+          ? `${view.quarantineCount} quarantine/threat detection(s) and ${view.threatCount} Defender threat record(s).`
+          : view.userExclusions.length
+            ? `Defender has ${view.userExclusions.length} exclusion(s) under user profile folders or real-time protection is off.`
+            : "Windows Defender settings or threat history looked unusual.",
     });
   }
   if (textHasSignal(clearingText) && !/^\s*\[\s*\]\s*$/.test(clearingText)) {
@@ -1447,6 +1455,134 @@ function RobloxSection({ report, query }) {
   );
 }
 
+function SecuritySection({ report, query }) {
+  const sec = report.security_integrity_signals ?? {};
+  const defenderView = defenderSummary(sec.defender);
+  const securityEvents = sec.windows_security_events?.events ?? [];
+  const psEvents = sec.powershell_operational_events?.events ?? [];
+  const serviceEvents = sec.windows_service_change_events?.events ?? [];
+  const q = query.trim().toLowerCase();
+
+  function eventMatches(item) {
+    if (!q) return true;
+    return [item.Message, item.Id, item.ProviderName, item.ThreatName, item.ProcessName]
+      .join(" ")
+      .toLowerCase()
+      .includes(q);
+  }
+
+  return (
+    <>
+      <Card icon={Shield} title="Windows Defender status">
+        {defenderView.available ? (
+          <>
+            <div className={`verdict-pill verdict-pill--${defenderView.tone}`}>{defenderView.statusLabel}</div>
+            <div className="security-kv-grid">
+              <div>
+                <span className="muted">Real-time protection</span>
+                <strong>{defenderView.realtimeEnabled ? "On" : "Off"}</strong>
+              </div>
+              <div>
+                <span className="muted">Tamper protection</span>
+                <strong>{defenderView.tamperProtected === false ? "Off" : defenderView.tamperProtected ? "On" : "Unknown"}</strong>
+              </div>
+              <div>
+                <span className="muted">Threat records</span>
+                <strong>{defenderView.threatCount}</strong>
+              </div>
+              <div>
+                <span className="muted">Quarantine signals</span>
+                <strong>{defenderView.quarantineCount}</strong>
+              </div>
+            </div>
+            {defenderView.userExclusions.length ? (
+              <p className="muted panel-intro">
+                User-profile exclusions: {defenderView.userExclusions.slice(0, 4).join("; ")}
+              </p>
+            ) : null}
+          </>
+        ) : (
+          <p className="muted">{defenderView.detail}</p>
+        )}
+      </Card>
+      <Card icon={Shield} title="Quarantine & threat history">
+        {(defenderView.quarantine ?? []).filter(eventMatches).length ? (
+          <div className="evidence-list">
+            {defenderView.quarantine.filter(eventMatches).slice(0, 30).map((item, index) => (
+              <div className="evidence-row evidence-row--static" key={`q-${index}`}>
+                <div className="evidence-row-main">
+                  <strong className="evidence-row-title">{item.ThreatName || "Threat"}</strong>
+                  <p className="evidence-row-path">{item.ProcessName || (item.Resources ?? []).join?.(", ") || "—"}</p>
+                </div>
+                <time className="evidence-row-time">
+                  {item.DetectionTime || item.InitialDetectionTime || "—"}
+                </time>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="muted">No quarantine or threat-detection rows in this scan.</p>
+        )}
+        <details className="raw-fold">
+          <summary>View raw Defender JSON</summary>
+          <TerminalBlock query={query}>{asJson(sec.defender)}</TerminalBlock>
+        </details>
+      </Card>
+      <Card icon={Terminal} title="Security event log (14 days)">
+        {securityEvents.filter(eventMatches).length ? (
+          <div className="evidence-list">
+            {securityEvents.filter(eventMatches).slice(0, 25).map((item, index) => (
+              <div className="evidence-row evidence-row--static" key={`sec-${index}`}>
+                <div className="evidence-row-main">
+                  <strong className="evidence-row-title">Event {item.Id}</strong>
+                  <p className="evidence-row-path">{(item.Message || "").slice(0, 280)}</p>
+                </div>
+                <time className="evidence-row-time">{item.TimeCreated || "—"}</time>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="muted">No tracked Security log events (log may be disabled or empty).</p>
+        )}
+      </Card>
+      <Card icon={Terminal} title="PowerShell operational log">
+        {psEvents.filter(eventMatches).length ? (
+          <div className="evidence-list">
+            {psEvents.filter(eventMatches).slice(0, 20).map((item, index) => (
+              <div className="evidence-row evidence-row--static" key={`ps-${index}`}>
+                <div className="evidence-row-main">
+                  <strong className="evidence-row-title">Event {item.Id}</strong>
+                  <p className="evidence-row-path">{(item.Message || "").slice(0, 280)}</p>
+                </div>
+                <time className="evidence-row-time">{item.TimeCreated || "—"}</time>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="muted">No PowerShell operational events in the last 14 days.</p>
+        )}
+      </Card>
+      <Card icon={Cpu} title="Service install & state changes">
+        {serviceEvents.filter(eventMatches).length ? (
+          <div className="evidence-list">
+            {serviceEvents.filter(eventMatches).slice(0, 25).map((item, index) => (
+              <div className="evidence-row evidence-row--static" key={`svc-${index}`}>
+                <div className="evidence-row-main">
+                  <strong className="evidence-row-title">Event {item.Id}</strong>
+                  <p className="evidence-row-path">{(item.Message || "").slice(0, 280)}</p>
+                </div>
+                <time className="evidence-row-time">{item.TimeCreated || "—"}</time>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="muted">No service install/state change events captured.</p>
+        )}
+      </Card>
+    </>
+  );
+}
+
 function SystemSection({ report, query }) {
   const system = report.system_overview ?? {};
   const perf = report.performance_environment ?? {};
@@ -2221,6 +2357,7 @@ const resultSections = [
     component: ForensicArtifactsSection,
   },
   { id: "roblox", label: "Roblox", icon: Gamepad2, component: RobloxSection },
+  { id: "security", label: "Security & AV", icon: Shield, component: SecuritySection },
   { id: "system", label: "System", icon: Cpu, component: SystemSection },
   { id: "bypass", label: "Bypass Detection", icon: Shield, component: BypassSection },
   { id: "registry", label: "Registry", icon: Database, component: RegistrySection },
@@ -2380,6 +2517,8 @@ function Dashboard({ token, onLogout }) {
   const detailFetchSeq = useRef(0);
 
   const hasAccess = Boolean(profile?.has_access);
+  const isSuperAdmin = Boolean(profile?.is_super_admin);
+  const [showAdmin, setShowAdmin] = useState(false);
 
   const loadProfile = useCallback(async () => {
     try {
@@ -2606,6 +2745,11 @@ function Dashboard({ token, onLogout }) {
           )}
           {hasAccess ? (
             <>
+              {isSuperAdmin ? (
+                <button type="button" className={showAdmin ? "active" : ""} onClick={() => setShowAdmin((v) => !v)}>
+                  <Shield size={18} /> {showAdmin ? "Back to scans" : "Admin"}
+                </button>
+              ) : null}
               <button onClick={loadSessions}>
                 <RefreshCw size={18} /> Refresh
               </button>
@@ -2648,15 +2792,19 @@ function Dashboard({ token, onLogout }) {
       ) : null}
       {message && <div className="notice">{message}</div>}
       {error && <div className="error-banner">{error}</div>}
-      <div className={`layout ${hasAccess ? "" : "layout-locked"}`}>
-        <SessionList
-          sessions={sessions}
-          selectedId={selectedId}
-          onSelect={setSelectedId}
-          onDelete={deleteSession}
-        />
-        <Results detail={detail} />
-      </div>
+      {isSuperAdmin && showAdmin ? (
+        <AdminPanel apiUrl={API_URL} token={token} authHeaders={authHeaders} />
+      ) : (
+        <div className={`layout ${hasAccess ? "" : "layout-locked"}`}>
+          <SessionList
+            sessions={sessions}
+            selectedId={selectedId}
+            onSelect={setSelectedId}
+            onDelete={deleteSession}
+          />
+          <Results detail={detail} />
+        </div>
+      )}
     </main>
   );
 }

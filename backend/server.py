@@ -50,6 +50,11 @@ DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET", "")
 DISCORD_REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI", "https://virello-secure.onrender.com/auth/discord/callback")
 DISCORD_GUILD_ID = os.getenv("DISCORD_GUILD_ID", "1510614253508493373")
 DISCORD_ACCESS_ROLE_ID = os.getenv("DISCORD_ACCESS_ROLE_ID", "1510614274299531334")
+SUPER_ADMIN_DISCORD_IDS = frozenset(
+    item.strip()
+    for item in os.getenv("SUPER_ADMIN_DISCORD_IDS", "1262056594993315943").split(",")
+    if item.strip()
+)
 DISCORD_AUTH_SCOPES = "identify guilds.members.read"
 PASSWORD_HASH_ITERATIONS = 260_000
 OTP_TTL_MINUTES = int(os.getenv("OTP_TTL_MINUTES", "10"))
@@ -634,6 +639,10 @@ def discord_id_from_subject(subject: str) -> str | None:
     return None
 
 
+def is_super_admin_discord_id(discord_id: str) -> bool:
+    return discord_id in SUPER_ADMIN_DISCORD_IDS
+
+
 def get_discord_profile(discord_id: str) -> dict | None:
     with connect() as conn:
         row = db_execute(conn, "SELECT * FROM discord_users WHERE discord_id = ?", (discord_id,)).fetchone()
@@ -649,6 +658,7 @@ def get_discord_profile(discord_id: str) -> dict | None:
         "username": row["username"],
         "avatar_url": avatar_url,
         "has_access": DISCORD_ACCESS_ROLE_ID in roles,
+        "is_super_admin": is_super_admin_discord_id(discord_id),
     }
 
 
@@ -788,6 +798,16 @@ class Handler(BaseHTTPRequestHandler):
             return False
         return True
 
+    def require_super_admin(self) -> bool:
+        subject = self.require_auth_subject()
+        if not subject:
+            return False
+        discord_id = discord_id_from_subject(subject)
+        if not discord_id or not is_super_admin_discord_id(discord_id):
+            self.send_json(HTTPStatus.FORBIDDEN, {"detail": "super_admin_required"})
+            return False
+        return True
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
@@ -810,6 +830,7 @@ class Handler(BaseHTTPRequestHandler):
                         "username": "Reviewer",
                         "has_access": True,
                         "is_checker": True,
+                        "is_super_admin": False,
                         "avatar_url": None,
                     },
                 )
@@ -860,6 +881,31 @@ class Handler(BaseHTTPRequestHandler):
             save_discord_user(user, roles)
             token = make_token(f"discord-{user['id']}")
             self.redirect(add_query_params(return_to, {"token": token}))
+            return
+
+        if path == "/admin/stats":
+            if not self.require_super_admin():
+                return
+            with connect() as conn:
+                expire_stale_pending_sessions(conn)
+                rows = db_execute(conn, "SELECT status, completed_at FROM sessions").fetchall()
+            counts: dict[str, int] = {}
+            for row in rows:
+                status = row["status"]
+                counts[status] = counts.get(status, 0) + 1
+            recent = sorted(
+                [dict(row) for row in rows if row["status"] == "completed" and row["completed_at"]],
+                key=lambda item: item["completed_at"] or "",
+                reverse=True,
+            )[:10]
+            self.send_json(
+                HTTPStatus.OK,
+                {
+                    "total_sessions": len(rows),
+                    "by_status": counts,
+                    "recent_completions": recent,
+                },
+            )
             return
 
         if path == "/sessions":

@@ -16,7 +16,7 @@ export const EXPERT_NAV_GROUPS = [
     id: "system",
     label: "3 · System & apps",
     description: "OS traces, registry, memory, Roblox, and crashes.",
-    sectionIds: ["system", "registry", "memory", "roblox", "crash"],
+    sectionIds: ["security", "system", "registry", "memory", "roblox", "crash"],
   },
   {
     id: "raw",
@@ -68,5 +68,12 @@ export const SIMPLE_TAB_GUIDE = [
     title: "Word matches",
     summary: "Cheat/inject/cleanup words inside logs and history.",
     searchHint: "Search inject, hub, clear, or executor tokens.",
+  },
+  {
+    id: "security",
+    step: 7,
+    title: "Security & AV",
+    summary: "Defender status, quarantine, PowerShell log, and service changes.",
+    searchHint: "Search threat, quarantine, Defender, or service names.",
   },
 ];

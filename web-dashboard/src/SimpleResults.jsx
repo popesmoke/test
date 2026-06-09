@@ -11,9 +11,11 @@ import {
   ListChecks,
   Play,
   Search,
+  Shield,
   ShieldAlert,
   Sparkles,
 } from "lucide-react";
+import { defenderSummary } from "./defenderSignals.js";
 import { scanReviewFromReport } from "./reportDigest.js";
 
 const VERDICT_META = {
@@ -44,6 +46,7 @@ const TABS = [
   { id: "execution", label: "Programs run", icon: Play },
   { id: "programs", label: "Program list", icon: FileCode2 },
   { id: "strings", label: "Word matches", icon: Search },
+  { id: "security", label: "Security & AV", icon: Shield },
 ];
 
 function simpleVerdict(score, bypassRisk) {
@@ -491,6 +494,67 @@ function ProgramsTab({ review, formatGmtPlus3 }) {
   );
 }
 
+function SecurityTab({ report, formatGmtPlus3 }) {
+  const sec = report.security_integrity_signals ?? {};
+  const defenderView = defenderSummary(sec.defender);
+  const quarantine = defenderView.quarantine ?? [];
+  const serviceEvents = sec.windows_service_change_events?.events ?? [];
+  const psEvents = sec.powershell_operational_events?.events ?? [];
+
+  return (
+    <section className="simple-panel">
+      <header className="simple-panel-head">
+        <Shield size={22} />
+        <div>
+          <h4>Security & antivirus</h4>
+          <p>Defender status, quarantine history, PowerShell logs, and service changes.</p>
+        </div>
+      </header>
+      {defenderView.available ? (
+        <p className={`simple-verdict-line simple-verdict-line--${defenderView.tone}`}>
+          {defenderView.statusLabel}
+        </p>
+      ) : (
+        <p className="muted">{defenderView.detail}</p>
+      )}
+      <div className="simple-stats-row">
+        <SimpleStat label="Threat records" value={defenderView.threatCount ?? 0} />
+        <SimpleStat label="Quarantine" value={defenderView.quarantineCount ?? 0} />
+        <SimpleStat label="PowerShell events" value={psEvents.length} />
+        <SimpleStat label="Service changes" value={serviceEvents.length} />
+      </div>
+      {quarantine.length ? (
+        <ul className="simple-timeline">
+          {quarantine.slice(0, 15).map((row, index) => (
+            <li key={`q-${index}`} className="simple-timeline--warn">
+              <time>{row.DetectionTime || row.InitialDetectionTime || "Unknown time"}</time>
+              <p>
+                <strong>{row.ThreatName || "Threat"}</strong>
+                {row.ProcessName ? ` — ${row.ProcessName}` : ""}
+              </p>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="muted">No quarantine rows were recorded on this scan.</p>
+      )}
+      {serviceEvents.length ? (
+        <>
+          <h5 className="simple-subhead">Recent service changes</h5>
+          <ul className="simple-timeline">
+            {serviceEvents.slice(0, 8).map((row, index) => (
+              <li key={`svc-${index}`}>
+                <time>{row.TimeCreated ? formatGmtPlus3(row.TimeCreated) : "—"}</time>
+                <p>{(row.Message || "").slice(0, 200)}</p>
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : null}
+    </section>
+  );
+}
+
 function StringsTab({ review, formatGmtPlus3 }) {
   const block = review.string_detection ?? {};
   const items = block.items ?? [];
@@ -577,6 +641,7 @@ export function SimpleResults({
       {tab === "execution" ? <ExecutionTab review={review} formatGmtPlus3={formatGmtPlus3} /> : null}
       {tab === "programs" ? <ProgramsTab review={review} formatGmtPlus3={formatGmtPlus3} /> : null}
       {tab === "strings" ? <StringsTab review={review} formatGmtPlus3={formatGmtPlus3} /> : null}
+      {tab === "security" ? <SecurityTab report={report} formatGmtPlus3={formatGmtPlus3} /> : null}
 
       <footer className="simple-footer">
         <button type="button" className="simple-expert-btn" onClick={onExpertMode}>

@@ -2857,6 +2857,30 @@ PATH_ALLOWLIST_FRAGMENTS = (
     "\\mozilla firefox\\",
     "\\spotify\\",
     "\\visual studio\\",
+    "\\valve\\",
+    "\\unity\\",
+    "\\unreal engine\\",
+    "\\obs-studio\\",
+    "\\overwolf\\",
+    "\\razer\\",
+    "\\logitech\\",
+    "\\blizzard\\",
+    "\\battle.net\\",
+    "\\ubisoft\\",
+    "\\ea games\\",
+    "\\rockstar games\\",
+    "\\adobe\\",
+    "\\zoom\\",
+    "\\teams\\",
+    "\\slack\\",
+    "\\notepad++\\",
+    "\\git\\",
+    "\\github\\",
+    "\\jetbrains\\",
+    "\\python\\",
+    "\\wsl\\",
+    "\\java\\",
+    "\\openjdk\\",
 )
 
 # Cheat / hack filename hints (also applied to each folder segment in cheat_path_hint_labels).
@@ -2875,7 +2899,7 @@ CHEAT_FILENAME_HINT_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("cheat_engine", re.compile(r"cheat[\s._-]*engine|cheatengine", re.IGNORECASE)),
     ("dll_injector", re.compile(r"dll[\s._-]*inject|injector", re.IGNORECASE)),
     ("esp", re.compile(r"\besp\b", re.IGNORECASE)),
-    ("exploit", re.compile(r"\bexploit\b", re.IGNORECASE)),
+    ("exploit", re.compile(r"(?:roblox|rbx|lua|script)[\s._-]*exploit|exploit[\s._-]*(?:roblox|rbx|lua|script)", re.IGNORECASE)),
     ("free_cheat", re.compile(r"free[\s._-]*cheat", re.IGNORECASE)),
     ("rbx_cheat", re.compile(r"rbx[\s._-]*cheat|rbx[\s._-]*hack", re.IGNORECASE)),
 ]
@@ -2895,7 +2919,7 @@ USER_FOLDER_TRUSTED_APP_STEMS = frozenset(
         "discord",
     }
 )
-SCAN_WORKERS = min(10, (os.cpu_count() or 4) + 2)
+SCAN_WORKERS = min(16, max(8, (os.cpu_count() or 4) * 2))
 
 # Populated once per build_report() pass to avoid duplicate full USN journal reads.
 _usn_comprehensive_cache: dict[str, object] | None = None
@@ -3039,6 +3063,10 @@ def executor_scan_path_excluded(path_str: str) -> bool:
         "\\package cache\\",
         "\\nuget\\packages\\",
         "\\node_modules\\",
+        "\\windowsapps\\",
+        "\\appdata\\local\\packages\\",
+        "\\winsat\\",
+        "\\windows defender\\",
     )
     return any(fragment in low for fragment in excluded)
 
@@ -4654,6 +4682,163 @@ def userassist_registry_entries() -> dict:
     }
 
 
+def _normalize_powershell_list(data: object) -> list[dict]:
+    if isinstance(data, list):
+        return [item for item in data if isinstance(item, dict)]
+    if isinstance(data, dict):
+        return [data]
+    return []
+
+
+def windows_defender_signals() -> dict:
+    if platform.system() != "Windows":
+        return {"available": False, "reason": "Windows Defender signals are Windows-only"}
+
+    status_script = (
+        "try { Get-MpComputerStatus | Select-Object AMServiceEnabled,AntispywareEnabled,"
+        "AntivirusEnabled,RealTimeProtectionEnabled,IoavProtectionEnabled,NISEnabled,"
+        "QuickScanAge,FullScanAge,IsTamperProtected,AntivirusSignatureLastUpdated | "
+        "ConvertTo-Json -Depth 3 } catch { '{}' }"
+    )
+    preference_script = (
+        "try {"
+        "$p=Get-MpPreference;"
+        "[pscustomobject]@{"
+        "DisableRealtimeMonitoring=$p.DisableRealtimeMonitoring;"
+        "ExclusionPath=$p.ExclusionPath;"
+        "ExclusionProcess=$p.ExclusionProcess;"
+        "ExclusionExtension=$p.ExclusionExtension;"
+        "PUAProtection=$p.PUAProtection"
+        "} | ConvertTo-Json -Depth 4"
+        "} catch { '{}' }"
+    )
+    threat_script = (
+        "try { Get-MpThreatDetection -ErrorAction SilentlyContinue | "
+        "Select-Object -First 60 DetectionTime,ActionSuccess,Resources,ThreatID,"
+        "InitialDetectionTime,ProcessName,ThreatName,DomainUser | ConvertTo-Json -Depth 5"
+        "} catch { '[]' }"
+    )
+    history_script = (
+        "$start=(Get-Date).AddDays(-14);"
+        "Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Windows Defender/Operational'; StartTime=$start} "
+        "-ErrorAction SilentlyContinue | "
+        "Where-Object { $_.Id -in @(1116,1117,1118,1119,1120,1121,1150,1151,5008,5010,5012) } | "
+        "Select-Object -First 80 TimeCreated,Id,LevelDisplayName,Message | ConvertTo-Json -Depth 3"
+    )
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        status_future = pool.submit(forensic_powershell_json, status_script, 14.0, 8000)
+        settings_future = pool.submit(forensic_powershell_json, preference_script, 12.0, 12000)
+        threat_future = pool.submit(forensic_powershell_json, threat_script, 16.0, 28000)
+        history_future = pool.submit(
+            run_command, ["powershell", "-NoProfile", "-Command", history_script], 18, 20000
+        )
+        computer_status = status_future.result()
+        settings_data = settings_future.result()
+        threat_detections = _normalize_powershell_list(threat_future.result())
+        history = history_future.result()
+
+    settings = settings_data if isinstance(settings_data, dict) else {}
+    status = computer_status if isinstance(computer_status, dict) else {}
+    quarantine_history: list[dict] = []
+    for entry in threat_detections:
+        resources = entry.get("Resources")
+        if isinstance(resources, list):
+            resource_text = " ".join(str(item) for item in resources)
+        else:
+            resource_text = str(resources or "")
+        blob = f"{resource_text} {entry.get('ThreatName') or ''} {entry.get('ActionSuccess') or ''}".lower()
+        if any(token in blob for token in ("quarantine", "removed", "malware", "threat", "blocked")):
+            quarantine_history.append(entry)
+
+    user_exclusions = [
+        str(path)
+        for path in (settings.get("ExclusionPath") or [])
+        if any(marker in str(path).lower() for marker in ("\\users\\", "\\downloads", "\\desktop", "\\appdata\\local\\temp"))
+    ]
+
+    return {
+        "available": True,
+        "computer_status": status,
+        "settings": json.dumps(settings, ensure_ascii=False)[:12000] if settings else "",
+        "settings_structured": settings,
+        "threat_detections": threat_detections[:60],
+        "quarantine_history": quarantine_history[:40],
+        "protection_history": history[:20000],
+        "summary": {
+            "real_time_protection_enabled": status.get("RealTimeProtectionEnabled"),
+            "tamper_protection_enabled": status.get("IsTamperProtected"),
+            "antivirus_enabled": status.get("AntivirusEnabled"),
+            "threat_detection_count": len(threat_detections),
+            "quarantine_count": len(quarantine_history),
+            "user_profile_exclusion_count": len(user_exclusions),
+            "realtime_monitoring_disabled": settings.get("DisableRealtimeMonitoring") is True,
+        },
+    }
+
+
+def windows_security_event_summary() -> dict:
+    if platform.system() != "Windows":
+        return {"available": False, "reason": "Windows Security event log is Windows-only"}
+
+    script = (
+        "$start=(Get-Date).AddDays(-14);"
+        "$ids=4624,4625,4688,4697,4698,4720,4722,4723,4724,4728,4732,1102;"
+        "Get-WinEvent -FilterHashtable @{LogName='Security'; StartTime=$start} -ErrorAction SilentlyContinue | "
+        "Where-Object { $_.Id -in $ids } | "
+        "Select-Object -First 100 TimeCreated,Id,ProviderName,Message | ConvertTo-Json -Depth 3"
+    )
+    events = _normalize_powershell_list(forensic_powershell_json(script, timeout=22.0, max_chars=28000))
+    return {
+        "available": True,
+        "log": "Security",
+        "window": "last 14 days",
+        "event_ids_tracked": [4624, 4625, 4688, 4697, 4698, 4720, 4722, 4723, 4724, 4728, 4732, 1102],
+        "events": events[:100],
+        "count": len(events),
+    }
+
+
+def powershell_operational_events() -> dict:
+    if platform.system() != "Windows":
+        return {"available": False, "reason": "PowerShell operational log is Windows-only"}
+
+    script = (
+        "$start=(Get-Date).AddDays(-14);"
+        "Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-PowerShell/Operational'; StartTime=$start; Id=@(4103,4104,53504)} "
+        "-ErrorAction SilentlyContinue | "
+        "Select-Object -First 80 TimeCreated,Id,ProviderName,Message | ConvertTo-Json -Depth 3"
+    )
+    events = _normalize_powershell_list(forensic_powershell_json(script, timeout=20.0, max_chars=26000))
+    return {
+        "available": True,
+        "log": "Microsoft-Windows-PowerShell/Operational",
+        "window": "last 14 days",
+        "events": events[:80],
+        "count": len(events),
+    }
+
+
+def windows_service_change_events() -> dict:
+    if platform.system() != "Windows":
+        return {"available": False, "reason": "Windows service change events are Windows-only"}
+
+    script = (
+        "$start=(Get-Date).AddDays(-30);"
+        "Get-WinEvent -FilterHashtable @{LogName='System'; StartTime=$start; Id=@(7036,7040,7045)} "
+        "-ErrorAction SilentlyContinue | "
+        "Select-Object -First 100 TimeCreated,Id,ProviderName,Message | ConvertTo-Json -Depth 3"
+    )
+    events = _normalize_powershell_list(forensic_powershell_json(script, timeout=18.0, max_chars=24000))
+    return {
+        "available": True,
+        "log": "System",
+        "window": "last 30 days",
+        "event_ids_tracked": [7036, 7040, 7045],
+        "events": events[:100],
+        "count": len(events),
+    }
+
+
 def windows_event_log_summary() -> dict:
     if platform.system() != "Windows":
         return {"available": False, "reason": "Windows Event Logs are only available on Windows"}
@@ -4712,44 +4897,6 @@ def xml_event_log_files() -> dict:
                 continue
     items.sort(key=lambda item: item["modified"], reverse=True)
     return {"count": len(items[:80]), "items": items[:80]}
-
-
-def windows_defender_signals() -> dict:
-    if platform.system() != "Windows":
-        return {"available": False, "reason": "Windows Defender signals are Windows-only"}
-
-    preference_script = (
-        "try {"
-        "$p=Get-MpPreference;"
-        "[pscustomobject]@{"
-        "DisableRealtimeMonitoring=$p.DisableRealtimeMonitoring;"
-        "ExclusionPath=$p.ExclusionPath;"
-        "ExclusionProcess=$p.ExclusionProcess;"
-        "ExclusionExtension=$p.ExclusionExtension;"
-        "PUAProtection=$p.PUAProtection"
-        "} | ConvertTo-Json -Depth 4"
-        "} catch { $_.Exception.Message }"
-    )
-    history_script = (
-        "$start=(Get-Date).AddDays(-14);"
-        "Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Windows Defender/Operational'; StartTime=$start} "
-        "-ErrorAction SilentlyContinue | "
-        "Select-Object -First 80 TimeCreated,Id,LevelDisplayName,Message | ConvertTo-Json -Depth 3"
-    )
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        settings_future = pool.submit(
-            run_command, ["powershell", "-NoProfile", "-Command", preference_script], 12, 12000
-        )
-        history_future = pool.submit(
-            run_command, ["powershell", "-NoProfile", "-Command", history_script], 18, 20000
-        )
-        settings = settings_future.result()
-        history = history_future.result()
-    return {
-        "available": True,
-        "settings": settings[:12000],
-        "protection_history": history[:20000],
-    }
 
 
 def recent_items_metadata() -> dict:
@@ -11601,12 +11748,6 @@ def build_report() -> dict:
         fut_prefetch = pool.submit(prefetch_metadata)
         fut_deletion = pool.submit(deletion_and_log_clearing_signals)
         fut_folders = pool.submit(combined_user_folder_security_scans)
-
-        prefetch = fut_prefetch.result()
-        deletion_signals = fut_deletion.result()
-        designated, sha_blocklist = fut_folders.result()
-
-        fut_forensic = pool.submit(build_forensic_analysis_bundle, designated, prefetch, deletion_signals)
         fut_hardware = pool.submit(hardware_identifiers)
         fut_apps = pool.submit(installed_apps_summary)
         fut_trash = pool.submit(recycle_bin_metadata)
@@ -11615,19 +11756,28 @@ def build_report() -> dict:
         fut_userassist = pool.submit(userassist_registry_entries)
         fut_defender = pool.submit(windows_defender_signals)
         fut_events = pool.submit(windows_event_log_summary)
+        fut_security_events = pool.submit(windows_security_event_summary)
+        fut_powershell_events = pool.submit(powershell_operational_events)
+        fut_service_changes = pool.submit(windows_service_change_events)
         fut_xml = pool.submit(xml_event_log_files)
         fut_recent = pool.submit(recent_items_metadata)
         fut_cmdhist = pool.submit(command_history_keyword_hits)
         fut_services = pool.submit(windows_service_signals)
         fut_usb = pool.submit(usb_event_summary)
         fut_shellbag = pool.submit(shellbag_clear_signal)
-        fut_pref_health = pool.submit(prefetch_health_signals, prefetch)
         fut_exec_ind = pool.submit(executor_indicator_scan)
         fut_persist = pool.submit(persistence_signals)
-        fut_roblox_int = pool.submit(roblox_integrity_scan, prefetch)
         fut_disk_exe = pool.submit(recent_disk_executable_scan)
         fut_browser_downloads = pool.submit(browser_download_history_scan)
         fut_dam = pool.submit(dam_execution_records)
+
+        prefetch = fut_prefetch.result()
+        deletion_signals = fut_deletion.result()
+        designated, sha_blocklist = fut_folders.result()
+
+        fut_forensic = pool.submit(build_forensic_analysis_bundle, designated, prefetch, deletion_signals)
+        fut_pref_health = pool.submit(prefetch_health_signals, prefetch)
+        fut_roblox_int = pool.submit(roblox_integrity_scan, prefetch)
 
         forensic_bundle = fut_forensic.result()
         bam_structured = forensic_bundle.get("bam_structured")
@@ -11847,6 +11997,9 @@ def build_report() -> dict:
             "userassist": userassist,
             "defender": fut_defender.result(),
             "windows_event_logs": fut_events.result(),
+            "windows_security_events": fut_security_events.result(),
+            "powershell_operational_events": fut_powershell_events.result(),
+            "windows_service_change_events": fut_service_changes.result(),
             "xml_event_log_files": fut_xml.result(),
             "recent_items": fut_recent.result(),
             "command_history_keyword_hits": command_history,
