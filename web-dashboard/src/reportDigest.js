@@ -10,17 +10,128 @@ function tsMs(value) {
   return Number.isNaN(ms) ? 0 : ms;
 }
 
+const SYSTEM_NOISE_EXES = new Set([
+  "powershell.exe",
+  "pwsh.exe",
+  "conhost.exe",
+  "cmd.exe",
+  "explorer.exe",
+  "svchost.exe",
+  "runtimebroker.exe",
+  "dllhost.exe",
+  "searchhost.exe",
+  "sihost.exe",
+  "taskhostw.exe",
+  "dwm.exe",
+  "fontdrvhost.exe",
+  "audiodg.exe",
+  "spoolsv.exe",
+  "wudfhost.exe",
+  "backgroundtaskhost.exe",
+  "smartscreen.exe",
+  "openwith.exe",
+  "mmc.exe",
+  "msiexec.exe",
+  "setup.exe",
+  "werfault.exe",
+  "consent.exe",
+  "msedge.exe",
+  "chrome.exe",
+  "firefox.exe",
+  "brave.exe",
+  "opera.exe",
+  "vivaldi.exe",
+  "ctfmon.exe",
+  "python.exe",
+  "pythonw.exe",
+  "cursor.exe",
+  "code.exe",
+  "windowsterminal.exe",
+  "nvidia overlay.exe",
+  "nvcontainer.exe",
+]);
+
+const SYSTEM_PATH_MARKERS = [
+  "\\windows\\system32\\",
+  "\\windows\\syswow64\\",
+  "\\windows\\systemapps\\",
+  "\\program files\\",
+  "\\program files (x86)\\",
+  "\\windowsapps\\",
+];
+
+function isReviewNoisePath(path) {
+  const low = String(path || "").toLowerCase().replace(/\//g, "\\");
+  if (!low) return true;
+  const base = pathBasename(low).toLowerCase();
+  if (SYSTEM_NOISE_EXES.has(base)) return true;
+  if (SYSTEM_PATH_MARKERS.some((marker) => low.includes(marker)) && base.endsWith(".exe")) return true;
+  return false;
+}
+
+function hasExecutorLabels(labels) {
+  return (labels ?? []).length > 0;
+}
+
 export function scanReviewFromReport(report) {
   const sec = report.security_integrity_signals ?? {};
   const bundled = sec.scan_review;
   const downloads = sec.browser_download_history;
   if (bundled?.available) {
+    let merged = { ...bundled };
     if (downloads?.available && !bundled.download_history?.items?.length) {
-      return { ...bundled, download_history: downloads };
+      merged = { ...merged, download_history: downloads };
     }
-    return bundled;
+    return enrichBundledScanReview(merged, report);
   }
   return buildClientScanReview(report);
+}
+
+function enrichBundledScanReview(bundled, report) {
+  const fallback = buildClientScanReview(report);
+  const events = [...(bundled.last_computer_activity?.events ?? [])];
+  const seenEvents = new Set(events.map((e) => `${String(e.path || "").toLowerCase()}|${e.occurred_at || ""}`));
+
+  for (const event of fallback.last_computer_activity?.events ?? []) {
+    const isDeletion =
+      event.category === "deletions" ||
+      String(event.summary || "").includes("no longer on disk") ||
+      String(event.summary || "").includes("Recycle Bin");
+    if (!isDeletion || !event.path || !event.occurred_at || isReviewNoisePath(event.path)) continue;
+    const key = `${String(event.path).toLowerCase()}|${event.occurred_at}`;
+    if (seenEvents.has(key)) continue;
+    seenEvents.add(key);
+    events.push(event);
+  }
+  events.sort((a, b) => tsMs(b.occurred_at) - tsMs(a.occurred_at));
+
+  const inventory = [...(bundled.executable_inventory?.items ?? [])].filter(
+    (row) => !isReviewNoisePath(row.path) && (row.suspicious || (row.labels ?? []).length),
+  );
+  const seenInventory = new Set(inventory.map((row) => String(row.path || "").toLowerCase()));
+  for (const row of fallback.executable_inventory?.items ?? []) {
+    if (isReviewNoisePath(row.path) || !(row.labels ?? []).length) continue;
+    const key = String(row.path || "").toLowerCase();
+    if (seenInventory.has(key)) continue;
+    seenInventory.add(key);
+    inventory.push(row);
+  }
+  inventory.sort((a, b) => tsMs(b.last_seen) - tsMs(a.last_seen));
+
+  return {
+    ...bundled,
+    last_computer_activity: {
+      ...(bundled.last_computer_activity ?? {}),
+      events: events.slice(0, 120),
+      event_count: events.length,
+    },
+    executable_inventory: {
+      ...(bundled.executable_inventory ?? {}),
+      items: inventory.slice(0, 120),
+      total_count: inventory.length,
+      suspicious_count: inventory.filter((row) => row.suspicious).length,
+    },
+  };
 }
 
 function buildClientScanReview(report) {
@@ -40,7 +151,7 @@ function buildClientScanReview(report) {
   }));
 
   for (const item of sec.bam?.items ?? []) {
-    if (!item.normalized_path || item.path_allowlisted) continue;
+    if (!item.normalized_path || item.path_allowlisted || isReviewNoisePath(item.normalized_path)) continue;
     const labels = [...(item.executor_name_hits ?? []), ...(item.cheat_filename_hints ?? [])];
     if (!labels.length) continue;
     executionItems.push({
@@ -58,9 +169,10 @@ function buildClientScanReview(report) {
 
   const inventoryItems = [];
   const seen = new Set();
-  const addInv = (path, source, lastSeen, suspicious, labels = []) => {
-    const key = String(path || "").toLowerCase();
-    if (!key || seen.has(key)) return;
+  const addInv = (path, source, lastSeen, suspicious, labels = [], extra = {}) => {
+    if (!path || isReviewNoisePath(path) || !hasExecutorLabels(labels)) return;
+    const key = String(path).toLowerCase();
+    if (seen.has(key)) return;
     seen.add(key);
     inventoryItems.push({
       path,
@@ -69,6 +181,7 @@ function buildClientScanReview(report) {
       labels,
       suspicious,
       last_seen: lastSeen,
+      ...extra,
     });
   };
 
@@ -76,35 +189,30 @@ function buildClientScanReview(report) {
     addInv(hit.path, "folder_scan", hit.modified, true, hit.matched_names ?? []);
   }
   for (const hit of sec.executor_artifact_evidence?.hits ?? []) {
-    addInv(
-      hit.path,
-      hit.artifact_source ?? "executor_artifact",
-      hit.display_at || hit.modified,
-      true,
-      [
-        ...(hit.executor_name_hits ?? []),
-        ...(hit.cheat_filename_hints ?? []).map((label) => `cheat:${label}`),
-      ],
-    );
+    if (hit.path_allowlisted || isReviewNoisePath(hit.path)) continue;
+    const labels = [
+      ...(hit.executor_name_hits ?? []),
+      ...(hit.cheat_filename_hints ?? []).map((label) => `cheat:${label}`),
+    ];
+    addInv(hit.path, hit.artifact_source ?? "executor_artifact", hit.display_at || hit.modified, true, labels, {
+      file_exists: hit.file_exists,
+    });
   }
   for (const hit of sec.designated_folder_suspicious_files?.hits ?? []) {
     const source = hit.removed_artifact ? "removed_artifact" : "folder_scan";
-    addInv(
-      hit.path,
-      source,
-      hit.display_at || hit.modified,
-      true,
-      [
-        ...(hit.executor_name_hits ?? []),
-        ...(hit.cheat_filename_hints ?? []).map((label) => `cheat:${label}`),
-      ],
-    );
+    const labels = [
+      ...(hit.executor_name_hits ?? []),
+      ...(hit.cheat_filename_hints ?? []).map((label) => `cheat:${label}`),
+    ];
+    addInv(hit.path, source, hit.display_at || hit.modified, true, labels, { file_exists: hit.file_exists });
   }
   for (const item of sec.bam?.items ?? []) {
-    if (!item.normalized_path || item.path_allowlisted) continue;
+    if (!item.normalized_path || item.path_allowlisted || isReviewNoisePath(item.normalized_path)) continue;
     const labels = [...(item.executor_name_hits ?? []), ...(item.cheat_filename_hints ?? [])];
     if (!labels.length) continue;
-    addInv(item.normalized_path, "execution_history", item.last_execution_utc, true, labels);
+    addInv(item.normalized_path, "execution_history", item.last_execution_utc, true, labels, {
+      file_exists: item.file_exists,
+    });
   }
 
   inventoryItems.sort((a, b) => tsMs(b.last_seen) - tsMs(a.last_seen));
@@ -123,7 +231,7 @@ function buildClientScanReview(report) {
   const seenDeletion = new Set();
   const addDeletion = (occurredAt, path, summary) => {
     const key = `${String(path || "").toLowerCase()}|${occurredAt || ""}`;
-    if (!occurredAt || !path || seenDeletion.has(key)) return;
+    if (!occurredAt || !path || isReviewNoisePath(path) || seenDeletion.has(key)) return;
     seenDeletion.add(key);
     deletionEvents.push({
       occurred_at: occurredAt,
@@ -163,7 +271,9 @@ function buildClientScanReview(report) {
     });
   }
   for (const hit of sec.executor_artifact_evidence?.hits ?? []) {
-    if (hit.file_exists !== false) continue;
+    if (hit.file_exists !== false || hit.path_allowlisted || isReviewNoisePath(hit.path)) continue;
+    const labels = [...(hit.executor_name_hits ?? []), ...(hit.cheat_filename_hints ?? [])];
+    if (!labels.length) continue;
     const path = hit.path || "";
     const name = pathBasename(path);
     addDeletion(
@@ -175,7 +285,7 @@ function buildClientScanReview(report) {
   const activityEvents = [
     ...deletionEvents,
     ...(activity.events ?? [])
-      .filter((e) => e.occurred_at && e.category !== "deletions")
+      .filter((e) => e.occurred_at && e.category !== "deletions" && !isReviewNoisePath(e.path))
       .map((e) => ({
         occurred_at: e.occurred_at,
         category: e.category,
@@ -207,7 +317,7 @@ function buildClientScanReview(report) {
         perf.boot_time ? { occurred_at: perf.boot_time, label: "PC was turned on", summary: "Last boot time." } : null,
         { occurred_at: report.generated_at, label: "Scan finished", summary: "Report collected." },
       ].filter(Boolean),
-      events: activityEvents.slice(0, 80),
+      events: activityEvents.slice(0, 120),
       event_count: activityEvents.length,
     },
     executable_inventory: {

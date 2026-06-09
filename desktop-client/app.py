@@ -3044,7 +3044,8 @@ def executor_scan_path_excluded(path_str: str) -> bool:
 
 def path_is_allowlisted(path_str: str) -> bool:
     low = path_str.lower().replace("/", "\\")
-    if path_is_suspicious_profile(path_str):
+    profile = suspicious_path_profile(path_str)
+    if profile["executor_name_hits"] or profile["cheat_filename_hints"]:
         return False
     if "\\prefetch\\" in low and any(
         pattern.search(path_str) for pattern in executor_name_patterns().values()
@@ -3204,17 +3205,52 @@ BAM_BENIGN_EXECUTABLE_NAMES = frozenset(
         "setup.exe",
         "werfault.exe",
         "consent.exe",
+        "msedge.exe",
+        "chrome.exe",
+        "firefox.exe",
+        "brave.exe",
+        "opera.exe",
+        "vivaldi.exe",
+        "ctfmon.exe",
+        "python.exe",
+        "pythonw.exe",
+        "cursor.exe",
+        "code.exe",
+        "windowsterminal.exe",
+        "nvidia overlay.exe",
+        "nvcontainer.exe",
+        "nvdisplay.container.exe",
     }
+)
+
+SYSTEM_PATH_MARKERS = (
+    "\\windows\\system32\\",
+    "\\windows\\syswow64\\",
+    "\\windows\\systemapps\\",
+    "\\windows\\immersivecontrolpanel\\",
+    "\\program files\\",
+    "\\program files (x86)\\",
+    "\\windowsapps\\",
 )
 
 
 def bam_path_is_benign_system(path: str) -> bool:
     if not path:
         return True
-    if path_is_allowlisted(path):
+    norm = forensic_normalize_pathish(path) or path
+    low = norm.lower().replace("/", "\\")
+    name = Path(low).name.lower()
+    if name in BAM_BENIGN_EXECUTABLE_NAMES:
         return True
-    name = Path(path.replace("/", "\\")).name.lower()
-    return name in BAM_BENIGN_EXECUTABLE_NAMES
+    if path_is_allowlisted(norm):
+        return True
+    if any(marker in low for marker in SYSTEM_PATH_MARKERS) and name.endswith((".exe", ".dll")):
+        return True
+    return False
+
+
+def artifact_path_is_review_noise(path: str) -> bool:
+    return bam_path_is_benign_system(path)
 
 
 def executor_labels_for_artifact_text(text: str) -> list[str]:
@@ -7001,6 +7037,11 @@ $rows | Select-Object -First 2500 | ConvertTo-Json -Compress -Depth 3
     for it in items:
         raw_path = str(it.get("RegValueName") or "")
         norm = forensic_normalize_pathish(raw_path)
+        check_path = norm
+        if check_path and not re.match(r"^[A-Za-z]:\\", check_path):
+            check_path = device_path_to_dos_path(raw_path) or device_path_to_dos_path(check_path or "")
+        if check_path and re.match(r"^[A-Za-z]:\\", check_path):
+            norm = check_path
         ft = it.get("FileTimeUtc")
         try:
             ft_int = int(ft) if ft is not None else 0
@@ -7018,7 +7059,7 @@ $rows | Select-Object -First 2500 | ConvertTo-Json -Compress -Depth 3
             "cheat_filename_hints": [],
             "name_anomaly_reasons": [],
         }
-        if norm and not profile["executor_name_hits"]:
+        if norm and not profile["executor_name_hits"] and not bam_path_is_benign_system(norm):
             profile["executor_name_hits"] = loose_executor_labels_for_artifact(norm)
         normalized.append(
             {
@@ -7071,6 +7112,11 @@ $rows | Select-Object -First 2500 | ConvertTo-Json -Compress -Depth 3
     for it in items:
         raw_path = str(it.get("RegValueName") or "")
         norm = forensic_normalize_pathish(raw_path)
+        check_path = norm
+        if check_path and not re.match(r"^[A-Za-z]:\\", check_path):
+            check_path = device_path_to_dos_path(raw_path) or device_path_to_dos_path(check_path or "")
+        if check_path and re.match(r"^[A-Za-z]:\\", check_path):
+            norm = check_path
         ft = it.get("FileTimeUtc")
         try:
             ft_int = int(ft) if ft is not None else 0
@@ -7088,7 +7134,7 @@ $rows | Select-Object -First 2500 | ConvertTo-Json -Compress -Depth 3
             "cheat_filename_hints": [],
             "name_anomaly_reasons": [],
         }
-        if norm and not profile["executor_name_hits"]:
+        if norm and not profile["executor_name_hits"] and not bam_path_is_benign_system(norm):
             profile["executor_name_hits"] = loose_executor_labels_for_artifact(norm)
         normalized.append(
             {
@@ -7527,7 +7573,7 @@ def _append_executor_artifact_hit(
     norm = forensic_normalize_pathish(path) if path else ""
     if not norm or not labels:
         return
-    if executor_scan_path_excluded(norm):
+    if executor_scan_path_excluded(norm) or artifact_path_is_review_noise(norm):
         return
     dedupe_key = f"{artifact_source}|{_artifact_path_key(norm)}|{','.join(sorted(labels))}"
     if dedupe_key in seen:
@@ -7545,7 +7591,7 @@ def _append_executor_artifact_hit(
         "artifact_source": artifact_source,
         "file_exists": file_exists,
         "removed_artifact": file_exists is False,
-        "path_allowlisted": False,
+        "path_allowlisted": bam_path_is_benign_system(norm),
         "note": note or f"Executor evidence from {artifact_source}.",
     }
     if extra:
@@ -8301,7 +8347,9 @@ def build_executor_artifact_evidence(
     )
     for item in bam.get("items") or []:
         path = str(item.get("normalized_path") or "")
-        labels = list(item.get("executor_name_hits") or []) or executor_labels_for_artifact_text(path)
+        if not path or item.get("path_allowlisted") or artifact_path_is_review_noise(path):
+            continue
+        labels = list(item.get("executor_name_hits") or [])
         if not labels:
             continue
         _append_executor_artifact_hit(
@@ -8320,7 +8368,9 @@ def build_executor_artifact_evidence(
 
     for item in (dam or {}).get("items") or []:
         path = str(item.get("normalized_path") or "")
-        labels = list(item.get("executor_name_hits") or []) or executor_labels_for_artifact_text(path)
+        if not path or item.get("path_allowlisted") or artifact_path_is_review_noise(path):
+            continue
+        labels = list(item.get("executor_name_hits") or [])
         if not labels:
             continue
         _append_executor_artifact_hit(
@@ -10865,6 +10915,7 @@ def build_executable_inventory(
     executor_indicators: dict,
     sha_blocklist: dict,
     disk_executables: dict,
+    executor_artifact_evidence: dict | None = None,
 ) -> dict:
     patterns = executor_name_patterns()
     by_path: dict[str, dict] = {}
@@ -10879,6 +10930,9 @@ def build_executable_inventory(
         extra: dict | None = None,
     ) -> None:
         if not path:
+            return
+        path = forensic_normalize_pathish(path) or path
+        if artifact_path_is_review_noise(path):
             return
         key = _digest_path_key(path)
         name = _digest_basename(path)
@@ -10966,13 +11020,32 @@ def build_executable_inventory(
             continue
         labels = list(item.get("executor_name_hits") or item.get("matched_names") or [])
         labels.extend(item.get("cheat_filename_hints") or item.get("matched_cheat_filename_hints") or [])
-        labels.extend(item.get("name_anomaly_reasons") or [])
+        if not labels:
+            continue
         upsert(
             path,
-            source="folder_scan",
-            occurred_at=item.get("modified"),
+            source="removed_artifact" if item.get("removed_artifact") else "folder_scan",
+            occurred_at=item.get("display_at") or item.get("modified"),
             labels=labels,
-            suspicious=bool(labels),
+            suspicious=True,
+            extra={"file_exists": item.get("file_exists")},
+        )
+
+    for item in (executor_artifact_evidence or {}).get("hits") or []:
+        path = str(item.get("path") or "")
+        if item.get("path_allowlisted"):
+            continue
+        labels = list(item.get("executor_name_hits") or [])
+        labels.extend(item.get("cheat_filename_hints") or [])
+        if not labels:
+            continue
+        upsert(
+            path,
+            source=str(item.get("artifact_source") or "executor_artifact"),
+            occurred_at=item.get("display_at") or item.get("modified"),
+            labels=labels,
+            suspicious=True,
+            extra={"file_exists": item.get("file_exists")},
         )
 
     for item in sha_blocklist.get("hits") or []:
@@ -11268,6 +11341,11 @@ def _gather_priority_deletion_events(
         if hit.get("file_exists") is not False:
             continue
         path = str(hit.get("path") or "")
+        if not path or hit.get("path_allowlisted") or artifact_path_is_review_noise(path):
+            continue
+        labels = list(hit.get("executor_name_hits") or [])
+        if not labels and not hit.get("cheat_filename_hints"):
+            continue
         source = str(hit.get("artifact_source") or "removed_artifact")
         add(
             occurred_at=hit.get("display_at") or hit.get("modified"),
@@ -11447,6 +11525,7 @@ def build_scan_review_bundle(
         executor_indicators=executor_indicators,
         sha_blocklist=sha_blocklist,
         disk_executables=disk_executables,
+        executor_artifact_evidence=executor_artifact_evidence,
     )
     string_detection = build_string_detection_hits(
         command_history=command_history,

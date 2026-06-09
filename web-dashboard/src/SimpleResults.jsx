@@ -173,7 +173,7 @@ function OverviewTab({ verdict, problems, review, formatGmtPlus3 }) {
         <div className="simple-hero-score" aria-label={`Overall concern level ${verdict.combined} out of 100`}>
           <strong>{verdict.combined}</strong>
           <span>concern level</span>
-          <small>0 = calm ┬╖ 100 = very worried</small>
+          <small>0 = calm · 100 = very worried</small>
         </div>
       </section>
 
@@ -215,22 +215,22 @@ function OverviewTab({ verdict, problems, review, formatGmtPlus3 }) {
         </header>
         <ul className="simple-tips">
           <li>
-            <strong>Summary</strong> έΑΦ start here for the big picture.
+            <strong>Summary</strong> — start here for the big picture.
           </li>
           <li>
-            <strong>Last activity</strong> έΑΦ what the PC did recently, in time order.
+            <strong>Last activity</strong> — what the PC did recently, in time order.
           </li>
           <li>
-            <strong>Download history</strong> έΑΦ files downloaded in Chrome, Edge, Brave, or Firefox.
+            <strong>Download history</strong> — files downloaded in Chrome, Edge, Brave, or Firefox.
           </li>
           <li>
-            <strong>Programs run</strong> έΑΦ apps and files that were executed.
+            <strong>Programs run</strong> — apps and files that were executed.
           </li>
           <li>
-            <strong>Program list</strong> έΑΦ executables we found on disk.
+            <strong>Program list</strong> — executables we found on disk.
           </li>
           <li>
-            <strong>Word matches</strong> έΑΦ cheat or cleanup words inside files and history.
+            <strong>Word matches</strong> — cheat or cleanup words inside files and history.
           </li>
         </ul>
         {activity.boot_time ? (
@@ -271,7 +271,7 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
         <Clock3 size={22} />
         <div>
           <h4>Last computer activity</h4>
-          <p>What this PC did lately. Newest first (DD/MM/YYYY, GMT+3).</p>
+          <p>What this PC did lately. Newest first (MM/DD/YY, GMT+3).</p>
         </div>
       </header>
       {(block.milestones ?? []).length ? (
@@ -447,9 +447,9 @@ function ProgramsTab({ review, formatGmtPlus3 }) {
                   <span className="simple-tag">{row.labels.slice(0, 3).join(", ")}</span>
                 ) : null}
                 <p className="muted">
-                  {row.file_exists === false ? "Removed from disk ┬╖ " : ""}
+                  {row.file_exists === false ? "Removed from disk · " : ""}
                   {row.sources?.includes("removed_artifact")
-                    ? "Recovered from system traces after Recycle Bin cleanup ┬╖ "
+                    ? "Recovered from system traces after Recycle Bin cleanup · "
                     : ""}
                   Last seen {row.last_seen ? formatGmtPlus3(row.last_seen) : "unknown"}
                 </p>
