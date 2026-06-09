@@ -11262,6 +11262,7 @@ def build_executable_inventory(
 def build_execution_activity_feed(
     *,
     generated_at: str,
+    scan_started_at: str | None = None,
     bam: dict,
     userassist: dict,
     prefetch: dict,
@@ -11273,6 +11274,20 @@ def build_execution_activity_feed(
     def add(*, path: str, occurred_at: str | None, source: str, summary: str, suspicious: bool = False) -> None:
         if not path and not summary:
             return
+        # Filter out very recent timestamps that might be from the scanner itself
+        if occurred_at and scan_started_at:
+            try:
+                event_time = datetime.fromisoformat(occurred_at.replace("Z", "+00:00"))
+                scan_time = datetime.fromisoformat(scan_started_at.replace("Z", "+00:00"))
+                if event_time.tzinfo is None:
+                    event_time = event_time.replace(tzinfo=timezone.utc)
+                if scan_time.tzinfo is None:
+                    scan_time = scan_time.replace(tzinfo=timezone.utc)
+                # Exclude events within 5 minutes of scan start (likely scanner activity)
+                if abs((event_time - scan_time).total_seconds()) < 300:
+                    return
+            except (ValueError, TypeError):
+                pass
         rows.append(
             {
                 "path": path.replace("/", "\\") if path else "",
@@ -11699,6 +11714,7 @@ def build_scan_review_bundle(
 ) -> dict:
     execution_activity = build_execution_activity_feed(
         generated_at=generated_at,
+        scan_started_at=scan_started_at,
         bam=bam,
         userassist=userassist,
         prefetch=prefetch,
