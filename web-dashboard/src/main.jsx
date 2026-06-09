@@ -1124,7 +1124,7 @@ function UserActivitySection({ report, query }) {
             </div>
           ) : null}
           <p className="muted activity-note">
-            Every row shows when the action happened (DD/MM/YYYY, GMT+3). Deleted items use Recycle Bin $I metadata first, then
+            Every row shows when the action happened (MM/DD/YY, GMT+3). Deleted items use Recycle Bin $I metadata first, then
             metadata or data-file fallbacks — so null timestamps are resolved when any OS trace remains.
           </p>
         </div>
@@ -1307,7 +1307,7 @@ function StarterSection({ report }) {
           ))}
         </div>
       </Card>
-      <Card icon={Clock3} title="Tracked files (modified + OS access, DD/MM/YYYY)">
+      <Card icon={Clock3} title="Tracked files (modified + OS access, MM/DD/YY)">
         <p className="muted opened-files-intro">
           Primary time is <strong>file modified (mtime)</strong> — when the file last changed on disk. Secondary line is{" "}
           <strong>OS last access (atime)</strong>; Windows updates this when <em>any</em> program reads the file (games,
@@ -1653,7 +1653,7 @@ function DeletionsSection({ report, query }) {
     <>
       <Card icon={Shield} title="Filesystem evidence integrity">
         <p className="muted opened-files-intro">
-          Dates use <strong>DD/MM/YYYY</strong> (GMT+3). This section records whether USN journaling, event logs, and
+          Dates use <strong>MM/DD/YY</strong> (GMT+3). This section records whether USN journaling, event logs, and
           related services look intact — or were disabled, cleared, deleted, or recreated.
         </p>
         {integrity.available ? (
@@ -1738,7 +1738,7 @@ function DeletionsSection({ report, query }) {
 
       <Card icon={Trash2} title="Deleted files (resolved timestamps)">
         <p className="muted opened-files-intro">
-          Times use <strong>DD/MM/YYYY</strong> (GMT+3). When Recycle Bin $I metadata is missing or zeroed, {BRAND_NAME}{" "}
+          Times use <strong>MM/DD/YY</strong> (GMT+3). When Recycle Bin $I metadata is missing or zeroed, {BRAND_NAME}{" "}
           falls back to metadata file mtime, USN delete rows, or companion $R data file mtime.
         </p>
         {deletionEvents.length ? (

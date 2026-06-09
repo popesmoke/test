@@ -21,7 +21,7 @@ const TUTORIAL_SECTIONS = [
       "Use the filter box at the top of Easy results to narrow the current tab.",
       "Use Ctrl+F / ⌘F to search the entire page — paths, executor names, and timestamps are all plain text.",
       "In Advanced review, each section has its own search box for keywords in that panel.",
-      "Dates are DD/MM/YYYY HH:mm:ss (GMT+3). Search partial dates like 08/06/2026.",
+      "Dates are MM/DD/YY HH:mm:ss (GMT+3). Search partial dates like 06/08/26.",
     ],
   },
   {

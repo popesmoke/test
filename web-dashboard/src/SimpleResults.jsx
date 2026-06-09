@@ -155,8 +155,24 @@ function PathFold({ path }) {
   );
 }
 
+function activityEventBadge(event) {
+  const summary = String(event?.summary || "").toLowerCase();
+  if (event?.category === "deletions" || summary.includes("no longer on disk") || summary.includes("recycle bin")) {
+    return { label: "Deletion", tone: "deletion" };
+  }
+  if (summary.includes("download")) return { label: "Download", tone: "browser" };
+  if (summary.includes("program") || summary.includes("executed") || summary.includes("ran")) {
+    return { label: "Execution", tone: "execution" };
+  }
+  return { label: "Activity", tone: "neutral" };
+}
+
 function OverviewTab({ verdict, problems, review, formatGmtPlus3 }) {
   const activity = review.last_computer_activity ?? {};
+  const deletionCount = (activity.events ?? []).filter((event) => {
+    const summary = String(event.summary || "").toLowerCase();
+    return event.category === "deletions" || summary.includes("no longer on disk");
+  }).length;
   return (
     <>
       <section className={`simple-hero simple-hero--${verdict.tone}`}>
@@ -179,8 +195,8 @@ function OverviewTab({ verdict, problems, review, formatGmtPlus3 }) {
 
       <section className="simple-stats-row">
         <SimpleStat label="Warning signs" value={problems.length} hint="Read the list below" />
-        <SimpleStat label="Things that happened" value={activity.event_count ?? 0} hint="With a time" />
-        <SimpleStat label="Programs run" value={review.execution_activity?.event_count ?? 0} hint="Found on PC" />
+        <SimpleStat label="Timeline events" value={activity.event_count ?? 0} hint="Chronological log" />
+        <SimpleStat label="Deleted traces" value={deletionCount} hint="Removed but still logged" />
         <SimpleStat label="Word matches" value={review.string_detection?.hit_count ?? 0} hint="In logs & files" />
       </section>
 
@@ -286,10 +302,19 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
         </ul>
       ) : null}
       {events.length ? (
-        <ul className="simple-timeline">
-          {events.map((event, index) => (
-            <li key={`${event.path}-${event.occurred_at}-${index}`}>
-              <time>{formatGmtPlus3(event.occurred_at)}</time>
+        <ul className="simple-timeline simple-timeline--forensic">
+          {events.map((event, index) => {
+            const badge = activityEventBadge(event);
+            const isDeletion = badge.tone === "deletion";
+            return (
+            <li
+              key={`${event.path}-${event.occurred_at}-${index}`}
+              className={isDeletion ? "simple-timeline__deletion" : ""}
+            >
+              <div className="simple-timeline-meta">
+                <time>{formatGmtPlus3(event.occurred_at)}</time>
+                <span className={`simple-event-badge simple-event-badge--${badge.tone}`}>{badge.label}</span>
+              </div>
               <p>{event.summary || "Activity recorded"}</p>
               {event.gap_human ? (
                 <p className="muted">
@@ -302,7 +327,8 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
               ) : null}
               <PathFold path={event.path} />
             </li>
-          ))}
+            );
+          })}
         </ul>
       ) : (
         <p className="muted">No timed activity on this report. Try a new scan with the latest app.</p>
