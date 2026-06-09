@@ -151,6 +151,13 @@ def init_db() -> None:
             )
             """
         )
+        for column, definition in (
+            ("reviewer_verdict", "TEXT"),
+            ("reviewer_note", "TEXT"),
+            ("reviewed_at", "TEXT"),
+            ("reviewed_by", "TEXT"),
+        ):
+            ensure_column(conn, "sessions", column, definition)
         db_execute(
             conn,
             """
@@ -706,6 +713,7 @@ def effective_session_status(row: sqlite3.Row) -> str:
 
 
 def row_to_summary(row: sqlite3.Row) -> dict:
+    keys = row.keys()
     return {
         "id": row["id"],
         "pin": row["pin"],
@@ -713,6 +721,10 @@ def row_to_summary(row: sqlite3.Row) -> dict:
         "created_at": row["created_at"],
         "expires_at": row["expires_at"],
         "completed_at": row["completed_at"],
+        "reviewer_verdict": row["reviewer_verdict"] if "reviewer_verdict" in keys else None,
+        "reviewer_note": row["reviewer_note"] if "reviewer_note" in keys else None,
+        "reviewed_at": row["reviewed_at"] if "reviewed_at" in keys else None,
+        "reviewed_by": row["reviewed_by"] if "reviewed_by" in keys else None,
     }
 
 
@@ -908,6 +920,40 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
 
+        if path == "/admin/sessions":
+            if not self.require_super_admin():
+                return
+            with connect() as conn:
+                expire_stale_pending_sessions(conn)
+                rows = db_execute(
+                    conn,
+                    "SELECT id, pin, status, created_at, expires_at, completed_at, reviewer_verdict, reviewer_note, reviewed_at, reviewed_by FROM sessions ORDER BY id DESC LIMIT 200",
+                ).fetchall()
+            self.send_json(HTTPStatus.OK, [row_to_summary(row) for row in rows])
+            return
+
+        if path == "/admin/users":
+            if not self.require_super_admin():
+                return
+            with connect() as conn:
+                rows = db_execute(
+                    conn,
+                    "SELECT discord_id, username, roles_json, last_login_at FROM discord_users ORDER BY last_login_at DESC LIMIT 200",
+                ).fetchall()
+            users = []
+            for row in rows:
+                roles = json.loads(row["roles_json"] or "[]")
+                users.append(
+                    {
+                        "discord_id": row["discord_id"],
+                        "username": row["username"],
+                        "last_login_at": row["last_login_at"],
+                        "has_access": DISCORD_ACCESS_ROLE_ID in roles,
+                    }
+                )
+            self.send_json(HTTPStatus.OK, users)
+            return
+
         if path == "/sessions":
             if not self.require_checker():
                 return
@@ -949,6 +995,48 @@ class Handler(BaseHTTPRequestHandler):
             payload = self.read_json()
         except json.JSONDecodeError:
             self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Invalid JSON"})
+            return
+
+        parts = [part for part in path.split("/") if part]
+        if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "review":
+            if not self.require_checker():
+                return
+            try:
+                session_id = int(parts[1])
+            except ValueError:
+                self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Invalid session id"})
+                return
+            verdict = str(payload.get("verdict") or "").strip().lower()
+            note = str(payload.get("note") or "").strip()
+            allowed_verdicts = {"", "cleared", "suspicious", "ban", "follow-up"}
+            if verdict not in allowed_verdicts:
+                self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Invalid verdict"})
+                return
+            subject = validate_token(self.headers.get("Authorization"))
+            if not subject:
+                self.send_json(HTTPStatus.UNAUTHORIZED, {"detail": "Missing or invalid bearer token"})
+                return
+            with connect() as conn:
+                cursor = db_execute(
+                    conn,
+                    """
+                    UPDATE sessions
+                    SET reviewer_verdict = ?, reviewer_note = ?, reviewed_at = ?, reviewed_by = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        verdict or None,
+                        note[:4000] if note else None,
+                        to_iso(utc_now()),
+                        subject,
+                        session_id,
+                    ),
+                )
+                if cursor.rowcount == 0:
+                    self.send_json(HTTPStatus.NOT_FOUND, {"detail": "Session not found"})
+                    return
+                row = db_execute(conn, "SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            self.send_json(HTTPStatus.OK, row_to_summary(row))
             return
 
         if path == "/sessions":

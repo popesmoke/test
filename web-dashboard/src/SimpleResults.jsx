@@ -6,6 +6,7 @@ import {
   Clock3,
   Download,
   FileDown,
+  FileText,
   FileCode2,
   HelpCircle,
   ListChecks,
@@ -282,7 +283,11 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
       path: dl.target_path || dl.url,
     });
   }
-  events.sort((a, b) => new Date(b.occurred_at) - new Date(a.occurred_at));
+  events.sort((a, b) => {
+    const aMs = a.occurred_at ? new Date(a.occurred_at).getTime() : 0;
+    const bMs = b.occurred_at ? new Date(b.occurred_at).getTime() : 0;
+    return bMs - aMs;
+  });
 
   return (
     <section className="simple-panel">
@@ -315,7 +320,7 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
               className={isDeletion ? "simple-timeline__deletion" : ""}
             >
               <div className="simple-timeline-meta">
-                <time>{formatGmtPlus3(event.occurred_at)}</time>
+                <time>{event.occurred_at ? formatGmtPlus3(event.occurred_at) : "Time unknown"}</time>
                 <span className={`simple-event-badge simple-event-badge--${badge.tone}`}>{badge.label}</span>
               </div>
               <p>{event.summary || "Activity recorded"}</p>
@@ -599,6 +604,7 @@ export function SimpleResults({
   formatGmtPlus3,
   onExpertMode,
   onDownload,
+  onPrintPdf,
 }) {
   const [tab, setTab] = useState("overview");
   const sec = report.security_integrity_signals ?? {};
@@ -648,8 +654,13 @@ export function SimpleResults({
           Advanced reviewer view
         </button>
         <button type="button" className="download-button" onClick={onDownload}>
-          <Download size={15} /> Save full report
+          <Download size={15} /> Save JSON
         </button>
+        {onPrintPdf ? (
+          <button type="button" className="download-button" onClick={onPrintPdf}>
+            <FileText size={15} /> Print summary
+          </button>
+        ) : null}
       </footer>
     </div>
   );

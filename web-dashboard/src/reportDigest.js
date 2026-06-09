@@ -1,3 +1,5 @@
+import { sanitizeEventTimestamp } from "./activityTime.js";
+
 function pathBasename(path) {
   const key = String(path || "").replace(/\//g, "\\");
   const i = key.lastIndexOf("\\");
@@ -89,7 +91,13 @@ export function scanReviewFromReport(report) {
 
 function enrichBundledScanReview(bundled, report) {
   const fallback = buildClientScanReview(report);
-  const events = [...(bundled.last_computer_activity?.events ?? [])];
+  const events = [...(bundled.last_computer_activity?.events ?? [])].map((event) => {
+    const safeAt = sanitizeEventTimestamp(report, event.occurred_at, event.kind || event.category);
+    if (!safeAt) {
+      return { ...event, occurred_at: null, time_unknown: true };
+    }
+    return event;
+  });
   const seenEvents = new Set(events.map((e) => `${String(e.path || "").toLowerCase()}|${e.occurred_at || ""}`));
 
   for (const event of fallback.last_computer_activity?.events ?? []) {
@@ -97,7 +105,7 @@ function enrichBundledScanReview(bundled, report) {
       event.category === "deletions" ||
       String(event.summary || "").includes("no longer on disk") ||
       String(event.summary || "").includes("Recycle Bin");
-    if (!isDeletion || !event.path || !event.occurred_at || isReviewNoisePath(event.path)) continue;
+    if (!isDeletion || !event.path || isReviewNoisePath(event.path)) continue;
     const key = `${String(event.path).toLowerCase()}|${event.occurred_at}`;
     if (seenEvents.has(key)) continue;
     seenEvents.add(key);
@@ -229,12 +237,17 @@ function buildClientScanReview(report) {
   const trashItems = perf.trash?.items ?? [];
   const deletionEvents = [];
   const seenDeletion = new Set();
-  const addDeletion = (occurredAt, path, summary) => {
-    const key = `${String(path || "").toLowerCase()}|${occurredAt || ""}`;
-    if (!occurredAt || !path || isReviewNoisePath(path) || seenDeletion.has(key)) return;
+  const addDeletion = (rawAt, path, summary, source = "removed_executor_artifact") => {
+    if (!path || isReviewNoisePath(path)) return;
+    const safeAt = sanitizeEventTimestamp(report, rawAt, source);
+    const key = safeAt
+      ? `${String(path).toLowerCase()}|${safeAt}`
+      : `${String(path).toLowerCase()}|unknown`;
+    if (seenDeletion.has(key)) return;
     seenDeletion.add(key);
     deletionEvents.push({
-      occurred_at: occurredAt,
+      occurred_at: safeAt,
+      time_unknown: Boolean(rawAt && !safeAt),
       category: "deletions",
       summary,
       path,
@@ -252,6 +265,7 @@ function buildClientScanReview(report) {
       item.display_at || item.deleted_at || item.modified,
       path,
       cleanup?.summary || `${name} was deleted or moved to the Recycle Bin.`,
+      item.timestamp_source || (item.deleted_at ? "recycle_metadata" : "file_mtime"),
     );
   }
   for (const row of sec.deletion_cleanup_analysis?.correlations ?? []) {
@@ -280,6 +294,7 @@ function buildClientScanReview(report) {
       hit.display_at || hit.modified,
       path,
       `${name} is no longer on disk or in the Recycle Bin; Windows activity traces still record the deletion.`,
+      hit.artifact_source || "removed_executor_artifact",
     );
   }
   const activityEvents = [

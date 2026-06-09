@@ -4299,6 +4299,67 @@ def resolve_display_timestamp(
     return None, None
 
 
+HIGH_CONFIDENCE_ACTIVITY_SOURCES = frozenset(
+    {
+        "bam_execution",
+        "usn_delete",
+        "recycle_bin",
+        "recycle_metadata",
+        "event_log",
+        "security_audit_delete",
+        "sysmon_file_delete",
+        "userassist",
+        "browser_download_start",
+        "browser_download_end",
+    }
+)
+
+
+def timestamp_in_scan_window(
+    ts: str | None,
+    scan_started_at: str | None,
+    generated_at: str | None,
+    *,
+    buffer_seconds: int = 180,
+) -> bool:
+    event_ms = _iso_to_epoch_ms(normalize_event_time(ts))
+    end_ms = _iso_to_epoch_ms(normalize_event_time(generated_at))
+    start_ms = _iso_to_epoch_ms(normalize_event_time(scan_started_at))
+    if event_ms is None or end_ms is None:
+        return False
+    if start_ms is None:
+        start_ms = end_ms - 45 * 60 * 1000
+    return event_ms >= (start_ms - buffer_seconds * 1000) and event_ms <= (end_ms + buffer_seconds * 1000)
+
+
+def sanitize_activity_timestamp(
+    ts: str | None,
+    source: str | None,
+    scan_started_at: str | None,
+    generated_at: str | None,
+) -> str | None:
+    normalized = normalize_event_time(ts)
+    if not normalized:
+        return None
+    if source in HIGH_CONFIDENCE_ACTIVITY_SOURCES:
+        return normalized
+    if timestamp_in_scan_window(normalized, scan_started_at, generated_at):
+        return None
+    return normalized
+
+
+def _iso_to_epoch_ms(value: str | None) -> int | None:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp() * 1000)
+    except ValueError:
+        return None
+
+
 def _parse_us_datetime(raw: str) -> str | None:
     cleaned = raw.strip().replace(",", "")
     for fmt in ("%m/%d/%Y %H:%M:%S.%f", "%m/%d/%Y %H:%M:%S", "%d/%m/%Y %H:%M:%S"):
@@ -4555,22 +4616,97 @@ def amcache_metadata() -> dict:
     if platform.system() != "Windows":
         return {"available": False, "reason": "Amcache is a Windows artifact"}
 
-    path = Path(os.getenv("SystemRoot", "C:\\Windows")) / "AppCompat" / "Programs" / "Amcache.hve"
-    if not path.exists():
-        return {"available": False, "path": str(path), "reason": "Amcache hive not found"}
+    hive_path = Path(os.getenv("SystemRoot", "C:\\Windows")) / "AppCompat" / "Programs" / "Amcache.hve"
+    if not hive_path.exists():
+        return {"available": False, "path": str(hive_path), "reason": "Amcache hive not found"}
 
     try:
-        stat = path.stat()
-        return {
-            "available": True,
-            "path": str(path),
-            "modified": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
-            "accessed": datetime.fromtimestamp(stat.st_atime, timezone.utc).isoformat(),
-            "size_bytes": stat.st_size,
-            "note": "Raw hive parsing is not performed by this prototype.",
-        }
-    except Exception as exc:
-        return {"available": False, "path": str(path), "reason": str(exc)}
+        stat = hive_path.stat()
+        hive_mtime = datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()
+    except OSError as exc:
+        return {"available": False, "path": str(hive_path), "reason": str(exc)}
+
+    script = (
+        "$ErrorActionPreference='SilentlyContinue';"
+        f"$src='{str(hive_path).replace(chr(39), chr(39)+chr(39))}';"
+        "$tmp=Join-Path $env:TEMP ('amcache_'+[guid]::NewGuid().ToString('N')+'.hve');"
+        "Copy-Item $src $tmp -Force;"
+        "$hive='Amcache'+[string](Get-Random);"
+        "$regKey='HKU\\'+$hive;"
+        "reg.exe load $regKey $tmp 2>&1 | Out-Null;"
+        "$items=@();"
+        "$fileRoot='Registry::'+$regKey+'\\Root\\InventoryApplicationFile';"
+        "$appRoot='Registry::'+$regKey+'\\Root\\InventoryApplication';"
+        "if(Test-Path $fileRoot){"
+        "Get-ChildItem $fileRoot -ErrorAction SilentlyContinue | Select-Object -First 500 | ForEach-Object {"
+        "$p=Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue;"
+        "if($p.FullPath){"
+        "$items += [pscustomobject]@{"
+        "Path=$p.FullPath;"
+        "Name=$p.Name;"
+        "Publisher=$p.Publisher;"
+        "LastWrite=$p.LastModifiedTime;"
+        "Sha1=$p.SHA1Hash;"
+        "Source='InventoryApplicationFile'"
+        "}"
+        "}"
+        "};"
+        "if(Test-Path $appRoot){"
+        "Get-ChildItem $appRoot -ErrorAction SilentlyContinue | Select-Object -First 200 | ForEach-Object {"
+        "$p=Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue;"
+        "if($p.Name){"
+        "$items += [pscustomobject]@{"
+        "Path=$p.Name;"
+        "Name=$p.Name;"
+        "Publisher=$p.Publisher;"
+        "LastWrite=$p.LastModifiedTime;"
+        "Sha1=$null;"
+        "Source='InventoryApplication'"
+        "}"
+        "}"
+        "};"
+        "reg.exe unload $regKey 2>&1 | Out-Null;"
+        "Remove-Item $tmp -Force -ErrorAction SilentlyContinue;"
+        "[pscustomobject]@{Available=$true;Count=$items.Count;Items=$items} | ConvertTo-Json -Depth 4 -Compress"
+    )
+    parsed = forensic_powershell_json(script, timeout=28.0, max_chars=32000)
+    items: list[dict] = []
+    if isinstance(parsed, dict):
+        raw_items = parsed.get("Items") or parsed.get("items") or []
+        if isinstance(raw_items, list):
+            patterns = executor_name_patterns()
+            for entry in raw_items[:500]:
+                if not isinstance(entry, dict):
+                    continue
+                path = str(entry.get("Path") or entry.get("path") or "")
+                if not path:
+                    continue
+                profile = suspicious_path_profile(path, patterns)
+                items.append(
+                    {
+                        "path": path,
+                        "name": entry.get("Name") or entry.get("name"),
+                        "publisher": entry.get("Publisher") or entry.get("publisher"),
+                        "last_write": normalize_event_time(entry.get("LastWrite") or entry.get("last_write")),
+                        "sha1": entry.get("Sha1") or entry.get("sha1"),
+                        "source": entry.get("Source") or entry.get("source") or "InventoryApplicationFile",
+                        "executor_name_hits": profile["executor_name_hits"],
+                        "cheat_filename_hints": profile["cheat_filename_hints"],
+                    }
+                )
+
+    suspicious = [item for item in items if item.get("executor_name_hits") or item.get("cheat_filename_hints")]
+    return {
+        "available": True,
+        "path": str(hive_path),
+        "modified": hive_mtime,
+        "size_bytes": stat.st_size,
+        "entry_count": len(items),
+        "suspicious_count": len(suspicious),
+        "items": items[:300],
+        "suspicious_items": suspicious[:80],
+        "note": "Parsed offline Amcache.hve inventory (executables and installers).",
+    }
 
 
 def bam_registry_entries(bam_structured: dict | None = None) -> dict:
@@ -7549,6 +7685,8 @@ def _collect_usn_records_for_removed_artifact_merge(
 def merge_removed_executor_artifact_hits(
     designated: dict,
     *,
+    scan_started_at: str | None = None,
+    generated_at: str | None = None,
     bam: dict,
     prefetch: dict,
     prefetch_health: dict,
@@ -7600,6 +7738,9 @@ def merge_removed_executor_artifact_hits(
             recent_items=recent_items,
             userassist=userassist,
         )
+        resolved_source = timestamp_source or source
+        display_at = sanitize_activity_timestamp(display_at, resolved_source, scan_started_at, generated_at)
+        occurred_at = sanitize_activity_timestamp(occurred_at, source, scan_started_at, generated_at)
         new_hits.append(
             {
                 "path": normalized,
@@ -10217,10 +10358,13 @@ def _append_activity_event(
     timestamp_source: str | None,
     detail: str,
     generated_at: str,
+    scan_started_at: str | None = None,
     extra: dict | None = None,
 ) -> None:
-    display_at = occurred_at
     resolved_source = timestamp_source or ("recorded" if occurred_at else None)
+    display_at = sanitize_activity_timestamp(occurred_at, resolved_source, scan_started_at, generated_at)
+    if not display_at:
+        resolved_source = None
     payload = {
         "category": category,
         "kind": kind,
@@ -10266,6 +10410,7 @@ def _extract_structured_deletion_events(deletion: dict) -> list[dict]:
 def build_user_activity_timeline(
     *,
     generated_at: str,
+    scan_started_at: str | None = None,
     trash: dict,
     bam: dict,
     userassist: dict,
@@ -10298,6 +10443,7 @@ def build_user_activity_timeline(
             timestamp_source="browser_download_start" if item.get("started_at") else "browser_download_end",
             detail=f"Downloaded via {browser} ({item.get('state', 'unknown')}).",
             generated_at=generated_at,
+            scan_started_at=scan_started_at,
             extra={"url": item.get("url"), "browser": browser, "suspicious": item.get("suspicious")},
         )
 
@@ -10318,6 +10464,7 @@ def build_user_activity_timeline(
                 else "Recycle Bin metadata without $I original path."
             ),
             generated_at=generated_at,
+            scan_started_at=scan_started_at,
             extra={"deleted_at_raw": item.get("deleted_at")},
         )
 
@@ -10341,6 +10488,7 @@ def build_user_activity_timeline(
                 or "Evidence recovered from system traces after the file or folder was deleted."
             ),
             generated_at=generated_at,
+            scan_started_at=scan_started_at,
             extra={"file_exists": False, "artifact_source": item.get("artifact_source")},
         )
 
@@ -10355,6 +10503,7 @@ def build_user_activity_timeline(
             timestamp_source=row["timestamp_source"],
             detail=row["detail"],
             generated_at=generated_at,
+            scan_started_at=scan_started_at,
         )
 
     usn_rows = (forensic_bundle.get("usn_file_lifecycle_rows") or []) if isinstance(forensic_bundle, dict) else []
@@ -10385,6 +10534,7 @@ def build_user_activity_timeline(
             timestamp_source=row.get("timestamp_source"),
             detail="NTFS USN journal change record.",
             generated_at=generated_at,
+            scan_started_at=scan_started_at,
         )
 
     for item in bam.get("items") or []:
@@ -10404,6 +10554,7 @@ def build_user_activity_timeline(
             timestamp_source="bam_registry",
             detail="Background Activity Moderator last execution timestamp.",
             generated_at=generated_at,
+            scan_started_at=scan_started_at,
             extra={"file_exists": item.get("file_exists")},
         )
 
@@ -10421,6 +10572,7 @@ def build_user_activity_timeline(
             timestamp_source=item.get("timestamp_source") or "userassist",
             detail="Explorer UserAssist records a GUI program run.",
             generated_at=generated_at,
+            scan_started_at=scan_started_at,
         )
 
     pca_items = (forensic_bundle.get("pca_executed") or {}).get("items") or []
@@ -10445,6 +10597,7 @@ def build_user_activity_timeline(
             timestamp_source=item.get("timestamp_source"),
             detail="PCA store references this executable path.",
             generated_at=generated_at,
+            scan_started_at=scan_started_at,
             extra={
                 "file_exists": item.get("file_exists"),
                 "correlated_timestamps": item.get("correlated_timestamps"),
@@ -10467,6 +10620,7 @@ def build_user_activity_timeline(
             timestamp_source="prefetch_mtime",
             detail="Windows Prefetch records that this executable ran.",
             generated_at=generated_at,
+            scan_started_at=scan_started_at,
         )
 
     for item in prefetch_health.get("indicator_hits") or []:
@@ -10480,6 +10634,7 @@ def build_user_activity_timeline(
             timestamp_source="prefetch_mtime",
             detail="Prefetch file matched an executor indicator name.",
             generated_at=generated_at,
+            scan_started_at=scan_started_at,
         )
 
     for item in recent_items.get("items") or []:
@@ -10498,6 +10653,7 @@ def build_user_activity_timeline(
             timestamp_source="file_mtime",
             detail="Recent file in Downloads/Desktop matched scan keywords.",
             generated_at=generated_at,
+            scan_started_at=scan_started_at,
         )
 
     for item in designated.get("hits") or []:
@@ -10516,6 +10672,7 @@ def build_user_activity_timeline(
             timestamp_source="file_mtime",
             detail="User profile folder file matched executor or cheat filename rules.",
             generated_at=generated_at,
+            scan_started_at=scan_started_at,
         )
 
     for item in executor_indicators.get("file_hits") or []:
@@ -10534,6 +10691,7 @@ def build_user_activity_timeline(
             timestamp_source="file_mtime",
             detail="Deep filesystem scan matched executor or cheat filename rules.",
             generated_at=generated_at,
+            scan_started_at=scan_started_at,
         )
 
     for item in sha_blocklist.get("hits") or []:
@@ -10547,6 +10705,7 @@ def build_user_activity_timeline(
             timestamp_source="file_mtime",
             detail="File hash matches a known executor blocklist entry.",
             generated_at=generated_at,
+            scan_started_at=scan_started_at,
         )
 
     for item in persistence.get("suspicious_entries") or []:
@@ -10574,6 +10733,7 @@ def build_user_activity_timeline(
             timestamp_source=timestamp_source,
             detail=f"Persistence via {item.get('source', 'unknown')}.",
             generated_at=generated_at,
+            scan_started_at=scan_started_at,
         )
 
     for hit in command_history.get("hits") or []:
@@ -10588,6 +10748,7 @@ def build_user_activity_timeline(
             timestamp_source=hit.get("timestamp_source") or ("powershell_history_file_mtime" if occurred else None),
             detail=str(hit.get("line") or "")[:320],
             generated_at=generated_at,
+            scan_started_at=scan_started_at,
             extra={"lines_from_end": hit.get("lines_from_end"), "timeline_note": hit.get("timeline_note")},
         )
 
@@ -10602,6 +10763,7 @@ def build_user_activity_timeline(
             timestamp_source="file_mtime",
             detail="Roblox client log file activity.",
             generated_at=generated_at,
+            scan_started_at=scan_started_at,
         )
 
     sqlite_pack = forensic_bundle.get("sqlite") if isinstance(forensic_bundle, dict) else {}
@@ -10618,6 +10780,7 @@ def build_user_activity_timeline(
                 timestamp_source="browser_last_visit" if visit else None,
                 detail=str(hit.get("title") or "Browser history keyword hit."),
                 generated_at=generated_at,
+                scan_started_at=scan_started_at,
             )
 
     def _sort_key(row: dict) -> tuple[int, float]:
@@ -11419,6 +11582,8 @@ def _deletion_activity_summary(path: str, *, removed_only: bool = False) -> str:
 
 def _gather_priority_deletion_events(
     *,
+    scan_started_at: str | None = None,
+    generated_at: str | None = None,
     trash: dict | None = None,
     designated: dict | None = None,
     executor_artifact_evidence: dict | None = None,
@@ -11436,7 +11601,7 @@ def _gather_priority_deletion_events(
 
     def add(*, occurred_at: str | None, path: str, kind: str, removed_only: bool = False) -> None:
         path = str(path or "").strip()
-        ts = normalize_event_time(occurred_at)
+        ts = sanitize_activity_timestamp(occurred_at, kind, scan_started_at, generated_at)
         if not path or not ts:
             return
         key = (_artifact_path_key(path), ts)
@@ -11523,6 +11688,7 @@ def _gather_priority_deletion_events(
 def build_last_computer_activity(
     *,
     generated_at: str,
+    scan_started_at: str | None = None,
     boot_time: str | None,
     user_activity: dict,
     execution_activity: dict,
@@ -11562,6 +11728,8 @@ def build_last_computer_activity(
         "filesystem": "A filesystem change was logged.",
     }
     priority_deletions = _gather_priority_deletion_events(
+        scan_started_at=scan_started_at,
+        generated_at=generated_at,
         trash=trash,
         designated=designated,
         executor_artifact_evidence=executor_artifact_evidence,
@@ -11634,6 +11802,7 @@ def build_last_computer_activity(
 def build_scan_review_bundle(
     *,
     generated_at: str,
+    scan_started_at: str | None = None,
     boot_time: str | None,
     bam: dict,
     prefetch: dict,
@@ -11682,6 +11851,7 @@ def build_scan_review_bundle(
     )
     last_computer_activity = build_last_computer_activity(
         generated_at=generated_at,
+        scan_started_at=scan_started_at,
         boot_time=boot_time,
         user_activity=user_activity,
         execution_activity=execution_activity,
@@ -11826,6 +11996,8 @@ def build_report() -> dict:
         usn_rows = forensic_bundle.get("usn_file_lifecycle_rows") or []
         merge_removed_executor_artifact_hits(
             designated,
+            scan_started_at=scan_started_at,
+            generated_at=generated_at,
             bam=bam_registry,
             prefetch=prefetch,
             prefetch_health=prefetch_health,
@@ -11892,6 +12064,7 @@ def build_report() -> dict:
         )
         user_activity = build_user_activity_timeline(
             generated_at=generated_at,
+            scan_started_at=scan_started_at,
             trash=trash,
             bam=bam_registry,
             userassist=userassist,
@@ -11930,6 +12103,7 @@ def build_report() -> dict:
         boot_time_iso = datetime.fromtimestamp(psutil.boot_time(), timezone.utc).isoformat()
         scan_review = build_scan_review_bundle(
             generated_at=generated_at,
+            scan_started_at=scan_started_at,
             boot_time=boot_time_iso,
             bam=bam_registry,
             prefetch=prefetch,

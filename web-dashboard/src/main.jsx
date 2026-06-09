@@ -28,8 +28,11 @@ import {
 } from "lucide-react";
 import "./styles.css";
 import { formatDisplayDate, normalizeIsoDateString } from "./dateFormat.js";
+import { sanitizeEventTimestamp } from "./activityTime.js";
 import { AdminPanel } from "./AdminPanel.jsx";
 import { defenderHasActionableSignal, defenderSummary } from "./defenderSignals.js";
+import { exportReportPdf } from "./exportReportPdf.js";
+import { SessionReview } from "./SessionReview.jsx";
 import { SimpleResults } from "./SimpleResults.jsx";
 import { TutorialGuide } from "./TutorialGuide.jsx";
 
@@ -143,6 +146,9 @@ function SessionList({ sessions, selectedId, onSelect, onDelete }) {
               {session.status === "expired" && session.expires_at ? (
                 <small className="session-expires">expired {formatGmtPlus3(session.expires_at)}</small>
               ) : null}
+              {session.reviewer_verdict ? (
+                <span className={`verdict-tag verdict-tag--${session.reviewer_verdict}`}>{session.reviewer_verdict}</span>
+              ) : null}
               <small>{formatGmtPlus3(session.created_at)}</small>
             </button>
             <button
@@ -239,20 +245,22 @@ function openedEntry(report, item) {
   if (accessed && isScanWindowAccess(report, accessed)) {
     return { filteredScanAccess: true };
   }
-  if (!modified && !accessed) {
+  const safeModified = sanitizeEventTimestamp(report, modified, "file_mtime");
+  const safeAccessed = sanitizeEventTimestamp(report, accessed, "file_atime");
+  if (!safeModified && !safeAccessed) {
     return {
       displayAt: null,
       accessedAt: null,
       modifiedAt: null,
       source: "timestamps unavailable",
-      filteredScanAccess: false,
+      filteredScanAccess: Boolean(modified || accessed),
     };
   }
   return {
-    displayAt: modified ?? accessed,
-    accessedAt: accessed,
-    modifiedAt: modified,
-    source: "mtime + atime",
+    displayAt: safeModified ?? safeAccessed,
+    accessedAt: safeAccessed,
+    modifiedAt: safeModified,
+    source: safeModified ? "mtime" : "atime",
     filteredScanAccess: false,
   };
 }
@@ -1007,10 +1015,28 @@ function findingTimestampSource(report, finding) {
   return resolvePathTimestampFromReport(report, finding.file_path || "").timestamp_source;
 }
 
+function sanitizeTimelineEvents(report, events) {
+  return (events ?? []).map((event) => {
+    const source = event.timestamp_source || event.kind || event.category;
+    const safeAt = sanitizeEventTimestamp(report, event.occurred_at, source);
+    if (!safeAt) {
+      return { ...event, occurred_at: null, time_unknown: true };
+    }
+    return { ...event, occurred_at: safeAt };
+  });
+}
+
 function userActivityFromReport(report) {
   const bundled = report.security_integrity_signals?.user_activity_timeline;
   if (bundled?.available) {
-    return bundled;
+    const events = sanitizeTimelineEvents(report, bundled.events);
+    const withTs = events.filter((e) => e.occurred_at);
+    return {
+      ...bundled,
+      events,
+      timestamped_event_count: withTs.length,
+      missing_timestamp_count: events.length - withTs.length,
+    };
   }
   return buildClientSideUserActivity(report);
 }
@@ -1021,13 +1047,17 @@ function buildClientSideUserActivity(report) {
   const events = [];
   for (const item of trash.items ?? []) {
     const path = item.original_path || item.name || item.location || "";
+    const rawAt = item.display_at || item.deleted_at || item.modified || null;
+    const tsSource = item.timestamp_source || (item.deleted_at ? "recycle_metadata" : "file_mtime");
+    const occurredAt = sanitizeEventTimestamp(report, rawAt, tsSource);
     events.push({
       category: "deletions",
       kind: item.original_path ? "recycle_bin" : "recycle_bin_artifact",
       label: item.original_path ? "Deleted to Recycle Bin" : "Recycle Bin item",
       path,
-      occurred_at: item.display_at || item.deleted_at || item.modified || null,
-      timestamp_source: item.timestamp_source || (item.deleted_at ? "recycle_metadata" : "file_mtime"),
+      occurred_at: occurredAt,
+      time_unknown: Boolean(rawAt && !occurredAt),
+      timestamp_source: tsSource,
       recency: recencyBucket(item.display_at || item.deleted_at || item.modified, report),
       detail: item.original_path
         ? `Legacy report — re-scan with the latest ${BRAND_NAME} for full deletion timeline.`
@@ -1174,8 +1204,13 @@ function UserActivitySection({ report, query }) {
                   ) : null}
                 </div>
                 <div className="activity-time-col">
-                  <time>{event.occurred_at ? formatGmtPlus3(event.occurred_at) : "No timestamp"}</time>
-                  {!event.occurred_at ? <span className="time-label muted">needs re-scan or Admin</span> : null}
+                  <time>{event.occurred_at ? formatGmtPlus3(event.occurred_at) : "Time unknown"}</time>
+                  {event.time_unknown ? (
+                    <span className="time-label muted">scan-time stamp removed — real time not recorded</span>
+                  ) : null}
+                  {!event.occurred_at && !event.time_unknown ? (
+                    <span className="time-label muted">needs re-scan or Admin</span>
+                  ) : null}
                 </div>
               </div>
             ))}
@@ -2369,7 +2404,7 @@ const resultSections = [
 ];
 const resultSectionById = Object.fromEntries(resultSections.map((section) => [section.id, section]));
 
-function Results({ detail }) {
+function Results({ detail, token, onSessionReviewSaved }) {
   const [sectionId, setSectionId] = useState("starter");
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
@@ -2414,7 +2449,14 @@ function Results({ detail }) {
             : "Waiting for the desktop client to submit results."}
         </p>
         <button className="download-button" onClick={() => downloadReport(detail)}>
-          <Download size={15} /> Download report
+          <Download size={15} /> Download JSON
+        </button>
+        <button
+          type="button"
+          className="download-button"
+          onClick={() => exportReportPdf({ detail, report, summary, brandName: BRAND_NAME })}
+        >
+          <FileText size={15} /> Print summary
         </button>
         <button type="button" className="tutorial-open-btn" onClick={() => setTutorialOpen(true)}>
           <BookOpen size={15} /> Full tutorial
@@ -2466,6 +2508,13 @@ function Results({ detail }) {
           ) : null}
         </div>
         </div>
+        <SessionReview
+          detail={detail}
+          apiUrl={API_URL}
+          token={token}
+          authHeaders={authHeaders}
+          onSaved={onSessionReviewSaved}
+        />
         {!showSectionContent ? (
           <div className="empty-state">Waiting for the desktop client to submit results.</div>
         ) : expertMode ? (
@@ -2487,6 +2536,7 @@ function Results({ detail }) {
             formatGmtPlus3={formatGmtPlus3}
             onExpertMode={() => setExpertMode(true)}
             onDownload={() => downloadReport(detail)}
+            onPrintPdf={() => exportReportPdf({ detail, report, summary, brandName: BRAND_NAME })}
           />
         )}
       </div>
@@ -2802,7 +2852,14 @@ function Dashboard({ token, onLogout }) {
             onSelect={setSelectedId}
             onDelete={deleteSession}
           />
-          <Results detail={detail} />
+          <Results
+            detail={detail}
+            token={token}
+            onSessionReviewSaved={(row) => {
+              setSessions((prev) => prev.map((s) => (s.id === row.id ? { ...s, ...row } : s)));
+              setDetail((prev) => (prev && prev.id === row.id ? { ...prev, ...row } : prev));
+            }}
+          />
         </div>
       )}
     </main>
