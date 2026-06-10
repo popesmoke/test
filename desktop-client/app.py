@@ -25,7 +25,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed, wait
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
-from tkinter import BOTH, BooleanVar, Canvas, Frame, PhotoImage, StringVar, Tk, font as tkfont, ttk, messagebox
+from tkinter import BOTH, BooleanVar, Frame, PhotoImage, StringVar, Tk, ttk, messagebox
 
 import psutil
 import requests
@@ -12979,260 +12979,23 @@ def build_report() -> dict:
     }
 
 
-def _hex_to_rgb(color: str) -> tuple[int, int, int]:
-    color = color.lstrip("#")
-    return int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16)
-
-
-def _rgb_to_hex(r: int, g: int, b: int) -> str:
-    return f"#{max(0, min(255, r)):02x}{max(0, min(255, g)):02x}{max(0, min(255, b)):02x}"
-
-
-def _blend_hex(c1: str, c2: str, t: float) -> str:
-    r1, g1, b1 = _hex_to_rgb(c1)
-    r2, g2, b2 = _hex_to_rgb(c2)
-    ratio = max(0.0, min(1.0, t))
-    return _rgb_to_hex(
-        int(r1 + (r2 - r1) * ratio),
-        int(g1 + (g2 - g1) * ratio),
-        int(b1 + (b2 - b1) * ratio),
-    )
-
-
-class PillButton(Frame):
-    def __init__(
-        self,
-        master,
-        text: str,
-        command,
-        *,
-        width: int = 150,
-        height: int = 36,
-        bg: str = "#0f0f14",
-        fill: str = "#b11220",
-        hover_fill: str = "#ef233c",
-        pressed_fill: str = "#8f0e1a",
-        text_color: str = "#ffffff",
-        font=None,
-    ) -> None:
-        super().__init__(master, bg=bg, highlightthickness=0, bd=0)
-        self._command = command
-        self._width = width
-        self._height = height
-        self._radius = height // 2
-        self._fill = fill
-        self._hover_fill = hover_fill
-        self._pressed_fill = pressed_fill
-        self._rest_fill = fill
-        self._glow_color = _blend_hex(fill, "#ffffff", 0.18)
-        self._font = font or tkfont.Font(family="Segoe UI", size=10, weight="bold")
-        self._anim_job: str | None = None
-        self._hover_anim: str | None = None
-        self._pressed = False
-        self._hover_amount = 0.0
-        pad = 6
-        self._canvas = Canvas(
-            self,
-            width=width + pad * 2,
-            height=height + pad * 2,
-            bg=bg,
-            highlightthickness=0,
-            bd=0,
-            cursor="hand2",
-        )
-        self._canvas.pack()
-        self._glow = self._draw_pill(fill, pad - 2, pad - 2, width + 4, height + 4, outline=self._glow_color)
-        self._shape = self._draw_pill(fill, pad, pad, width, height)
-        self._label = self._canvas.create_text(
-            pad + width // 2,
-            pad + height // 2,
-            text=text,
-            fill=text_color,
-            font=self._font,
-        )
-        self._canvas.itemconfigure(self._glow, state="hidden")
-        self._canvas.bind("<Enter>", lambda _e: self._on_enter())
-        self._canvas.bind("<Leave>", lambda _e: self._on_leave())
-        self._canvas.bind("<ButtonPress-1>", lambda _e: self._on_press())
-        self._canvas.bind("<ButtonRelease-1>", self._on_release)
-
-    def _draw_pill(self, color: str, x: int, y: int, w: int, h: int, outline: str | None = None) -> int:
-        r = h // 2
-        x2, y2 = x + w, y + h
-        return self._canvas.create_polygon(
-            x + r,
-            y,
-            x2 - r,
-            y,
-            x2,
-            y,
-            x2,
-            y + r,
-            x2,
-            y2 - r,
-            x2,
-            y2,
-            x2 - r,
-            y2,
-            x + r,
-            y2,
-            x,
-            y2,
-            x,
-            y2 - r,
-            x,
-            y + r,
-            x,
-            y,
-            smooth=True,
-            splinesteps=28,
-            fill=color,
-            outline=outline or color,
-        )
-
-    def _set_fill(self, color: str) -> None:
-        self._fill = color
-        self._canvas.itemconfigure(self._shape, fill=color, outline=color)
-
-    def _set_hover_glow(self, amount: float) -> None:
-        self._hover_amount = amount
-        if amount <= 0.02:
-            self._canvas.itemconfigure(self._glow, state="hidden")
-            return
-        glow = _blend_hex(self._rest_fill, self._hover_fill, amount)
-        self._canvas.itemconfigure(self._glow, state="normal", fill=glow, outline=glow)
-
-    def _animate_to(self, target: str, steps: int = 6, delay: int = 16) -> None:
-        if self._anim_job is not None:
-            self._canvas.after_cancel(self._anim_job)
-            self._anim_job = None
-        start = self._fill
-        if start == target:
-            return
-        state = {"step": 0}
-
-        def tick() -> None:
-            state["step"] += 1
-            t = state["step"] / steps
-            self._set_fill(_blend_hex(start, target, t))
-            if state["step"] < steps:
-                self._anim_job = self._canvas.after(delay, tick)
-            else:
-                self._anim_job = None
-
-        tick()
-
-    def _animate_hover(self, target: float) -> None:
-        if self._hover_anim is not None:
-            self._canvas.after_cancel(self._hover_anim)
-            self._hover_anim = None
-        start = self._hover_amount
-        state = {"step": 0}
-
-        def tick() -> None:
-            state["step"] += 1
-            t = state["step"] / 5
-            self._set_hover_glow(start + (target - start) * t)
-            if state["step"] < 5:
-                self._hover_anim = self._canvas.after(14, tick)
-            else:
-                self._hover_anim = None
-
-        tick()
-
-    def _on_enter(self) -> None:
-        if not self._pressed:
-            self._animate_to(self._hover_fill)
-            self._animate_hover(1.0)
-
-    def _on_leave(self) -> None:
-        if not self._pressed:
-            self._animate_to(self._rest_fill)
-            self._animate_hover(0.0)
-
-    def _on_press(self) -> None:
-        self._pressed = True
-        self._set_fill(self._pressed_fill)
-        self._set_hover_glow(0.4)
-
-    def _on_release(self, event) -> None:
-        self._pressed = False
-        pad = 6
-        inside = pad <= event.x <= pad + self._width and pad <= event.y <= pad + self._height
-        self._animate_to(self._hover_fill if inside else self._rest_fill)
-        self._animate_hover(1.0 if inside else 0.0)
-        if inside and self._command is not None:
-            self._command()
-
-
-class AnimatedBackground:
-    def __init__(self, canvas: Canvas, root: Tk) -> None:
-        self.canvas = canvas
-        self.root = root
-        self.phase = 0.0
-        self._job: str | None = None
-        self.top = "#04040a"
-        self.bottom = "#160c18"
-
-    def start(self) -> None:
-        self._tick()
-
-    def stop(self) -> None:
-        if self._job is not None:
-            try:
-                self.root.after_cancel(self._job)
-            except Exception:
-                pass
-            self._job = None
-
-    def paint(self) -> None:
-        width = max(self.canvas.winfo_width(), 2)
-        height = max(self.canvas.winfo_height(), 2)
-        self.canvas.delete("bg")
-        steps = 36
-        for i in range(steps):
-            t = i / max(steps - 1, 1)
-            color = _blend_hex(self.top, self.bottom, t)
-            y0 = int(height * i / steps)
-            y1 = int(height * (i + 1) / steps) + 1
-            self.canvas.create_rectangle(0, y0, width, y1, fill=color, outline="", tags="bg")
-        drift = math.sin(self.phase)
-        drift2 = math.cos(self.phase * 0.7)
-        glow_specs = [
-            ("#2a0814", int(width * (0.5 + 0.14 * drift)), int(height * (0.22 + 0.05 * drift2)), 170, 120),
-            ("#12082a", int(width * (0.5 - 0.12 * drift2)), int(height * (0.72 - 0.04 * drift)), 150, 110),
-            ("#1a0610", int(width * 0.5), int(height * (0.48 + 0.06 * drift)), 220, 90),
-        ]
-        for fill, cx, cy, rw, rh in glow_specs:
-            self.canvas.create_oval(cx - rw, cy - rh, cx + rw, cy + rh, fill=fill, outline="", tags="bg")
-        self.canvas.tag_lower("bg")
-
-    def _tick(self) -> None:
-        self.phase += 0.035
-        self.paint()
-        self._job = self.root.after(48, self._tick)
-
-
 class DiagnosticApp:
-    UI_STAGE = "#160c18"
-    UI_CARD = "#14141f"
-    UI_CARD_BORDER = "#34344a"
-    UI_CARD_GLOW = "#4a1a28"
-    UI_ACCENT = "#ef233c"
-    UI_ACCENT_SOFT = "#ff4d6d"
-    UI_TEXT = "#f4f4f5"
-    UI_MUTED = "#a1a1b0"
-    UI_SUCCESS = "#34d399"
-    UI_PENDING = "#666674"
-    CARD_WIDTH = 392
+    UI_BG = "#111114"
+    UI_SURFACE = "#18181c"
+    UI_BORDER = "#2a2a32"
+    UI_ACCENT = "#c41e3a"
+    UI_TEXT = "#ececee"
+    UI_MUTED = "#8e8e98"
+    UI_SUCCESS = "#2ea872"
+    UI_PENDING = "#5c5c68"
 
     def __init__(self) -> None:
         self.root = Tk()
         self.root.title("Virello Scanner")
-        self.root.geometry("480x580")
-        self.root.minsize(480, 580)
+        self.root.geometry("460x520")
+        self.root.minsize(460, 520)
         self.root.resizable(False, False)
-        self.root.configure(bg=self.UI_STAGE)
+        self.root.configure(bg=self.UI_BG)
         self.logo_image = self.load_logo()
         if self.logo_image:
             try:
@@ -13244,16 +13007,6 @@ class DiagnosticApp:
         self.status = StringVar(value="Ready to scan")
         self.progress_percent = StringVar(value="0%")
         self.stage_labels: dict[str, ttk.Label] = {}
-        self.stage_icons: dict[str, ttk.Label] = {}
-        self.stage_states: dict[str, str] = {}
-        self._pulse_on = False
-        self._pulse_job: str | None = None
-        self._entrance_job: str | None = None
-        self._logo_pulse_job: str | None = None
-        self._halo_oval: int | None = None
-        self._stage_frame: Frame | None = None
-        self._bg_canvas: Canvas | None = None
-        self._bg_anim: AnimatedBackground | None = None
         self._body: Frame | None = None
         self.progress = ttk.Progressbar(self.root, maximum=100, mode="determinate")
         self.configure_style()
@@ -13267,7 +13020,7 @@ class DiagnosticApp:
                 image = PhotoImage(file=str(path))
             else:
                 image = PhotoImage(data=embedded_logo_data(), format="png")
-            max_size = 96
+            max_size = 72
             factor = max(image.width() // max_size, image.height() // max_size, 1)
             return image.subsample(factor, factor)
         except Exception:
@@ -13276,272 +13029,143 @@ class DiagnosticApp:
     def configure_style(self) -> None:
         style = ttk.Style()
         style.theme_use("clam")
-        card = self.UI_CARD
-        style.configure("Card.TFrame", background=card)
-        style.configure("Card.TLabel", background=card, foreground=self.UI_TEXT, font=("Segoe UI", 9))
-        style.configure("CardMuted.TLabel", background=card, foreground=self.UI_MUTED, font=("Segoe UI", 9))
-        style.configure("Hero.TLabel", background=card, foreground="#ffffff", font=("Segoe UI", 22, "bold"))
-        style.configure("Subhero.TLabel", background=card, foreground=self.UI_ACCENT_SOFT, font=("Segoe UI", 9))
-        style.configure("Header.TLabel", background=card, foreground="#ffffff", font=("Segoe UI", 16, "bold"))
-        style.configure("CenterMuted.TLabel", background=card, foreground=self.UI_MUTED, font=("Segoe UI", 9))
-        style.configure("Accent.TLabel", background=card, foreground=self.UI_ACCENT_SOFT, font=("Segoe UI", 9, "bold"))
-        style.configure("Percent.TLabel", background=card, foreground="#ffffff", font=("Segoe UI", 32, "bold"))
-        style.configure("Stage.TLabel", background=card, foreground=self.UI_TEXT, font=("Segoe UI", 9))
-        style.configure("StageIcon.TLabel", background=card, foreground=self.UI_PENDING, font=("Segoe UI", 10, "bold"))
-        style.configure("TEntry", fieldbackground="#0c0c12", foreground="#ffffff", bordercolor="#4a4a5c", padding=8)
-        style.configure("TCheckbutton", background=card, foreground=self.UI_TEXT, font=("Segoe UI", 9))
-        style.map("TCheckbutton", background=[("active", card)], foreground=[("active", "#ffffff")])
+        bg = self.UI_BG
+        style.configure("TFrame", background=bg)
+        style.configure("TLabel", background=bg, foreground=self.UI_TEXT, font=("Segoe UI", 9))
+        style.configure("Muted.TLabel", background=bg, foreground=self.UI_MUTED, font=("Segoe UI", 9))
+        style.configure("Title.TLabel", background=bg, foreground="#ffffff", font=("Segoe UI", 18, "bold"))
+        style.configure("Heading.TLabel", background=bg, foreground="#ffffff", font=("Segoe UI", 13, "bold"))
+        style.configure("Percent.TLabel", background=bg, foreground="#ffffff", font=("Segoe UI", 11, "bold"))
+        style.configure("Stage.TLabel", background=bg, foreground=self.UI_TEXT, font=("Segoe UI", 9))
+        style.configure("StageStatus.TLabel", background=bg, foreground=self.UI_MUTED, font=("Segoe UI", 9))
+        style.configure("Primary.TButton", background=self.UI_ACCENT, foreground="#ffffff", padding=(16, 8), borderwidth=0)
+        style.map("Primary.TButton", background=[("active", "#e02545"), ("disabled", "#5a5a62")])
+        style.configure("Secondary.TButton", background="#232329", foreground="#ffffff", padding=(14, 8), borderwidth=0)
+        style.map("Secondary.TButton", background=[("active", "#2f2f38")])
+        style.configure("TEntry", fieldbackground=self.UI_SURFACE, foreground="#ffffff", bordercolor=self.UI_BORDER, padding=8)
+        style.configure("TCheckbutton", background=bg, foreground=self.UI_TEXT, font=("Segoe UI", 9))
+        style.map("TCheckbutton", background=[("active", bg)], foreground=[("active", "#ffffff")])
         style.configure(
-            "red.Horizontal.TProgressbar",
-            troughcolor="#0c0c12",
+            "Accent.Horizontal.TProgressbar",
+            troughcolor=self.UI_SURFACE,
             background=self.UI_ACCENT,
-            bordercolor=self.UI_CARD_BORDER,
-            lightcolor=self.UI_ACCENT_SOFT,
-            darkcolor="#7f0b16",
-            thickness=12,
+            bordercolor=self.UI_BORDER,
+            lightcolor=self.UI_ACCENT,
+            darkcolor="#8f1528",
+            thickness=8,
         )
 
     def _build_shell(self) -> None:
-        self._stage_frame = Frame(self.root, bg=self.UI_STAGE, highlightthickness=0, bd=0)
-        self._stage_frame.pack(fill=BOTH, expand=True)
-        self._bg_canvas = Canvas(self._stage_frame, bg=self.UI_STAGE, highlightthickness=0, bd=0)
-        self._bg_canvas.place(x=0, y=0, relwidth=1, relheight=1)
-        self._bg_anim = AnimatedBackground(self._bg_canvas, self.root)
-        self._bg_canvas.bind("<Configure>", lambda _e: self._bg_anim.paint() if self._bg_anim else None)
-        self._bg_anim.start()
+        border = Frame(self.root, bg=self.UI_BORDER, height=1)
+        border.pack(fill="x")
+        self._body = Frame(self.root, bg=self.UI_BG, padx=32, pady=26)
+        self._body.pack(fill=BOTH, expand=True)
 
-    def _new_card(self) -> Frame:
-        self._stop_entrance()
-        if self._body is not None:
-            self._body.destroy()
-        self._body = Frame(
-            self._stage_frame,
-            bg=self.UI_CARD,
-            highlightthickness=1,
-            highlightbackground=self.UI_CARD_BORDER,
-            bd=0,
-            width=self.CARD_WIDTH,
-        )
-        self._body.place(relx=0.5, rely=0.53, anchor="center")
-        inner = Frame(self._body, bg=self.UI_CARD, padx=28, pady=24)
-        inner.pack(fill=BOTH, expand=True)
-        self._animate_entrance()
-        return inner
+    def _separator(self, parent) -> None:
+        Frame(parent, bg=self.UI_BORDER, height=1).pack(fill="x", pady=16)
 
-    def _animate_entrance(self) -> None:
-        if self._body is None:
-            return
-        state = {"step": 0, "rely": 0.535}
-
-        def tick() -> None:
-            if self._body is None:
-                return
-            state["step"] += 1
-            t = state["step"] / 8
-            eased = 1 - (1 - t) ** 3
-            rely = 0.535 - (0.035 * eased)
-            self._body.place(relx=0.5, rely=rely, anchor="center")
-            if state["step"] < 8:
-                self._entrance_job = self.root.after(18, tick)
-            else:
-                self._body.place(relx=0.5, rely=0.5, anchor="center")
-                self._entrance_job = None
-
-        tick()
-
-    def _stop_entrance(self) -> None:
-        if self._entrance_job is not None:
-            try:
-                self.root.after_cancel(self._entrance_job)
-            except Exception:
-                pass
-            self._entrance_job = None
-
-    def _center_block(self, parent) -> Frame:
-        block = Frame(parent, bg=self.UI_CARD)
-        block.pack(anchor="center", fill="x")
-        return block
-
-    def _logo_block(self, parent) -> None:
-        block = self._center_block(parent)
-        halo = Canvas(block, width=108, height=108, bg=self.UI_CARD, highlightthickness=0, bd=0)
-        halo.pack(anchor="center", pady=(0, 10))
-        self._halo_oval = halo.create_oval(10, 10, 98, 98, fill="#221018", outline="#3a1824")
-        if self.logo_image:
-            halo.create_image(54, 54, image=self.logo_image)
-        self._start_logo_pulse(halo)
-
-    def _start_logo_pulse(self, halo: Canvas) -> None:
-        self._stop_logo_pulse()
-        state = {"on": False}
-
-        def tick() -> None:
-            state["on"] = not state["on"]
-            color = "#3f1a2a" if state["on"] else "#221018"
-            outline = "#5a2034" if state["on"] else "#3a1824"
-            halo.itemconfigure(self._halo_oval, fill=color, outline=outline)
-            self._logo_pulse_job = self.root.after(900, tick)
-
-        tick()
-
-    def _stop_logo_pulse(self) -> None:
-        if self._logo_pulse_job is not None:
-            try:
-                self.root.after_cancel(self._logo_pulse_job)
-            except Exception:
-                pass
-            self._logo_pulse_job = None
-
-    def _pill_row(self, parent, buttons: list[tuple[str, object, bool]]) -> None:
-        row = Frame(parent, bg=self.UI_CARD)
-        row.pack(anchor="center", pady=(18, 0))
-        for idx, (label, cmd, primary) in enumerate(buttons):
-            pill = PillButton(
-                row,
-                label,
-                cmd,
-                width=148 if primary else 124,
-                height=34,
-                bg=self.UI_CARD,
-                fill="#b11220" if primary else "#1c1c28",
-                hover_fill="#ef233c" if primary else "#2d2d3c",
-                pressed_fill="#8f0e1a" if primary else "#14141c",
+    def _button_row(self, parent, buttons: list[tuple[str, object, str]]) -> None:
+        row = ttk.Frame(parent)
+        row.pack(anchor="w", pady=(18, 0))
+        for idx, (label, cmd, kind) in enumerate(buttons):
+            style = "Primary.TButton" if kind == "primary" else "Secondary.TButton"
+            ttk.Button(row, text=label, style=style, command=cmd).pack(
+                side="left",
+                padx=(0, 10) if idx == 0 else (0, 0),
             )
-            pill.pack(side="left", padx=(0, 10) if idx == 0 else (0, 0))
 
     def clear(self) -> None:
-        self._stop_pulse()
-        self._stop_logo_pulse()
-        self._stop_entrance()
         if self._body is not None:
-            self._body.destroy()
-            self._body = None
+            for child in self._body.winfo_children():
+                child.destroy()
 
     def build_welcome(self) -> None:
         self.clear()
-        card = self._new_card()
-        self._logo_block(card)
-        ttk.Label(card, text="Virello Scanner", style="Hero.TLabel").pack(anchor="center")
-        ttk.Label(card, text="Secure Remote Diagnostics", style="Subhero.TLabel").pack(anchor="center", pady=(4, 12))
+        if self.logo_image:
+            ttk.Label(self._body, image=self.logo_image).pack(anchor="w", pady=(0, 12))
+        ttk.Label(self._body, text="Virello Scanner", style="Title.TLabel").pack(anchor="w")
         ttk.Label(
-            card,
-            text="Run a one-time review with your session PIN.\nResults upload securely to your reviewer.",
-            style="CenterMuted.TLabel",
-            wraplength=320,
-            justify="center",
-        ).pack(anchor="center", pady=(0, 4))
-        self._pill_row(
-            card,
+            self._body,
+            text="Secure remote system diagnostics for reviewer sessions.",
+            style="Muted.TLabel",
+            wraplength=380,
+        ).pack(anchor="w", pady=(6, 0))
+        ttk.Label(
+            self._body,
+            text="Enter a session PIN to run a one-time scan. Results are sent to your reviewer dashboard.",
+            style="Muted.TLabel",
+            wraplength=380,
+        ).pack(anchor="w", pady=(10, 0))
+        self._button_row(
+            self._body,
             [
-                ("Get Started", self.build_pin_screen, True),
-                ("Discord", lambda: webbrowser.open(DISCORD_URL), False),
+                ("Get Started", self.build_pin_screen, "primary"),
+                ("Join Discord", lambda: webbrowser.open(DISCORD_URL), "secondary"),
             ],
         )
 
     def build_pin_screen(self) -> None:
         self.clear()
-        card = self._new_card()
-        self._logo_block(card)
-        ttk.Label(card, text="Session PIN", style="Header.TLabel").pack(anchor="center", pady=(0, 4))
-        ttk.Label(card, text="Enter the code from your reviewer", style="CenterMuted.TLabel").pack(anchor="center", pady=(0, 14))
-        entry_wrap = Frame(card, bg=self.UI_CARD)
-        entry_wrap.pack(anchor="center", pady=(0, 16))
-        entry = ttk.Entry(entry_wrap, textvariable=self.pin, font=("Consolas", 20), width=8, justify="center")
-        entry.pack(anchor="center")
+        ttk.Label(self._body, text="Session PIN", style="Heading.TLabel").pack(anchor="w")
+        ttk.Label(self._body, text="Enter the PIN provided by your reviewer.", style="Muted.TLabel").pack(
+            anchor="w", pady=(6, 14)
+        )
+        entry = ttk.Entry(self._body, textvariable=self.pin, font=("Consolas", 18), width=10, justify="center")
+        entry.pack(anchor="w")
         entry.focus()
-        ttk.Label(card, text="—  What we collect  —", style="Accent.TLabel").pack(anchor="center", pady=(4, 8))
+        self._separator(self._body)
+        ttk.Label(self._body, text="Collection summary", style="Heading.TLabel").pack(anchor="w")
         for item in COLLECTED_CATEGORIES:
-            ttk.Label(card, text=item, style="CardMuted.TLabel", wraplength=320, justify="center").pack(anchor="center", pady=2)
+            ttk.Label(self._body, text=f"• {item}", style="Muted.TLabel", wraplength=380).pack(anchor="w", pady=(4, 0))
         ttk.Checkbutton(
-            card,
-            text="I agree to run this scan and submit results.",
+            self._body,
+            text="I agree to run this scan and submit the results for review.",
             variable=self.consent,
-        ).pack(anchor="center", pady=(14, 0))
-        self._pill_row(
-            card,
+        ).pack(anchor="w", pady=(16, 0))
+        self._button_row(
+            self._body,
             [
-                ("Start Scan", self.start_scan, True),
-                ("Back", self.build_welcome, False),
+                ("Start Scan", self.start_scan, "primary"),
+                ("Back", self.build_welcome, "secondary"),
             ],
         )
 
     def build_progress_screen(self) -> None:
         self.clear()
-        card = self._new_card()
-        ttk.Label(card, text="Scanning", style="Header.TLabel").pack(anchor="center")
-        ttk.Label(card, textvariable=self.status, style="CenterMuted.TLabel").pack(anchor="center", pady=(6, 16))
-        ttk.Label(card, textvariable=self.progress_percent, style="Percent.TLabel").pack(anchor="center")
+        ttk.Label(self._body, text="Scan in progress", style="Heading.TLabel").pack(anchor="w")
+        ttk.Label(self._body, textvariable=self.status, style="Muted.TLabel").pack(anchor="w", pady=(6, 16))
+        progress_row = ttk.Frame(self._body)
+        progress_row.pack(fill="x")
         self.progress = ttk.Progressbar(
-            card,
+            progress_row,
             maximum=100,
             mode="determinate",
-            length=self.CARD_WIDTH - 72,
-            style="red.Horizontal.TProgressbar",
+            length=320,
+            style="Accent.Horizontal.TProgressbar",
         )
-        self.progress.pack(anchor="center", pady=(10, 16))
-        ttk.Label(card, text="—  Stages  —", style="Accent.TLabel").pack(anchor="center", pady=(0, 10))
-        stages = Frame(card, bg=self.UI_CARD)
-        stages.pack(anchor="center")
+        self.progress.pack(side="left", fill="x", expand=True)
+        ttk.Label(progress_row, textvariable=self.progress_percent, style="Percent.TLabel").pack(side="left", padx=(12, 0))
+        self._separator(self._body)
+        ttk.Label(self._body, text="Stages", style="Heading.TLabel").pack(anchor="w", pady=(0, 10))
         self.stage_labels = {}
-        self.stage_icons = {}
-        self.stage_states = {}
         for stage in SCAN_STAGES:
-            row = Frame(stages, bg=self.UI_CARD)
+            row = ttk.Frame(self._body)
             row.pack(fill="x", pady=3)
-            icon = ttk.Label(row, text="○", style="StageIcon.TLabel", width=2, background=self.UI_CARD)
-            icon.pack(side="left", padx=(0, 10))
-            label = ttk.Label(row, text=stage, style="Stage.TLabel", background=self.UI_CARD, width=24, anchor="w")
-            label.pack(side="left")
-            self.stage_icons[stage] = icon
-            self.stage_labels[stage] = label
-            self.stage_states[stage] = "pending"
-        self._start_pulse()
-
-    def _stage_glyph(self, state: str, pulse: bool = False) -> tuple[str, str]:
-        if state == "complete":
-            return "✓", self.UI_SUCCESS
-        if state == "running":
-            return ("◉" if pulse else "○"), self.UI_ACCENT_SOFT
-        return "○", self.UI_PENDING
-
-    def _start_pulse(self) -> None:
-        self._pulse_on = False
-        self._tick_pulse()
-
-    def _stop_pulse(self) -> None:
-        if self._pulse_job is not None:
-            try:
-                self.root.after_cancel(self._pulse_job)
-            except Exception:
-                pass
-            self._pulse_job = None
-
-    def _tick_pulse(self) -> None:
-        self._pulse_on = not self._pulse_on
-        for stage, state in self.stage_states.items():
-            if state != "running":
-                continue
-            icon = self.stage_icons.get(stage)
-            if icon is None:
-                continue
-            glyph, color = self._stage_glyph("running", pulse=self._pulse_on)
-            icon.config(text=glyph, foreground=color)
-        self._pulse_job = self.root.after(450, self._tick_pulse)
+            ttk.Label(row, text=stage, style="Stage.TLabel").pack(side="left")
+            status = ttk.Label(row, text="Waiting", style="StageStatus.TLabel")
+            status.pack(side="right")
+            self.stage_labels[stage] = status
 
     def set_stage(self, stage: str, state: str) -> None:
-        self.stage_states[stage] = state
-        icon = self.stage_icons.get(stage)
         label = self.stage_labels.get(stage)
-        if icon is not None:
-            glyph, color = self._stage_glyph(state)
-            icon.config(text=glyph, foreground=color)
-        if label is not None:
-            if state == "running":
-                label.config(foreground=self.UI_ACCENT_SOFT)
-            elif state == "complete":
-                label.config(foreground=self.UI_SUCCESS)
-            else:
-                label.config(foreground=self.UI_TEXT)
+        if label is None:
+            return
+        if state == "complete":
+            label.config(text="Complete", foreground=self.UI_SUCCESS)
+        elif state == "running":
+            label.config(text="In progress", foreground=self.UI_ACCENT)
+        else:
+            label.config(text="Waiting", foreground=self.UI_MUTED)
         self.root.update_idletasks()
 
     def set_progress_percent(self, percent: float) -> None:
@@ -13631,11 +13255,6 @@ class DiagnosticApp:
 
     def _exit_after_success(self) -> None:
         """End the UI and process; Windows often needs quit + destroy + hard exit."""
-        if self._bg_anim is not None:
-            self._bg_anim.stop()
-        self._stop_pulse()
-        self._stop_logo_pulse()
-        self._stop_entrance()
         try:
             self.root.quit()
         except Exception:
