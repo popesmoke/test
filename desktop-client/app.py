@@ -25,7 +25,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed, wait
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
-from tkinter import BOTH, BooleanVar, PhotoImage, StringVar, Tk, ttk, messagebox
+from tkinter import BOTH, BooleanVar, Canvas, Frame, PhotoImage, StringVar, Tk, ttk, messagebox
 
 import psutil
 import requests
@@ -12766,9 +12766,9 @@ def build_report() -> dict:
         defender = fut_defender.result()
         windows_event_logs = fut_events.result()
         windows_security_events = fut_security_events.result()
-        powershell_operational_events = fut_powershell_events.result()
-        windows_service_change_events = fut_service_changes.result()
-        xml_event_log_files = fut_xml.result()
+        powershell_events_summary = fut_powershell_events.result()
+        service_change_events_summary = fut_service_changes.result()
+        xml_event_log_summary = fut_xml.result()
         usb_events = fut_usb.result()
         shellbag = fut_shellbag.result()
         disk_executables = fut_disk_exe.result()
@@ -12950,9 +12950,9 @@ def build_report() -> dict:
             "defender": defender,
             "windows_event_logs": windows_event_logs,
             "windows_security_events": windows_security_events,
-            "powershell_operational_events": powershell_operational_events,
-            "windows_service_change_events": windows_service_change_events,
-            "xml_event_log_files": xml_event_log_files,
+            "powershell_operational_events": powershell_events_summary,
+            "windows_service_change_events": service_change_events_summary,
+            "xml_event_log_files": xml_event_log_summary,
             "recent_items": recent_items,
             "command_history_keyword_hits": command_history,
             "services": services_snapshot,
@@ -12980,11 +12980,22 @@ def build_report() -> dict:
 
 
 class DiagnosticApp:
+    UI_BG = "#050508"
+    UI_CARD = "#101018"
+    UI_CARD_BORDER = "#2a2a38"
+    UI_ACCENT = "#ef233c"
+    UI_ACCENT_SOFT = "#ff4d6d"
+    UI_TEXT = "#f8f8fa"
+    UI_MUTED = "#9494a8"
+    UI_SUCCESS = "#34d399"
+    UI_PENDING = "#52525e"
+
     def __init__(self) -> None:
         self.root = Tk()
         self.root.title("Virello Scanner")
-        self.root.geometry("850x700")
-        self.root.configure(bg="#08080a")
+        self.root.geometry("920x760")
+        self.root.minsize(820, 680)
+        self.root.configure(bg=self.UI_BG)
         self.logo_image = self.load_logo()
         if self.logo_image:
             try:
@@ -12993,11 +13004,18 @@ class DiagnosticApp:
                 pass
         self.pin = StringVar()
         self.consent = BooleanVar(value=False)
-        self.status = StringVar(value="Ready")
+        self.status = StringVar(value="Ready to scan")
         self.progress_percent = StringVar(value="0%")
         self.stage_labels: dict[str, ttk.Label] = {}
+        self.stage_icons: dict[str, ttk.Label] = {}
+        self.stage_states: dict[str, str] = {}
+        self._pulse_on = False
+        self._pulse_job: str | None = None
+        self._content_host: Frame | None = None
+        self._bg_canvas: Canvas | None = None
         self.progress = ttk.Progressbar(self.root, maximum=100, mode="determinate")
         self.configure_style()
+        self._build_shell()
         self.build_welcome()
 
     def load_logo(self) -> PhotoImage | None:
@@ -13007,7 +13025,7 @@ class DiagnosticApp:
                 image = PhotoImage(file=str(path))
             else:
                 image = PhotoImage(data=embedded_logo_data(), format="png")
-            max_size = 210
+            max_size = 180
             factor = max(image.width() // max_size, image.height() // max_size, 1)
             return image.subsample(factor, factor)
         except Exception:
@@ -13016,93 +13034,246 @@ class DiagnosticApp:
     def configure_style(self) -> None:
         style = ttk.Style()
         style.theme_use("clam")
-        style.configure("TFrame", background="#08080a")
-        style.configure("TLabel", background="#08080a", foreground="#f4f4f5", font=("Segoe UI", 10))
-        style.configure("Muted.TLabel", background="#08080a", foreground="#b7b7bd")
-        style.configure("Title.TLabel", background="#08080a", foreground="#ffffff", font=("Segoe UI", 24, "bold"))
-        style.configure("Header.TLabel", background="#08080a", foreground="#ffffff", font=("Segoe UI", 18, "bold"))
-        style.configure("CenterTitle.TLabel", background="#08080a", foreground="#ffffff", font=("Segoe UI", 28, "bold"))
-        style.configure("CenterMuted.TLabel", background="#08080a", foreground="#b7b7bd", font=("Segoe UI", 10))
-        style.configure("Red.TButton", background="#b11220", foreground="#ffffff", bordercolor="#ef233c", focusthickness=0, padding=(14, 8))
-        style.map("Red.TButton", background=[("active", "#ef233c")])
-        style.configure("TButton", background="#17171d", foreground="#ffffff", bordercolor="#3a3a45", padding=(12, 7))
+        card = self.UI_CARD
+        bg = self.UI_BG
+        style.configure("TFrame", background=bg)
+        style.configure("Card.TFrame", background=card)
+        style.configure("TLabel", background=bg, foreground=self.UI_TEXT, font=("Segoe UI", 10))
+        style.configure("Card.TLabel", background=card, foreground=self.UI_TEXT, font=("Segoe UI", 10))
+        style.configure("Muted.TLabel", background=bg, foreground=self.UI_MUTED)
+        style.configure("CardMuted.TLabel", background=card, foreground=self.UI_MUTED, font=("Segoe UI", 10))
+        style.configure("Title.TLabel", background=bg, foreground="#ffffff", font=("Segoe UI", 24, "bold"))
+        style.configure("Hero.TLabel", background=bg, foreground="#ffffff", font=("Segoe UI", 34, "bold"))
+        style.configure("Header.TLabel", background=card, foreground="#ffffff", font=("Segoe UI", 20, "bold"))
+        style.configure("CenterTitle.TLabel", background=bg, foreground="#ffffff", font=("Segoe UI", 28, "bold"))
+        style.configure("CenterMuted.TLabel", background=bg, foreground=self.UI_MUTED, font=("Segoe UI", 11))
+        style.configure("Accent.TLabel", background=card, foreground=self.UI_ACCENT_SOFT, font=("Segoe UI", 11, "bold"))
+        style.configure("Percent.TLabel", background=card, foreground="#ffffff", font=("Segoe UI", 42, "bold"))
+        style.configure("Stage.TLabel", background=card, foreground=self.UI_TEXT, font=("Segoe UI", 10))
+        style.configure("StageIcon.TLabel", background=card, foreground=self.UI_PENDING, font=("Segoe UI", 12, "bold"))
+        style.configure("Red.TButton", background="#b11220", foreground="#ffffff", bordercolor=self.UI_ACCENT, focusthickness=0, padding=(18, 10))
+        style.map("Red.TButton", background=[("active", self.UI_ACCENT)])
+        style.configure("TButton", background="#17171d", foreground="#ffffff", bordercolor="#3a3a45", padding=(14, 8))
         style.map("TButton", background=[("active", "#23232b")])
-        style.configure("TEntry", fieldbackground="#111116", foreground="#ffffff", bordercolor="#3a3a45")
-        style.configure("TCheckbutton", background="#08080a", foreground="#f4f4f5", font=("Segoe UI", 10))
-        style.map("TCheckbutton", background=[("active", "#08080a")], foreground=[("active", "#ffffff")])
-        style.configure("red.Horizontal.TProgressbar", troughcolor="#111116", background="#ef233c", bordercolor="#3a3a45", lightcolor="#ef233c", darkcolor="#7f0b16")
+        style.configure("TEntry", fieldbackground="#0d0d12", foreground="#ffffff", bordercolor="#3a3a45", padding=8)
+        style.configure("TCheckbutton", background=card, foreground=self.UI_TEXT, font=("Segoe UI", 10))
+        style.map("TCheckbutton", background=[("active", card)], foreground=[("active", "#ffffff")])
+        style.configure(
+            "red.Horizontal.TProgressbar",
+            troughcolor="#0d0d12",
+            background=self.UI_ACCENT,
+            bordercolor=self.UI_CARD_BORDER,
+            lightcolor=self.UI_ACCENT_SOFT,
+            darkcolor="#7f0b16",
+            thickness=14,
+        )
+
+    def _build_shell(self) -> None:
+        self._bg_canvas = Canvas(self.root, highlightthickness=0, bd=0, bg=self.UI_BG)
+        self._bg_canvas.pack(fill=BOTH, expand=True)
+        self._bg_canvas.bind("<Configure>", self._paint_background)
+        self._content_host = Frame(self._bg_canvas, bg=self.UI_BG, highlightthickness=0, bd=0)
+        self._bg_canvas.create_window(0, 0, window=self._content_host, anchor="nw", tags="content")
+        self._content_host.bind("<Configure>", self._sync_content_size)
+
+    def _sync_content_size(self, _event=None) -> None:
+        if self._bg_canvas is None or self._content_host is None:
+            return
+        self._bg_canvas.itemconfigure("content", width=self._content_host.winfo_reqwidth(), height=self._content_host.winfo_reqheight())
+
+    def _paint_background(self, event=None) -> None:
+        if self._bg_canvas is None:
+            return
+        width = max(self._bg_canvas.winfo_width(), 1)
+        height = max(self._bg_canvas.winfo_height(), 1)
+        self._bg_canvas.delete("gradient")
+        steps = 28
+        for i in range(steps):
+            ratio = i / max(steps - 1, 1)
+            r = int(5 + ratio * 18)
+            g = int(5 + ratio * 4)
+            b = int(8 + ratio * 22)
+            y0 = int(height * i / steps)
+            y1 = int(height * (i + 1) / steps) + 1
+            self._bg_canvas.create_rectangle(0, y0, width, y1, fill=f"#{r:02x}{g:02x}{b:02x}", outline="", tags="gradient")
+        glow_y = int(height * 0.12)
+        self._bg_canvas.create_oval(
+            int(width * 0.18),
+            glow_y - 120,
+            int(width * 0.82),
+            glow_y + 180,
+            fill="#1a0610",
+            outline="",
+            tags="gradient",
+        )
+        self._bg_canvas.tag_lower("gradient")
+
+    def _make_card(self, parent, padding: int = 28) -> ttk.Frame:
+        outer = ttk.Frame(parent, style="TFrame", padding=(padding, padding))
+        card = Frame(
+            outer,
+            bg=self.UI_CARD,
+            highlightthickness=1,
+            highlightbackground=self.UI_CARD_BORDER,
+            highlightcolor=self.UI_CARD_BORDER,
+            bd=0,
+        )
+        card.pack(fill=BOTH, expand=True)
+        inner = ttk.Frame(card, style="Card.TFrame", padding=28)
+        inner.pack(fill=BOTH, expand=True)
+        return inner
 
     def clear(self) -> None:
-        for child in self.root.winfo_children():
-            child.destroy()
+        self._stop_pulse()
+        if self._content_host is not None:
+            for child in self._content_host.winfo_children():
+                child.destroy()
+
+    def _feature_chip(self, parent, text: str) -> None:
+        chip = Frame(parent, bg="#181824", highlightthickness=1, highlightbackground="#303040", bd=0)
+        chip.pack(side="left", padx=(0, 10), pady=4)
+        ttk.Label(chip, text=text, style="CardMuted.TLabel", background="#181824").pack(padx=12, pady=6)
 
     def build_welcome(self) -> None:
         self.clear()
-        frame = ttk.Frame(self.root, padding=32)
+        frame = ttk.Frame(self._content_host, padding=36)
         frame.pack(fill=BOTH, expand=True)
         hero = ttk.Frame(frame)
         hero.pack(fill=BOTH, expand=True)
         if self.logo_image:
-            ttk.Label(hero, image=self.logo_image).pack(anchor="center", pady=(8, 20))
+            ttk.Label(hero, image=self.logo_image).pack(anchor="center", pady=(24, 18))
+        ttk.Label(hero, text="VIRELLO SCANNER", style="Hero.TLabel").pack(anchor="center")
+        ttk.Label(hero, text="Secure remote system diagnostics", style="Accent.TLabel", background=self.UI_BG).pack(anchor="center", pady=(6, 18))
         ttk.Label(
             hero,
-            text=(
-                "Run a one-time Virello Scanner review with a session PIN. Results are uploaded to the reviewer dashboard."
-            ),
+            text="Run a one-time review with your session PIN. Results upload securely to your reviewer dashboard.",
             style="CenterMuted.TLabel",
-            wraplength=560,
+            wraplength=580,
             justify="center",
-        ).pack(anchor="center", pady=(12, 20))
+        ).pack(anchor="center", pady=(0, 22))
+        chips = ttk.Frame(hero)
+        chips.pack(anchor="center", pady=(0, 28))
+        self._feature_chip(chips, "One-time scan")
+        self._feature_chip(chips, "PIN protected")
+        self._feature_chip(chips, "No passwords collected")
         actions = ttk.Frame(hero)
         actions.pack(anchor="center")
-        ttk.Button(actions, text="Get Started", style="Red.TButton", command=self.build_pin_screen).pack(side="left", padx=(0, 10))
+        ttk.Button(actions, text="Get Started", style="Red.TButton", command=self.build_pin_screen).pack(side="left", padx=(0, 12))
         ttk.Button(actions, text="Join Discord", command=lambda: webbrowser.open(DISCORD_URL)).pack(side="left")
 
     def build_pin_screen(self) -> None:
         self.clear()
-        frame = ttk.Frame(self.root, padding=32)
+        frame = ttk.Frame(self._content_host, padding=36)
         frame.pack(fill=BOTH, expand=True)
+        card = self._make_card(frame, padding=0)
+        header = ttk.Frame(card, style="Card.TFrame")
+        header.pack(fill="x", pady=(0, 18))
         if self.logo_image:
-            ttk.Label(frame, image=self.logo_image).pack(anchor="w", pady=(0, 14))
-        ttk.Label(frame, text="Enter Session PIN", style="Header.TLabel").pack(anchor="w")
-        ttk.Label(frame, text="Enter the PIN provided by your reviewer.", style="Muted.TLabel").pack(anchor="w", pady=(8, 16))
-        entry = ttk.Entry(frame, textvariable=self.pin, font=("Consolas", 18), width=12)
-        entry.pack(anchor="w")
+            ttk.Label(header, image=self.logo_image, style="Card.TLabel").pack(side="left", padx=(0, 14))
+        title_block = ttk.Frame(header, style="Card.TFrame")
+        title_block.pack(side="left", fill="x", expand=True)
+        ttk.Label(title_block, text="Enter Session PIN", style="Header.TLabel").pack(anchor="w")
+        ttk.Label(title_block, text="Use the code provided by your reviewer.", style="CardMuted.TLabel").pack(anchor="w", pady=(6, 0))
+        entry = ttk.Entry(card, textvariable=self.pin, font=("Consolas", 22), width=10, justify="center")
+        entry.pack(anchor="w", pady=(4, 18))
         entry.focus()
         ttk.Label(
-            frame,
-            text="Before scanning, please review and agree to the diagnostic collection summary:",
-            wraplength=680,
-        ).pack(anchor="w", pady=(18, 12))
+            card,
+            text="Diagnostic collection summary",
+            style="Accent.TLabel",
+        ).pack(anchor="w", pady=(0, 10))
         for item in COLLECTED_CATEGORIES:
-            ttk.Label(frame, text=f"- {item}", style="Muted.TLabel", wraplength=680).pack(anchor="w")
+            ttk.Label(card, text=f"  •  {item}", style="CardMuted.TLabel", wraplength=700).pack(anchor="w", pady=2)
         ttk.Checkbutton(
-            frame,
+            card,
             text="I agree to run this diagnostic scan and submit the results for review.",
             variable=self.consent,
-        ).pack(anchor="w", pady=(18, 12))
-        ttk.Button(frame, text="Start Scan", style="Red.TButton", command=self.start_scan).pack(anchor="w")
-        ttk.Button(frame, text="Back", command=self.build_welcome).pack(anchor="w", pady=(8, 0))
+        ).pack(anchor="w", pady=(20, 16))
+        actions = ttk.Frame(card, style="Card.TFrame")
+        actions.pack(anchor="w", fill="x")
+        ttk.Button(actions, text="Start Scan", style="Red.TButton", command=self.start_scan).pack(side="left", padx=(0, 10))
+        ttk.Button(actions, text="Back", command=self.build_welcome).pack(side="left")
 
     def build_progress_screen(self) -> None:
         self.clear()
-        frame = ttk.Frame(self.root, padding=32)
+        frame = ttk.Frame(self._content_host, padding=36)
         frame.pack(fill=BOTH, expand=True)
+        card = self._make_card(frame, padding=0)
+        header = ttk.Frame(card, style="Card.TFrame")
+        header.pack(fill="x", pady=(0, 8))
         if self.logo_image:
-            ttk.Label(frame, image=self.logo_image).pack(anchor="w", pady=(0, 14))
-        ttk.Label(frame, text="Virello Scanner", style="Header.TLabel").pack(anchor="w")
-        ttk.Label(frame, textvariable=self.status).pack(anchor="w", pady=(8, 16))
-        self.progress = ttk.Progressbar(frame, maximum=100, mode="determinate", length=620, style="red.Horizontal.TProgressbar")
-        self.progress.pack(anchor="w", pady=(0, 18))
-        ttk.Label(frame, textvariable=self.progress_percent, style="Header.TLabel").pack(anchor="w", pady=(0, 16))
+            ttk.Label(header, image=self.logo_image, style="Card.TLabel").pack(side="left", padx=(0, 14))
+        title_block = ttk.Frame(header, style="Card.TFrame")
+        title_block.pack(side="left", fill="x", expand=True)
+        ttk.Label(title_block, text="Scan in progress", style="Header.TLabel").pack(anchor="w")
+        ttk.Label(title_block, textvariable=self.status, style="CardMuted.TLabel").pack(anchor="w", pady=(6, 0))
+        percent_row = ttk.Frame(card, style="Card.TFrame")
+        percent_row.pack(fill="x", pady=(10, 6))
+        ttk.Label(percent_row, textvariable=self.progress_percent, style="Percent.TLabel").pack(side="left")
+        ttk.Label(percent_row, text="complete", style="CardMuted.TLabel").pack(side="left", padx=(10, 0), pady=(18, 0))
+        self.progress = ttk.Progressbar(card, maximum=100, mode="determinate", length=760, style="red.Horizontal.TProgressbar")
+        self.progress.pack(fill="x", pady=(0, 22))
+        ttk.Label(card, text="Stages", style="Accent.TLabel").pack(anchor="w", pady=(0, 10))
         self.stage_labels = {}
+        self.stage_icons = {}
+        self.stage_states = {}
         for stage in SCAN_STAGES:
-            label = ttk.Label(frame, text=f"{stage}: pending")
-            label.pack(anchor="w", pady=3)
+            row = ttk.Frame(card, style="Card.TFrame")
+            row.pack(fill="x", pady=4)
+            icon = ttk.Label(row, text="○", style="StageIcon.TLabel", width=2)
+            icon.pack(side="left", padx=(0, 10))
+            label = ttk.Label(row, text=stage, style="Stage.TLabel")
+            label.pack(side="left")
+            self.stage_icons[stage] = icon
             self.stage_labels[stage] = label
+            self.stage_states[stage] = "pending"
+        self._start_pulse()
+
+    def _stage_glyph(self, state: str, pulse: bool = False) -> tuple[str, str]:
+        if state == "complete":
+            return "✓", self.UI_SUCCESS
+        if state == "running":
+            return ("◉" if pulse else "○"), self.UI_ACCENT_SOFT
+        return "○", self.UI_PENDING
+
+    def _start_pulse(self) -> None:
+        self._pulse_on = False
+        self._tick_pulse()
+
+    def _stop_pulse(self) -> None:
+        if self._pulse_job is not None:
+            try:
+                self.root.after_cancel(self._pulse_job)
+            except Exception:
+                pass
+            self._pulse_job = None
+
+    def _tick_pulse(self) -> None:
+        self._pulse_on = not self._pulse_on
+        for stage, state in self.stage_states.items():
+            if state != "running":
+                continue
+            icon = self.stage_icons.get(stage)
+            if icon is None:
+                continue
+            glyph, color = self._stage_glyph("running", pulse=self._pulse_on)
+            icon.config(text=glyph, foreground=color)
+        self._pulse_job = self.root.after(450, self._tick_pulse)
 
     def set_stage(self, stage: str, state: str) -> None:
-        self.stage_labels[stage].config(text=f"{stage}: {state}")
+        self.stage_states[stage] = state
+        icon = self.stage_icons.get(stage)
+        label = self.stage_labels.get(stage)
+        if icon is not None:
+            glyph, color = self._stage_glyph(state)
+            icon.config(text=glyph, foreground=color)
+        if label is not None:
+            if state == "running":
+                label.config(foreground=self.UI_ACCENT_SOFT)
+            elif state == "complete":
+                label.config(foreground=self.UI_SUCCESS)
+            else:
+                label.config(foreground=self.UI_TEXT)
         self.root.update_idletasks()
 
     def set_progress_percent(self, percent: float) -> None:
