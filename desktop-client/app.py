@@ -3598,7 +3598,7 @@ def roblox_offline_integrity_signals(prefetch: dict) -> list[dict]:
         re.IGNORECASE,
     )
 
-    for log in roblox_diagnostics().get("logs", []):
+    for log in _roblox_read_client_logs():
         tail = log.get("tail") or ""
         if not tail:
             continue
@@ -6608,6 +6608,8 @@ def _roblox_user_ids_from_text(text: str) -> list[str]:
 
 
 _ROBLOX_RBXID_FROM_TRACKER = re.compile(r"rbxid=(\d+)", re.IGNORECASE)
+_ROBLOX_SESSION_COOKIE_NAMES = frozenset({".ROBLOSECURITY", "RBXEVENTTRACKERV2"})
+_ROBLOX_USER_ID_TEXT = re.compile(r"\buserId[=: ]+(\d{6,})\b", re.IGNORECASE)
 
 
 def _windows_dpapi_decrypt(encrypted_bytes: bytes) -> bytes | None:
@@ -6647,30 +6649,53 @@ def _windows_dpapi_decrypt(encrypted_bytes: bytes) -> bytes | None:
         ctypes.windll.kernel32.LocalFree(out_blob.pbData)
 
 
-def _chromium_master_key(user_data_dir: Path) -> bytes | None:
+def _chromium_cookie_db_paths(profile_dir: Path) -> list[Path]:
+    paths: list[Path] = []
+    for candidate in (profile_dir / "Network" / "Cookies", profile_dir / "Cookies"):
+        if candidate.is_file():
+            paths.append(candidate)
+    return paths
+
+
+def _chromium_master_keys(user_data_dir: Path) -> tuple[bytes | None, bytes | None]:
     local_state_path = user_data_dir / "Local State"
     if not local_state_path.is_file():
-        return None
+        return None, None
+    v10_key: bytes | None = None
+    v20_key: bytes | None = None
     try:
         payload = json.loads(local_state_path.read_text(encoding="utf-8"))
-        encrypted_key = base64.b64decode(payload["os_crypt"]["encrypted_key"])
+        os_crypt = payload.get("os_crypt") or {}
+        encrypted_key = base64.b64decode(os_crypt.get("encrypted_key") or b"")
         if encrypted_key.startswith(b"DPAPI"):
             encrypted_key = encrypted_key[5:]
-        return _windows_dpapi_decrypt(encrypted_key)
+        v10_key = _windows_dpapi_decrypt(encrypted_key)
+        app_bound_b64 = os_crypt.get("app_bound_encrypted_key")
+        if app_bound_b64:
+            app_bound = base64.b64decode(app_bound_b64)
+            if app_bound.startswith(b"APPB"):
+                decrypted = _windows_dpapi_decrypt(app_bound[4:])
+                if decrypted:
+                    second = _windows_dpapi_decrypt(decrypted)
+                    key_material = second or decrypted
+                    if len(key_material) >= 32:
+                        v20_key = key_material[-32:]
     except (OSError, KeyError, ValueError, json.JSONDecodeError, TypeError):
-        return None
+        pass
+    return v10_key, v20_key
 
 
 def _chromium_decrypt_cookie_value(
     encrypted_value: bytes | memoryview | None,
     plain_value: bytes | str | None,
     master_key: bytes | None,
+    v20_key: bytes | None = None,
 ) -> str | None:
     if plain_value not in (None, b"", ""):
         text = plain_value if isinstance(plain_value, str) else plain_value.decode("utf-8", errors="replace")
         cleaned = text.strip()
         return cleaned or None
-    if not encrypted_value or not master_key:
+    if not encrypted_value:
         return None
     try:
         from Cryptodome.Cipher import AES
@@ -6678,9 +6703,9 @@ def _chromium_decrypt_cookie_value(
         try:
             from Crypto.Cipher import AES
         except ImportError:
-            return None
+            AES = None
     blob = bytes(encrypted_value)
-    if blob.startswith((b"v10", b"v11")):
+    if AES and master_key and blob.startswith((b"v10", b"v11")):
         nonce = blob[3:15]
         ciphertext = blob[15:-16]
         tag = blob[-16:]
@@ -6690,12 +6715,45 @@ def _chromium_decrypt_cookie_value(
             cleaned = decrypted.decode("utf-8", errors="replace").strip()
             return cleaned or None
         except (ValueError, KeyError):
-            return None
+            pass
+    if AES and v20_key and blob.startswith(b"v20"):
+        nonce = blob[3:15]
+        ciphertext = blob[15:-16]
+        tag = blob[-16:]
+        try:
+            cipher = AES.new(v20_key, AES.MODE_GCM, nonce=nonce)
+            decrypted = cipher.decrypt_and_verify(ciphertext, tag)
+            payload = decrypted[32:] if len(decrypted) > 32 else decrypted
+            cleaned = payload.decode("utf-8", errors="replace").strip()
+            return cleaned or None
+        except (ValueError, KeyError):
+            pass
     decrypted = _windows_dpapi_decrypt(blob)
     if not decrypted:
         return None
     cleaned = decrypted.decode("utf-8", errors="replace").strip()
     return cleaned or None
+
+
+def _chromium_has_auth_cookie(cookie_db: Path) -> bool:
+    conn = _sqlite_open_readonly(cookie_db)
+    if not conn:
+        return False
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT 1 FROM cookies
+            WHERE host_key LIKE '%roblox%'
+              AND UPPER(name) = '.ROBLOSECURITY'
+            LIMIT 1
+            """
+        )
+        return bool(cur.fetchone())
+    except sqlite3.Error:
+        return False
+    finally:
+        conn.close()
 
 
 def _roblox_user_from_authenticated_cookie(roblosecurity: str) -> dict | None:
@@ -6706,7 +6764,7 @@ def _roblox_user_from_authenticated_cookie(roblosecurity: str) -> dict | None:
         response = requests.get(
             "https://users.roblox.com/v1/users/authenticated",
             cookies={".ROBLOSECURITY": token},
-            timeout=8,
+            timeout=4,
         )
         if response.status_code != 200:
             return None
@@ -6720,8 +6778,79 @@ def _roblox_user_from_authenticated_cookie(roblosecurity: str) -> dict | None:
         return None
 
 
-def _roblox_session_from_cookies(cookie_map: dict[str, str]) -> dict | None:
-    if not any(name.upper() == ".ROBLOSECURITY" for name in cookie_map):
+def _roblox_valid_user_id(user_id: str | None) -> bool:
+    if not user_id or not str(user_id).isdigit():
+        return False
+    return int(user_id) > 0
+
+
+def _roblox_rbxid_from_text_blob(text: str) -> str | None:
+    matches = _ROBLOX_RBXID_FROM_TRACKER.findall(str(text or ""))
+    for candidate in reversed(matches):
+        if _roblox_valid_user_id(candidate):
+            return str(candidate)
+    user_ids = _ROBLOX_USER_ID_TEXT.findall(str(text or ""))
+    for candidate in reversed(user_ids):
+        if _roblox_valid_user_id(candidate):
+            return str(candidate)
+    return None
+
+
+def _roblox_rbxid_from_profile_storage(profile_dir: Path) -> str | None:
+    storage_dir = profile_dir / "Local Storage" / "leveldb"
+    if not storage_dir.is_dir():
+        return None
+    candidates: list[Path] = []
+    try:
+        candidates.extend(sorted(storage_dir.glob("*.ldb"), key=lambda path: path.stat().st_mtime, reverse=True)[:12])
+        candidates.extend(sorted(storage_dir.glob("*.log"), key=lambda path: path.stat().st_mtime, reverse=True)[:4])
+    except OSError:
+        return None
+    for path in candidates:
+        try:
+            text = path.read_bytes().decode("latin-1", errors="ignore")
+        except OSError:
+            continue
+        user_id = _roblox_rbxid_from_text_blob(text)
+        if user_id:
+            return user_id
+    return None
+
+
+def _roblox_rbxid_from_roblox_appdata() -> str | None:
+    local_app = os.getenv("LOCALAPPDATA")
+    if not local_app:
+        return None
+    roblox_root = Path(local_app) / "Roblox"
+    if not roblox_root.is_dir():
+        return None
+    scan_paths: list[Path] = []
+    for pattern in ("*.log", "*.txt", "*.json", "*.xml", "*.dat"):
+        try:
+            scan_paths.extend(sorted(roblox_root.rglob(pattern), key=lambda path: path.stat().st_mtime, reverse=True)[:8])
+        except OSError:
+            continue
+    for path in scan_paths[:24]:
+        if not path.is_file() or path.stat().st_size > 2_000_000:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        user_id = _roblox_rbxid_from_text_blob(text)
+        if user_id:
+            return user_id
+    return None
+
+
+def _roblox_session_from_cookies(
+    cookie_map: dict[str, str],
+    *,
+    auth_cookie_present: bool = False,
+    fallback_user_id: str | None = None,
+) -> dict | None:
+    has_auth = auth_cookie_present or any(name.upper() == ".ROBLOSECURITY" for name in cookie_map)
+    if not has_auth:
         return None
     roblosecurity = next(
         (value for name, value in cookie_map.items() if name.upper() == ".ROBLOSECURITY"),
@@ -6742,50 +6871,94 @@ def _roblox_session_from_cookies(cookie_map: dict[str, str]) -> dict | None:
         match = _ROBLOX_RBXID_FROM_TRACKER.search(str(tracker or ""))
         if match:
             user_id = match.group(1)
+    if not user_id and fallback_user_id:
+        user_id = str(fallback_user_id)
     if not user_id:
         return None
     return {"user_id": str(user_id), "username": username}
 
 
-def _roblox_read_chromium_cookies(profile_dir: Path) -> dict[str, str]:
+def _roblox_read_chromium_session_cookies(profile_dir: Path) -> tuple[dict[str, str], bool]:
     cookies: dict[str, str] = {}
-    master_key = _chromium_master_key(profile_dir.parent)
-    conn = _sqlite_open_readonly(profile_dir / "Cookies")
+    auth_present = False
+    v10_key, v20_key = _chromium_master_keys(profile_dir.parent)
+    for cookie_db in _chromium_cookie_db_paths(profile_dir):
+        auth_present = auth_present or _chromium_has_auth_cookie(cookie_db)
+        conn = _sqlite_open_readonly(cookie_db)
+        if not conn:
+            continue
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT name, value, encrypted_value FROM cookies
+                WHERE host_key LIKE '%roblox%'
+                  AND UPPER(name) IN ('.ROBLOSECURITY', 'RBXEVENTTRACKERV2')
+                """
+            )
+            for name, value, encrypted_value in cur.fetchall():
+                cookie_name = str(name or "").strip()
+                if not cookie_name:
+                    continue
+                decrypted = _chromium_decrypt_cookie_value(encrypted_value, value, v10_key, v20_key)
+                if decrypted:
+                    cookies[cookie_name] = decrypted
+        except sqlite3.Error:
+            pass
+        finally:
+            conn.close()
+    return cookies, auth_present
+
+
+def _roblox_resolve_chromium_session(profile_dir: Path) -> dict | None:
+    cookie_map, auth_present = _roblox_read_chromium_session_cookies(profile_dir)
+    fallback_user_id = _roblox_rbxid_from_profile_storage(profile_dir)
+    session = _roblox_session_from_cookies(
+        cookie_map,
+        auth_cookie_present=auth_present,
+        fallback_user_id=fallback_user_id,
+    )
+    if session:
+        return session
+    if auth_present and fallback_user_id:
+        return {"user_id": str(fallback_user_id), "username": None}
+    return None
+
+
+def _firefox_has_auth_cookie(profile_dir: Path) -> bool:
+    conn = _sqlite_open_readonly(profile_dir / "cookies.sqlite")
     if not conn:
-        return cookies
+        return False
     try:
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT name, value, encrypted_value FROM cookies
-            WHERE host_key LIKE '%roblox%'
+            SELECT 1 FROM moz_cookies
+            WHERE host LIKE '%roblox%'
+              AND UPPER(name) = '.ROBLOSECURITY'
+            LIMIT 1
             """
         )
-        for name, value, encrypted_value in cur.fetchall():
-            cookie_name = str(name or "").strip()
-            if not cookie_name:
-                continue
-            decrypted = _chromium_decrypt_cookie_value(encrypted_value, value, master_key)
-            if decrypted:
-                cookies[cookie_name] = decrypted
+        return bool(cur.fetchone())
     except sqlite3.Error:
-        pass
+        return False
     finally:
         conn.close()
-    return cookies
 
 
-def _roblox_read_firefox_cookies(profile_dir: Path) -> dict[str, str]:
+def _roblox_read_firefox_session_cookies(profile_dir: Path) -> tuple[dict[str, str], bool]:
     cookies: dict[str, str] = {}
+    auth_present = _firefox_has_auth_cookie(profile_dir)
     conn = _sqlite_open_readonly(profile_dir / "cookies.sqlite")
     if not conn:
-        return cookies
+        return cookies, auth_present
     try:
         cur = conn.cursor()
         cur.execute(
             """
             SELECT name, value FROM moz_cookies
             WHERE host LIKE '%roblox%'
+              AND UPPER(name) IN ('.ROBLOSECURITY', 'RBXEVENTTRACKERV2')
             """
         )
         for name, value in cur.fetchall():
@@ -6797,35 +6970,78 @@ def _roblox_read_firefox_cookies(profile_dir: Path) -> dict[str, str]:
         pass
     finally:
         conn.close()
-    return cookies
+    return cookies, auth_present
+
+
+def _roblox_resolve_firefox_session(profile_dir: Path) -> dict | None:
+    cookie_map, auth_present = _roblox_read_firefox_session_cookies(profile_dir)
+    fallback_user_id = _roblox_rbxid_from_profile_storage(profile_dir)
+    session = _roblox_session_from_cookies(
+        cookie_map,
+        auth_cookie_present=auth_present,
+        fallback_user_id=fallback_user_id,
+    )
+    if session:
+        return session
+    if auth_present and fallback_user_id:
+        return {"user_id": str(fallback_user_id), "username": None}
+    return None
+
+
+def _roblox_read_client_logs() -> list[dict]:
+    candidates: list[Path] = []
+    if platform.system() == "Windows":
+        local_app_data = os.getenv("LOCALAPPDATA")
+        if local_app_data:
+            candidates.append(Path(local_app_data) / "Roblox" / "logs")
+    elif platform.system() == "Darwin":
+        candidates.append(Path.home() / "Library" / "Logs" / "Roblox")
+
+    logs: list[dict] = []
+    for folder in candidates:
+        if not folder.exists():
+            continue
+        try:
+            log_paths = sorted(folder.glob("*.log"), key=lambda path: path.stat().st_mtime, reverse=True)[:5]
+        except OSError:
+            continue
+        for path in log_paths:
+            try:
+                stat = path.stat()
+                text = path.read_text(errors="replace")
+                logs.append(
+                    {
+                        "name": path.name,
+                        "modified": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+                        "accessed": datetime.fromtimestamp(stat.st_atime, timezone.utc).isoformat(),
+                        "signals": extract_roblox_signals(text),
+                        "tail": text[-4000:],
+                    }
+                )
+            except Exception as exc:
+                logs.append({"name": path.name, "error": str(exc)})
+    return logs
 
 
 def _roblox_client_session_user() -> dict | None:
-    local_app = os.getenv("LOCALAPPDATA")
-    if not local_app:
-        return None
-    logs_dir = Path(local_app) / "Roblox" / "logs"
-    if not logs_dir.is_dir():
-        return None
-    try:
-        log_paths = sorted(logs_dir.glob("*.log"), key=lambda path: path.stat().st_mtime, reverse=True)
-    except OSError:
-        return None
-    for path in log_paths[:3]:
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        if "LoadClientSettings" not in text:
-            continue
-        user_ids = re.findall(r"\buserId[=: ]+(\d{6,})\b", text, flags=re.IGNORECASE)
+    for log in _roblox_read_client_logs():
+        signals = log.get("signals") or {}
+        user_ids = signals.get("user_ids") or []
         if user_ids:
             return {
                 "user_id": str(user_ids[-1]),
                 "username": None,
-                "sources": [f"Roblox client log:{path.name}"],
+                "sources": [f"Roblox client log:{log.get('name', 'unknown')}"],
                 "authenticated": True,
             }
+    user_id = _roblox_rbxid_from_roblox_appdata()
+    if user_id:
+        return {
+            "user_id": user_id,
+            "username": None,
+            "sources": ["Roblox client storage"],
+            "authenticated": True,
+        }
     return None
 
 
@@ -6834,7 +7050,7 @@ def _roblox_merge_account_entry(target: dict, source: dict, source_bits: list[st
         target["sources"] = sorted(set(target.get("sources") or []) | set(source_bits))
     target["authenticated"] = bool(target.get("authenticated")) or bool(source.get("authenticated"))
     source_username = str(source.get("username") or "").strip()
-    if source_username and _roblox_is_plausible_username(source_username):
+    if source_username:
         target["username"] = source_username
     source_headshot = str(source.get("headshot_url") or "").strip()
     if source_headshot:
@@ -6846,7 +7062,7 @@ def _roblox_chunked(items: list[str], size: int) -> Iterable[list[str]]:
         yield items[index : index + size]
 
 
-def _roblox_enrich_accounts(accounts: list[dict]) -> list[dict]:
+def _roblox_enrich_accounts(accounts: list[dict], *, include_headshots: bool = True) -> list[dict]:
     """Resolve Roblox usernames and avatar headshots for recovered user IDs."""
     by_id: dict[str, dict] = {}
     by_name: dict[str, dict] = {}
@@ -6881,12 +7097,13 @@ def _roblox_enrich_accounts(accounts: list[dict]) -> list[dict]:
             )
             _roblox_merge_account_entry(entry, account, sources)
 
-    for user_id_chunk in _roblox_chunked(sorted(by_id.keys()), 100):
+    ids_needing_names = [uid for uid in sorted(by_id.keys()) if not by_id[uid].get("username")]
+    for user_id_chunk in _roblox_chunked(ids_needing_names, 100):
         try:
             response = requests.post(
                 "https://users.roblox.com/v1/users",
                 json={"userIds": [int(uid) for uid in user_id_chunk], "excludeBannedUsers": False},
-                timeout=8,
+                timeout=4,
             )
             if response.ok:
                 for row in response.json().get("data") or []:
@@ -6932,26 +7149,27 @@ def _roblox_enrich_accounts(accounts: list[dict]) -> list[dict]:
             pass
 
     resolved_ids = sorted(by_id.keys(), key=lambda value: int(value) if value.isdigit() else value)
-    for user_id_chunk in _roblox_chunked(resolved_ids, 100):
-        try:
-            response = requests.get(
-                "https://thumbnails.roblox.com/v1/users/avatar-headshot",
-                params={
-                    "userIds": ",".join(user_id_chunk),
-                    "size": "150x150",
-                    "format": "Png",
-                    "isCircular": "false",
-                },
-                timeout=8,
-            )
-            if response.ok:
-                for row in response.json().get("data") or []:
-                    uid = str(row.get("targetId") or "").strip()
-                    image_url = str(row.get("imageUrl") or "").strip()
-                    if uid in by_id and image_url and row.get("state") == "Completed":
-                        by_id[uid]["headshot_url"] = image_url
-        except (requests.RequestException, TypeError, ValueError):
-            pass
+    if include_headshots:
+        for user_id_chunk in _roblox_chunked(resolved_ids, 100):
+            try:
+                response = requests.get(
+                    "https://thumbnails.roblox.com/v1/users/avatar-headshot",
+                    params={
+                        "userIds": ",".join(user_id_chunk),
+                        "size": "150x150",
+                        "format": "Png",
+                        "isCircular": "false",
+                    },
+                    timeout=4,
+                )
+                if response.ok:
+                    for row in response.json().get("data") or []:
+                        uid = str(row.get("targetId") or "").strip()
+                        image_url = str(row.get("imageUrl") or "").strip()
+                        if uid in by_id and image_url and row.get("state") == "Completed":
+                            by_id[uid]["headshot_url"] = image_url
+            except (requests.RequestException, TypeError, ValueError):
+                pass
 
     enriched = [by_id[uid] for uid in resolved_ids if by_id[uid].get("authenticated")]
     for entry in enriched:
@@ -7007,7 +7225,8 @@ def _chromium_profile_names(base: Path) -> list[str]:
             if not entry.is_dir():
                 continue
             if entry.name == "Default" or entry.name.startswith("Profile "):
-                if (entry / "History").is_file() or (entry / "Cookies").is_file() or (entry / "Web Data").is_file():
+                has_cookies = (entry / "Cookies").is_file() or (entry / "Network" / "Cookies").is_file()
+                if (entry / "History").is_file() or has_cookies or (entry / "Web Data").is_file():
                     names.append(entry.name)
     except OSError:
         pass
@@ -7053,34 +7272,36 @@ def _scan_chromium_roblox_profile(browser: str, profile: str, profile_dir: Path)
             pass
         finally:
             conn.close()
-    cookies_db = profile_dir / "Cookies"
-    conn = _sqlite_open_readonly(cookies_db)
-    if conn:
+    cookie_hits = 0
+    auth_present = False
+    for cookie_db in _chromium_cookie_db_paths(profile_dir):
+        conn = _sqlite_open_readonly(cookie_db)
+        if not conn:
+            continue
         try:
             cur = conn.cursor()
             cur.execute(
                 """
-                SELECT host_key, name FROM cookies
+                SELECT COUNT(*) FROM cookies
                 WHERE host_key LIKE '%roblox%'
-                LIMIT 80
                 """
             )
-            rows = cur.fetchall()
-            artifact["cookie_hits"] = len(rows)
-            if rows:
-                artifact["sources"] = list(artifact.get("sources") or []) + ["cookies"]
+            cookie_hits += int((cur.fetchone() or [0])[0] or 0)
+            auth_present = auth_present or _chromium_has_auth_cookie(cookie_db)
         except sqlite3.Error:
             pass
         finally:
             conn.close()
-    cookie_map = _roblox_read_chromium_cookies(profile_dir)
-    session = _roblox_session_from_cookies(cookie_map)
+    if cookie_hits:
+        artifact["cookie_hits"] = cookie_hits
+        artifact["sources"] = list(artifact.get("sources") or []) + ["cookies"]
+    session = _roblox_resolve_chromium_session(profile_dir)
     if session:
         artifact["authenticated"] = True
         artifact["session_user_id"] = session["user_id"]
         if session.get("username"):
             artifact["session_username"] = session["username"]
-    elif any(name.upper() == ".ROBLOSECURITY" for name in cookie_map):
+    elif auth_present:
         artifact["authenticated"] = True
     artifact["user_ids"] = sorted(user_ids)
     artifact["usernames"] = sorted(usernames)
@@ -7126,34 +7347,32 @@ def _scan_firefox_roblox_profile(profile_name: str, profile_dir: Path) -> dict:
             pass
         finally:
             conn.close()
-    cookies_db = profile_dir / "cookies.sqlite"
-    conn = _sqlite_open_readonly(cookies_db)
+    auth_present = _firefox_has_auth_cookie(profile_dir)
+    conn = _sqlite_open_readonly(profile_dir / "cookies.sqlite")
     if conn:
         try:
             cur = conn.cursor()
             cur.execute(
                 """
-                SELECT host, name FROM moz_cookies
+                SELECT COUNT(*) FROM moz_cookies
                 WHERE host LIKE '%roblox%'
-                LIMIT 80
                 """
             )
-            rows = cur.fetchall()
-            artifact["cookie_hits"] = len(rows)
-            if rows:
+            cookie_hits = int((cur.fetchone() or [0])[0] or 0)
+            if cookie_hits:
+                artifact["cookie_hits"] = cookie_hits
                 artifact["sources"] = list(artifact.get("sources") or []) + ["cookies"]
         except sqlite3.Error:
             pass
         finally:
             conn.close()
-    cookie_map = _roblox_read_firefox_cookies(profile_dir)
-    session = _roblox_session_from_cookies(cookie_map)
+    session = _roblox_resolve_firefox_session(profile_dir)
     if session:
         artifact["authenticated"] = True
         artifact["session_user_id"] = session["user_id"]
         if session.get("username"):
             artifact["session_username"] = session["username"]
-    elif any(name.upper() == ".ROBLOSECURITY" for name in cookie_map):
+    elif auth_present:
         artifact["authenticated"] = True
     artifact["user_ids"] = sorted(user_ids)
     artifact["usernames"] = sorted(usernames)
@@ -7198,7 +7417,7 @@ def roblox_browser_account_scan() -> dict:
                 "authenticated": True,
             }
         )
-    accounts = _roblox_enrich_accounts(raw_accounts)
+    accounts = _roblox_enrich_accounts(raw_accounts, include_headshots=False)
     return {
         "available": True,
         "artifact_count": len(artifacts),
@@ -7236,43 +7455,26 @@ def extract_roblox_signals(text: str) -> dict:
 
 
 def roblox_diagnostics() -> dict:
-    candidates: list[Path] = []
+    logs = _roblox_read_client_logs()
+    browser_scan = roblox_browser_account_scan()
+    merged_accounts: list[dict] = list(browser_scan.get("accounts") or [])
+    if not merged_accounts:
+        client_session = _roblox_client_session_user()
+        if client_session:
+            merged_accounts.append(client_session)
+    accounts = _roblox_enrich_accounts(merged_accounts, include_headshots=False)
+
+    log_locations_checked: list[str] = []
     if platform.system() == "Windows":
         local_app_data = os.getenv("LOCALAPPDATA")
         if local_app_data:
-            candidates.append(Path(local_app_data) / "Roblox" / "logs")
+            log_locations_checked.append(str(Path(local_app_data) / "Roblox" / "logs"))
     elif platform.system() == "Darwin":
-        candidates.append(Path.home() / "Library" / "Logs" / "Roblox")
-
-    logs = []
-    for folder in candidates:
-        if folder.exists():
-            for path in sorted(folder.glob("*.log"), key=lambda p: p.stat().st_mtime, reverse=True)[:5]:
-                try:
-                    stat = path.stat()
-                    text = path.read_text(errors="replace")
-                    logs.append(
-                        {
-                            "name": path.name,
-                            "modified": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
-                            "accessed": datetime.fromtimestamp(stat.st_atime, timezone.utc).isoformat(),
-                            "signals": extract_roblox_signals(text),
-                            "tail": text[-4000:],
-                        }
-                    )
-                except Exception as exc:
-                    logs.append({"name": path.name, "error": str(exc)})
-
-    browser_scan = roblox_browser_account_scan()
-    merged_accounts: list[dict] = list(browser_scan.get("accounts") or [])
-    client_session = _roblox_client_session_user()
-    if client_session:
-        merged_accounts.append(client_session)
-    accounts = _roblox_enrich_accounts(merged_accounts)
+        log_locations_checked.append(str(Path.home() / "Library" / "Logs" / "Roblox"))
 
     return {
         "detected": bool(logs) or bool(accounts),
-        "log_locations_checked": [str(path) for path in candidates],
+        "log_locations_checked": log_locations_checked,
         "logs": logs,
         "browser_scan": browser_scan,
         "accounts": accounts,
