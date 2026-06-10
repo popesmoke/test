@@ -25,7 +25,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed, wait
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
-from tkinter import BOTH, BooleanVar, Canvas, Frame, PhotoImage, StringVar, Tk, ttk, messagebox
+from tkinter import BOTH, BooleanVar, Canvas, Frame, PhotoImage, StringVar, Tk, font as tkfont, ttk, messagebox
 
 import psutil
 import requests
@@ -12979,22 +12979,173 @@ def build_report() -> dict:
     }
 
 
+def _hex_to_rgb(color: str) -> tuple[int, int, int]:
+    color = color.lstrip("#")
+    return int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16)
+
+
+def _rgb_to_hex(r: int, g: int, b: int) -> str:
+    return f"#{max(0, min(255, r)):02x}{max(0, min(255, g)):02x}{max(0, min(255, b)):02x}"
+
+
+def _blend_hex(c1: str, c2: str, t: float) -> str:
+    r1, g1, b1 = _hex_to_rgb(c1)
+    r2, g2, b2 = _hex_to_rgb(c2)
+    ratio = max(0.0, min(1.0, t))
+    return _rgb_to_hex(
+        int(r1 + (r2 - r1) * ratio),
+        int(g1 + (g2 - g1) * ratio),
+        int(b1 + (b2 - b1) * ratio),
+    )
+
+
+class PillButton(Frame):
+    def __init__(
+        self,
+        master,
+        text: str,
+        command,
+        *,
+        width: int = 150,
+        height: int = 34,
+        bg: str = "#0f0f14",
+        fill: str = "#b11220",
+        hover_fill: str = "#ef233c",
+        pressed_fill: str = "#8f0e1a",
+        text_color: str = "#ffffff",
+        font=None,
+    ) -> None:
+        super().__init__(master, bg=bg, highlightthickness=0, bd=0)
+        self._command = command
+        self._width = width
+        self._height = height
+        self._radius = height // 2
+        self._fill = fill
+        self._hover_fill = hover_fill
+        self._pressed_fill = pressed_fill
+        self._rest_fill = fill
+        self._text_color = text_color
+        self._font = font or tkfont.Font(family="Segoe UI", size=10, weight="bold")
+        self._anim_job: str | None = None
+        self._anim_target = fill
+        self._pressed = False
+        self._canvas = Canvas(
+            self,
+            width=width,
+            height=height,
+            bg=bg,
+            highlightthickness=0,
+            bd=0,
+            cursor="hand2",
+        )
+        self._canvas.pack()
+        self._shape = self._draw_pill(fill)
+        self._label = self._canvas.create_text(
+            width // 2,
+            height // 2,
+            text=text,
+            fill=text_color,
+            font=self._font,
+        )
+        self._canvas.bind("<Enter>", lambda _e: self._on_enter())
+        self._canvas.bind("<Leave>", lambda _e: self._on_leave())
+        self._canvas.bind("<ButtonPress-1>", lambda _e: self._on_press())
+        self._canvas.bind("<ButtonRelease-1>", self._on_release)
+
+    def _draw_pill(self, color: str) -> int:
+        w, h, r = self._width, self._height, self._radius
+        return self._canvas.create_polygon(
+            r,
+            0,
+            w - r,
+            0,
+            w,
+            0,
+            w,
+            r,
+            w,
+            h - r,
+            w,
+            h,
+            w - r,
+            h,
+            r,
+            h,
+            0,
+            h,
+            0,
+            h - r,
+            0,
+            r,
+            0,
+            0,
+            smooth=True,
+            splinesteps=24,
+            fill=color,
+            outline=color,
+        )
+
+    def _set_fill(self, color: str) -> None:
+        self._fill = color
+        self._canvas.itemconfigure(self._shape, fill=color, outline=color)
+
+    def _animate_to(self, target: str, steps: int = 5, delay: int = 18) -> None:
+        if self._anim_job is not None:
+            self._canvas.after_cancel(self._anim_job)
+            self._anim_job = None
+        start = self._fill
+        if start == target:
+            return
+        state = {"step": 0}
+
+        def tick() -> None:
+            state["step"] += 1
+            t = state["step"] / steps
+            self._set_fill(_blend_hex(start, target, t))
+            if state["step"] < steps:
+                self._anim_job = self._canvas.after(delay, tick)
+            else:
+                self._anim_job = None
+
+        tick()
+
+    def _on_enter(self) -> None:
+        if not self._pressed:
+            self._animate_to(self._hover_fill)
+
+    def _on_leave(self) -> None:
+        if not self._pressed:
+            self._animate_to(self._rest_fill)
+
+    def _on_press(self) -> None:
+        self._pressed = True
+        self._set_fill(self._pressed_fill)
+
+    def _on_release(self, event) -> None:
+        self._pressed = False
+        inside = 0 <= event.x <= self._width and 0 <= event.y <= self._height
+        self._animate_to(self._hover_fill if inside else self._rest_fill)
+        if inside and self._command is not None:
+            self._command()
+
+
 class DiagnosticApp:
-    UI_BG = "#050508"
-    UI_CARD = "#101018"
-    UI_CARD_BORDER = "#2a2a38"
+    UI_BG = "#09090d"
+    UI_CARD = "#12121a"
+    UI_CARD_BORDER = "#2a2a36"
     UI_ACCENT = "#ef233c"
     UI_ACCENT_SOFT = "#ff4d6d"
-    UI_TEXT = "#f8f8fa"
-    UI_MUTED = "#9494a8"
+    UI_TEXT = "#f4f4f5"
+    UI_MUTED = "#9b9ba8"
     UI_SUCCESS = "#34d399"
-    UI_PENDING = "#52525e"
+    UI_PENDING = "#5a5a66"
 
     def __init__(self) -> None:
         self.root = Tk()
         self.root.title("Virello Scanner")
-        self.root.geometry("920x760")
-        self.root.minsize(820, 680)
+        self.root.geometry("440x520")
+        self.root.minsize(420, 500)
+        self.root.resizable(False, False)
         self.root.configure(bg=self.UI_BG)
         self.logo_image = self.load_logo()
         if self.logo_image:
@@ -13011,8 +13162,7 @@ class DiagnosticApp:
         self.stage_states: dict[str, str] = {}
         self._pulse_on = False
         self._pulse_job: str | None = None
-        self._content_host: Frame | None = None
-        self._bg_canvas: Canvas | None = None
+        self._body: Frame | None = None
         self.progress = ttk.Progressbar(self.root, maximum=100, mode="determinate")
         self.configure_style()
         self._build_shell()
@@ -13025,7 +13175,7 @@ class DiagnosticApp:
                 image = PhotoImage(file=str(path))
             else:
                 image = PhotoImage(data=embedded_logo_data(), format="png")
-            max_size = 180
+            max_size = 88
             factor = max(image.width() // max_size, image.height() // max_size, 1)
             return image.subsample(factor, factor)
         except Exception:
@@ -13038,25 +13188,19 @@ class DiagnosticApp:
         bg = self.UI_BG
         style.configure("TFrame", background=bg)
         style.configure("Card.TFrame", background=card)
-        style.configure("TLabel", background=bg, foreground=self.UI_TEXT, font=("Segoe UI", 10))
-        style.configure("Card.TLabel", background=card, foreground=self.UI_TEXT, font=("Segoe UI", 10))
-        style.configure("Muted.TLabel", background=bg, foreground=self.UI_MUTED)
-        style.configure("CardMuted.TLabel", background=card, foreground=self.UI_MUTED, font=("Segoe UI", 10))
-        style.configure("Title.TLabel", background=bg, foreground="#ffffff", font=("Segoe UI", 24, "bold"))
-        style.configure("Hero.TLabel", background=bg, foreground="#ffffff", font=("Segoe UI", 34, "bold"))
-        style.configure("Header.TLabel", background=card, foreground="#ffffff", font=("Segoe UI", 20, "bold"))
-        style.configure("CenterTitle.TLabel", background=bg, foreground="#ffffff", font=("Segoe UI", 28, "bold"))
-        style.configure("CenterMuted.TLabel", background=bg, foreground=self.UI_MUTED, font=("Segoe UI", 11))
-        style.configure("Accent.TLabel", background=card, foreground=self.UI_ACCENT_SOFT, font=("Segoe UI", 11, "bold"))
-        style.configure("Percent.TLabel", background=card, foreground="#ffffff", font=("Segoe UI", 42, "bold"))
-        style.configure("Stage.TLabel", background=card, foreground=self.UI_TEXT, font=("Segoe UI", 10))
-        style.configure("StageIcon.TLabel", background=card, foreground=self.UI_PENDING, font=("Segoe UI", 12, "bold"))
-        style.configure("Red.TButton", background="#b11220", foreground="#ffffff", bordercolor=self.UI_ACCENT, focusthickness=0, padding=(18, 10))
-        style.map("Red.TButton", background=[("active", self.UI_ACCENT)])
-        style.configure("TButton", background="#17171d", foreground="#ffffff", bordercolor="#3a3a45", padding=(14, 8))
-        style.map("TButton", background=[("active", "#23232b")])
-        style.configure("TEntry", fieldbackground="#0d0d12", foreground="#ffffff", bordercolor="#3a3a45", padding=8)
-        style.configure("TCheckbutton", background=card, foreground=self.UI_TEXT, font=("Segoe UI", 10))
+        style.configure("TLabel", background=bg, foreground=self.UI_TEXT, font=("Segoe UI", 9))
+        style.configure("Card.TLabel", background=card, foreground=self.UI_TEXT, font=("Segoe UI", 9))
+        style.configure("Muted.TLabel", background=bg, foreground=self.UI_MUTED, font=("Segoe UI", 9))
+        style.configure("CardMuted.TLabel", background=card, foreground=self.UI_MUTED, font=("Segoe UI", 9))
+        style.configure("Hero.TLabel", background=bg, foreground="#ffffff", font=("Segoe UI", 20, "bold"))
+        style.configure("Header.TLabel", background=card, foreground="#ffffff", font=("Segoe UI", 15, "bold"))
+        style.configure("CenterMuted.TLabel", background=bg, foreground=self.UI_MUTED, font=("Segoe UI", 9))
+        style.configure("Accent.TLabel", background=card, foreground=self.UI_ACCENT_SOFT, font=("Segoe UI", 9, "bold"))
+        style.configure("Percent.TLabel", background=card, foreground="#ffffff", font=("Segoe UI", 28, "bold"))
+        style.configure("Stage.TLabel", background=card, foreground=self.UI_TEXT, font=("Segoe UI", 9))
+        style.configure("StageIcon.TLabel", background=card, foreground=self.UI_PENDING, font=("Segoe UI", 10, "bold"))
+        style.configure("TEntry", fieldbackground="#0d0d12", foreground="#ffffff", bordercolor="#3a3a45", padding=6)
+        style.configure("TCheckbutton", background=card, foreground=self.UI_TEXT, font=("Segoe UI", 9))
         style.map("TCheckbutton", background=[("active", card)], foreground=[("active", "#ffffff")])
         style.configure(
             "red.Horizontal.TProgressbar",
@@ -13065,164 +13209,119 @@ class DiagnosticApp:
             bordercolor=self.UI_CARD_BORDER,
             lightcolor=self.UI_ACCENT_SOFT,
             darkcolor="#7f0b16",
-            thickness=14,
+            thickness=10,
         )
 
     def _build_shell(self) -> None:
-        self._bg_canvas = Canvas(self.root, highlightthickness=0, bd=0, bg=self.UI_BG)
-        self._bg_canvas.pack(fill=BOTH, expand=True)
-        self._bg_canvas.bind("<Configure>", self._paint_background)
-        self._content_host = Frame(self._bg_canvas, bg=self.UI_BG, highlightthickness=0, bd=0)
-        self._bg_canvas.create_window(0, 0, window=self._content_host, anchor="nw", tags="content")
-        self._content_host.bind("<Configure>", self._sync_content_size)
+        accent = Frame(self.root, bg=self.UI_ACCENT, height=3)
+        accent.pack(fill="x")
+        self._body = Frame(self.root, bg=self.UI_BG, padx=22, pady=18)
+        self._body.pack(fill=BOTH, expand=True)
 
-    def _sync_content_size(self, _event=None) -> None:
-        if self._bg_canvas is None or self._content_host is None:
-            return
-        self._bg_canvas.itemconfigure("content", width=self._content_host.winfo_reqwidth(), height=self._content_host.winfo_reqheight())
-
-    def _paint_background(self, event=None) -> None:
-        if self._bg_canvas is None:
-            return
-        width = max(self._bg_canvas.winfo_width(), 1)
-        height = max(self._bg_canvas.winfo_height(), 1)
-        self._bg_canvas.delete("gradient")
-        steps = 28
-        for i in range(steps):
-            ratio = i / max(steps - 1, 1)
-            r = int(5 + ratio * 18)
-            g = int(5 + ratio * 4)
-            b = int(8 + ratio * 22)
-            y0 = int(height * i / steps)
-            y1 = int(height * (i + 1) / steps) + 1
-            self._bg_canvas.create_rectangle(0, y0, width, y1, fill=f"#{r:02x}{g:02x}{b:02x}", outline="", tags="gradient")
-        glow_y = int(height * 0.12)
-        self._bg_canvas.create_oval(
-            int(width * 0.18),
-            glow_y - 120,
-            int(width * 0.82),
-            glow_y + 180,
-            fill="#1a0610",
-            outline="",
-            tags="gradient",
-        )
-        self._bg_canvas.tag_lower("gradient")
-
-    def _make_card(self, parent, padding: int = 28) -> ttk.Frame:
-        outer = ttk.Frame(parent, style="TFrame", padding=(padding, padding))
+    def _make_card(self, parent) -> Frame:
         card = Frame(
-            outer,
+            parent,
             bg=self.UI_CARD,
             highlightthickness=1,
             highlightbackground=self.UI_CARD_BORDER,
             highlightcolor=self.UI_CARD_BORDER,
             bd=0,
+            padx=16,
+            pady=14,
         )
         card.pack(fill=BOTH, expand=True)
-        inner = ttk.Frame(card, style="Card.TFrame", padding=28)
-        inner.pack(fill=BOTH, expand=True)
-        return inner
+        return card
+
+    def _pill_row(self, parent, buttons: list[tuple[str, object, bool]]) -> Frame:
+        row = Frame(parent, bg=parent.cget("bg"))
+        row.pack(anchor="w", pady=(10, 0))
+        for idx, (label, cmd, primary) in enumerate(buttons):
+            pill = PillButton(
+                row,
+                label,
+                cmd,
+                width=132 if primary else 118,
+                height=32,
+                bg=parent.cget("bg"),
+                fill="#b11220" if primary else "#1a1a22",
+                hover_fill="#ef233c" if primary else "#2a2a34",
+                pressed_fill="#8f0e1a" if primary else "#14141a",
+            )
+            pill.pack(side="left", padx=(0, 8 if idx == 0 else 0))
+        return row
 
     def clear(self) -> None:
         self._stop_pulse()
-        if self._content_host is not None:
-            for child in self._content_host.winfo_children():
+        if self._body is not None:
+            for child in self._body.winfo_children():
                 child.destroy()
-
-    def _feature_chip(self, parent, text: str) -> None:
-        chip = Frame(parent, bg="#181824", highlightthickness=1, highlightbackground="#303040", bd=0)
-        chip.pack(side="left", padx=(0, 10), pady=4)
-        ttk.Label(chip, text=text, style="CardMuted.TLabel", background="#181824").pack(padx=12, pady=6)
 
     def build_welcome(self) -> None:
         self.clear()
-        frame = ttk.Frame(self._content_host, padding=36)
-        frame.pack(fill=BOTH, expand=True)
-        hero = ttk.Frame(frame)
-        hero.pack(fill=BOTH, expand=True)
+        wrap = Frame(self._body, bg=self.UI_BG)
+        wrap.pack(fill=BOTH, expand=True)
         if self.logo_image:
-            ttk.Label(hero, image=self.logo_image).pack(anchor="center", pady=(24, 18))
-        ttk.Label(hero, text="VIRELLO SCANNER", style="Hero.TLabel").pack(anchor="center")
-        ttk.Label(hero, text="Secure remote system diagnostics", style="Accent.TLabel", background=self.UI_BG).pack(anchor="center", pady=(6, 18))
+            ttk.Label(wrap, image=self.logo_image).pack(anchor="center", pady=(4, 10))
+        ttk.Label(wrap, text="Virello Scanner", style="Hero.TLabel").pack(anchor="center")
         ttk.Label(
-            hero,
-            text="Run a one-time review with your session PIN. Results upload securely to your reviewer dashboard.",
+            wrap,
+            text="One-time secure diagnostic review with your session PIN.",
             style="CenterMuted.TLabel",
-            wraplength=580,
+            wraplength=360,
             justify="center",
-        ).pack(anchor="center", pady=(0, 22))
-        chips = ttk.Frame(hero)
-        chips.pack(anchor="center", pady=(0, 28))
-        self._feature_chip(chips, "One-time scan")
-        self._feature_chip(chips, "PIN protected")
-        self._feature_chip(chips, "No passwords collected")
-        actions = ttk.Frame(hero)
-        actions.pack(anchor="center")
-        ttk.Button(actions, text="Get Started", style="Red.TButton", command=self.build_pin_screen).pack(side="left", padx=(0, 12))
-        ttk.Button(actions, text="Join Discord", command=lambda: webbrowser.open(DISCORD_URL)).pack(side="left")
+        ).pack(anchor="center", pady=(8, 22))
+        self._pill_row(
+            wrap,
+            [
+                ("Get Started", self.build_pin_screen, True),
+                ("Discord", lambda: webbrowser.open(DISCORD_URL), False),
+            ],
+        )
 
     def build_pin_screen(self) -> None:
         self.clear()
-        frame = ttk.Frame(self._content_host, padding=36)
-        frame.pack(fill=BOTH, expand=True)
-        card = self._make_card(frame, padding=0)
-        header = ttk.Frame(card, style="Card.TFrame")
-        header.pack(fill="x", pady=(0, 18))
+        card = self._make_card(self._body)
         if self.logo_image:
-            ttk.Label(header, image=self.logo_image, style="Card.TLabel").pack(side="left", padx=(0, 14))
-        title_block = ttk.Frame(header, style="Card.TFrame")
-        title_block.pack(side="left", fill="x", expand=True)
-        ttk.Label(title_block, text="Enter Session PIN", style="Header.TLabel").pack(anchor="w")
-        ttk.Label(title_block, text="Use the code provided by your reviewer.", style="CardMuted.TLabel").pack(anchor="w", pady=(6, 0))
-        entry = ttk.Entry(card, textvariable=self.pin, font=("Consolas", 22), width=10, justify="center")
-        entry.pack(anchor="w", pady=(4, 18))
+            ttk.Label(card, image=self.logo_image, background=self.UI_CARD).pack(anchor="w", pady=(0, 8))
+        ttk.Label(card, text="Session PIN", style="Header.TLabel").pack(anchor="w")
+        ttk.Label(card, text="Enter the code from your reviewer.", style="CardMuted.TLabel").pack(anchor="w", pady=(4, 10))
+        entry = ttk.Entry(card, textvariable=self.pin, font=("Consolas", 18), width=9, justify="center")
+        entry.pack(anchor="w", pady=(0, 12))
         entry.focus()
-        ttk.Label(
-            card,
-            text="Diagnostic collection summary",
-            style="Accent.TLabel",
-        ).pack(anchor="w", pady=(0, 10))
+        ttk.Label(card, text="What we collect", style="Accent.TLabel").pack(anchor="w", pady=(0, 6))
         for item in COLLECTED_CATEGORIES:
-            ttk.Label(card, text=f"  •  {item}", style="CardMuted.TLabel", wraplength=700).pack(anchor="w", pady=2)
+            ttk.Label(card, text=f"• {item}", style="CardMuted.TLabel", wraplength=360).pack(anchor="w", pady=1)
         ttk.Checkbutton(
             card,
-            text="I agree to run this diagnostic scan and submit the results for review.",
+            text="I agree to run this scan and submit results for review.",
             variable=self.consent,
-        ).pack(anchor="w", pady=(20, 16))
-        actions = ttk.Frame(card, style="Card.TFrame")
-        actions.pack(anchor="w", fill="x")
-        ttk.Button(actions, text="Start Scan", style="Red.TButton", command=self.start_scan).pack(side="left", padx=(0, 10))
-        ttk.Button(actions, text="Back", command=self.build_welcome).pack(side="left")
+        ).pack(anchor="w", pady=(12, 4))
+        self._pill_row(
+            card,
+            [
+                ("Start Scan", self.start_scan, True),
+                ("Back", self.build_welcome, False),
+            ],
+        )
 
     def build_progress_screen(self) -> None:
         self.clear()
-        frame = ttk.Frame(self._content_host, padding=36)
-        frame.pack(fill=BOTH, expand=True)
-        card = self._make_card(frame, padding=0)
-        header = ttk.Frame(card, style="Card.TFrame")
-        header.pack(fill="x", pady=(0, 8))
-        if self.logo_image:
-            ttk.Label(header, image=self.logo_image, style="Card.TLabel").pack(side="left", padx=(0, 14))
-        title_block = ttk.Frame(header, style="Card.TFrame")
-        title_block.pack(side="left", fill="x", expand=True)
-        ttk.Label(title_block, text="Scan in progress", style="Header.TLabel").pack(anchor="w")
-        ttk.Label(title_block, textvariable=self.status, style="CardMuted.TLabel").pack(anchor="w", pady=(6, 0))
-        percent_row = ttk.Frame(card, style="Card.TFrame")
-        percent_row.pack(fill="x", pady=(10, 6))
-        ttk.Label(percent_row, textvariable=self.progress_percent, style="Percent.TLabel").pack(side="left")
-        ttk.Label(percent_row, text="complete", style="CardMuted.TLabel").pack(side="left", padx=(10, 0), pady=(18, 0))
-        self.progress = ttk.Progressbar(card, maximum=100, mode="determinate", length=760, style="red.Horizontal.TProgressbar")
-        self.progress.pack(fill="x", pady=(0, 22))
-        ttk.Label(card, text="Stages", style="Accent.TLabel").pack(anchor="w", pady=(0, 10))
+        card = self._make_card(self._body)
+        ttk.Label(card, text="Scanning", style="Header.TLabel").pack(anchor="w")
+        ttk.Label(card, textvariable=self.status, style="CardMuted.TLabel").pack(anchor="w", pady=(4, 10))
+        ttk.Label(card, textvariable=self.progress_percent, style="Percent.TLabel").pack(anchor="w")
+        self.progress = ttk.Progressbar(card, maximum=100, mode="determinate", length=360, style="red.Horizontal.TProgressbar")
+        self.progress.pack(fill="x", pady=(4, 12))
+        ttk.Label(card, text="Progress", style="Accent.TLabel").pack(anchor="w", pady=(0, 6))
         self.stage_labels = {}
         self.stage_icons = {}
         self.stage_states = {}
         for stage in SCAN_STAGES:
-            row = ttk.Frame(card, style="Card.TFrame")
-            row.pack(fill="x", pady=4)
-            icon = ttk.Label(row, text="○", style="StageIcon.TLabel", width=2)
-            icon.pack(side="left", padx=(0, 10))
-            label = ttk.Label(row, text=stage, style="Stage.TLabel")
+            row = Frame(card, bg=self.UI_CARD)
+            row.pack(fill="x", pady=2)
+            icon = ttk.Label(row, text="○", style="StageIcon.TLabel", width=2, background=self.UI_CARD)
+            icon.pack(side="left", padx=(0, 8))
+            label = ttk.Label(row, text=stage, style="Stage.TLabel", background=self.UI_CARD)
             label.pack(side="left")
             self.stage_icons[stage] = icon
             self.stage_labels[stage] = label
