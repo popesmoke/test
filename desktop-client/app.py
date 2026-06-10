@@ -13038,7 +13038,8 @@ class SoftButton(Frame):
         self._canvas.bind("<ButtonRelease-1>", self._on_release)
 
     def _round_rect(self, color: str) -> int:
-        w, h, r = self._width, self._height, h // 2
+        w, h = self._width, self._height
+        r = h // 2
         return self._canvas.create_polygon(
             r, 0, w - r, 0, w, 0, w, r, w, h - r, w, h, w - r, h, r, h, 0, h, 0, h - r, 0, r, 0, 0,
             smooth=True,
@@ -13230,9 +13231,13 @@ class DiagnosticApp:
 
     def _fade_label(self, parent, text: str, style: str, **kwargs) -> ttk.Label:
         label = ttk.Label(parent, text=text, style=style, **kwargs)
-        style_obj = ttk.Style()
-        target = style_obj.lookup(style, "foreground") or self.UI_TEXT
-        label._fade_target = target
+        targets = {
+            "Title.TLabel": "#ffffff",
+            "Heading.TLabel": "#ffffff",
+            "Muted.TLabel": self.UI_MUTED,
+            "Percent.TLabel": self.UI_MUTED,
+        }
+        label._fade_target = targets.get(style, self.UI_TEXT)
         label.configure(foreground=self.UI_BG)
         self._fade_widgets.append(label)
         return label
