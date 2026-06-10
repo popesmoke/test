@@ -6544,13 +6544,195 @@ _ROBLOX_URL_USER_ID = re.compile(
     re.IGNORECASE,
 )
 _ROBLOX_USERNAME_FROM_TITLE = re.compile(
-    r"^([A-Za-z0-9_]{3,20})(?:\s*['\u2019]s)?(?:\s+Profile|\s+on Roblox|\s*-\s*Roblox)?$",
+    r"^([A-Za-z0-9_]{3,20})(?:\s*['\u2019]s)?\s+(?:Profile|on Roblox)\s*$",
     re.IGNORECASE,
 )
+_ROBLOX_PAGE_TITLE_NOISE = frozenset(
+    {
+        "roblox",
+        "home",
+        "catalog",
+        "avatar",
+        "bodies",
+        "classics",
+        "experiences",
+        "friends",
+        "people",
+        "settings",
+        "lemonade",
+        "discover",
+        "create",
+        "develop",
+        "marketplace",
+        "charts",
+        "groups",
+        "notifications",
+        "messages",
+        "search",
+        "login",
+        "signup",
+        "download",
+        "blog",
+        "events",
+        "premium",
+        "gift",
+        "clearapocookie",
+    }
+)
+
+
+def _roblox_is_plausible_username(name: str) -> bool:
+    candidate = str(name or "").strip()
+    if not candidate or len(candidate) < 3 or len(candidate) > 20:
+        return False
+    if not re.fullmatch(r"[A-Za-z0-9_]+", candidate):
+        return False
+    if candidate.isdigit():
+        return False
+    return candidate.lower() not in _ROBLOX_PAGE_TITLE_NOISE
+
+
+def _roblox_username_from_title(title_text: str) -> str | None:
+    title = str(title_text or "").strip()
+    if not title:
+        return None
+    match = _ROBLOX_USERNAME_FROM_TITLE.match(title)
+    if not match:
+        return None
+    username = match.group(1)
+    return username if _roblox_is_plausible_username(username) else None
 
 
 def _roblox_user_ids_from_text(text: str) -> list[str]:
     return sorted(set(_ROBLOX_URL_USER_ID.findall(str(text or ""))))
+
+
+def _roblox_merge_account_entry(target: dict, source: dict, source_bits: list[str] | None = None) -> None:
+    if source_bits:
+        target["sources"] = sorted(set(target.get("sources") or []) | set(source_bits))
+    target["authenticated"] = bool(target.get("authenticated")) or bool(source.get("authenticated"))
+    source_username = str(source.get("username") or "").strip()
+    if source_username and _roblox_is_plausible_username(source_username):
+        target["username"] = source_username
+    source_headshot = str(source.get("headshot_url") or "").strip()
+    if source_headshot:
+        target["headshot_url"] = source_headshot
+
+
+def _roblox_chunked(items: list[str], size: int) -> Iterable[list[str]]:
+    for index in range(0, len(items), size):
+        yield items[index : index + size]
+
+
+def _roblox_enrich_accounts(accounts: list[dict]) -> list[dict]:
+    """Resolve Roblox usernames and avatar headshots for recovered user IDs."""
+    by_id: dict[str, dict] = {}
+    by_name: dict[str, dict] = {}
+    for account in accounts:
+        user_id = str(account.get("user_id") or "").strip()
+        username = str(account.get("username") or "").strip()
+        sources = list(account.get("sources") or [])
+        if user_id:
+            entry = by_id.setdefault(
+                user_id,
+                {
+                    "user_id": user_id,
+                    "username": None,
+                    "headshot_url": None,
+                    "sources": [],
+                    "authenticated": False,
+                },
+            )
+            _roblox_merge_account_entry(entry, account, sources)
+            continue
+        if username and _roblox_is_plausible_username(username):
+            key = username.lower()
+            entry = by_name.setdefault(
+                key,
+                {
+                    "user_id": None,
+                    "username": username,
+                    "headshot_url": None,
+                    "sources": [],
+                    "authenticated": False,
+                },
+            )
+            _roblox_merge_account_entry(entry, account, sources)
+
+    for user_id_chunk in _roblox_chunked(sorted(by_id.keys()), 100):
+        try:
+            response = requests.post(
+                "https://users.roblox.com/v1/users",
+                json={"userIds": [int(uid) for uid in user_id_chunk], "excludeBannedUsers": False},
+                timeout=8,
+            )
+            if response.ok:
+                for row in response.json().get("data") or []:
+                    uid = str(row.get("id") or "").strip()
+                    name = str(row.get("name") or "").strip()
+                    if uid and uid in by_id and _roblox_is_plausible_username(name):
+                        by_id[uid]["username"] = name
+        except (requests.RequestException, TypeError, ValueError):
+            pass
+
+    unresolved_names = [entry["username"] for entry in by_name.values() if entry.get("username")]
+    for username_chunk in _roblox_chunked(unresolved_names, 100):
+        try:
+            response = requests.post(
+                "https://users.roblox.com/v1/usernames/users",
+                json={"usernames": username_chunk, "excludeBannedUsers": False},
+                timeout=8,
+            )
+            if response.ok:
+                for row in response.json().get("data") or []:
+                    uid = str(row.get("id") or "").strip()
+                    requested = str(row.get("requestedUsername") or row.get("name") or "").strip()
+                    resolved_name = str(row.get("name") or requested).strip()
+                    if not uid:
+                        continue
+                    entry = by_id.setdefault(
+                        uid,
+                        {
+                            "user_id": uid,
+                            "username": None,
+                            "headshot_url": None,
+                            "sources": [],
+                            "authenticated": False,
+                        },
+                    )
+                    if requested:
+                        name_entry = by_name.get(requested.lower())
+                        if name_entry:
+                            _roblox_merge_account_entry(entry, name_entry, name_entry.get("sources"))
+                    if _roblox_is_plausible_username(resolved_name):
+                        entry["username"] = resolved_name
+        except (requests.RequestException, TypeError, ValueError):
+            pass
+
+    resolved_ids = sorted(by_id.keys(), key=lambda value: int(value) if value.isdigit() else value)
+    for user_id_chunk in _roblox_chunked(resolved_ids, 100):
+        try:
+            response = requests.get(
+                "https://thumbnails.roblox.com/v1/users/avatar-headshot",
+                params={
+                    "userIds": ",".join(user_id_chunk),
+                    "size": "150x150",
+                    "format": "Png",
+                    "isCircular": "false",
+                },
+                timeout=8,
+            )
+            if response.ok:
+                for row in response.json().get("data") or []:
+                    uid = str(row.get("targetId") or "").strip()
+                    image_url = str(row.get("imageUrl") or "").strip()
+                    if uid in by_id and image_url and row.get("state") == "Completed":
+                        by_id[uid]["headshot_url"] = image_url
+        except (requests.RequestException, TypeError, ValueError):
+            pass
+
+    enriched = [by_id[uid] for uid in resolved_ids]
+    return enriched[:40]
 
 
 def _sqlite_open_readonly(db_path: Path) -> sqlite3.Connection | None:
@@ -6640,11 +6822,9 @@ def _scan_chromium_roblox_profile(browser: str, profile: str, profile_dir: Path)
                 artifact["sources"] = list(artifact.get("sources") or []) + ["history"]
             for url, title in rows:
                 user_ids.update(_roblox_user_ids_from_text(str(url or "")))
-                title_text = str(title or "").strip()
-                if title_text:
-                    title_match = _ROBLOX_USERNAME_FROM_TITLE.match(title_text)
-                    if title_match:
-                        usernames.add(title_match.group(1))
+                title_username = _roblox_username_from_title(str(title or ""))
+                if title_username:
+                    usernames.add(title_username)
         except sqlite3.Error:
             pass
         finally:
@@ -6713,11 +6893,9 @@ def _scan_firefox_roblox_profile(profile_name: str, profile_dir: Path) -> dict:
                 artifact["sources"] = list(artifact.get("sources") or []) + ["history"]
             for url, title in rows:
                 user_ids.update(_roblox_user_ids_from_text(str(url or "")))
-                title_text = str(title or "").strip()
-                if title_text:
-                    title_match = _ROBLOX_USERNAME_FROM_TITLE.match(title_text)
-                    if title_match:
-                        usernames.add(title_match.group(1))
+                title_username = _roblox_username_from_title(str(title or ""))
+                if title_username:
+                    usernames.add(title_username)
         except sqlite3.Error:
             pass
         finally:
@@ -6788,6 +6966,8 @@ def roblox_browser_account_scan() -> dict:
             entry["sources"] = sorted(set(entry["sources"]) | set(source_bits))
             entry["authenticated"] = entry["authenticated"] or bool(art.get("authenticated"))
         for username in art.get("usernames") or []:
+            if not _roblox_is_plausible_username(str(username)):
+                continue
             key = str(username)
             entry = accounts_by_name.setdefault(
                 key,
@@ -6795,23 +6975,38 @@ def roblox_browser_account_scan() -> dict:
             )
             entry["sources"] = sorted(set(entry["sources"]) | set(source_bits))
             entry["authenticated"] = entry["authenticated"] or bool(art.get("authenticated"))
-    accounts = list(accounts_by_id.values()) + [
-        acct for acct in accounts_by_name.values() if acct["username"] not in {a.get("username") for a in accounts_by_id.values()}
+    raw_accounts = list(accounts_by_id.values()) + [
+        acct
+        for acct in accounts_by_name.values()
+        if acct["username"] not in {a.get("username") for a in accounts_by_id.values()}
     ]
+    accounts = _roblox_enrich_accounts(raw_accounts)
     return {
         "available": True,
         "artifact_count": len(artifacts),
         "artifacts": artifacts[:30],
-        "accounts": accounts[:40],
-        "aggregate_user_ids": sorted(accounts_by_id.keys()),
-        "aggregate_usernames": sorted(accounts_by_name.keys()),
+        "accounts": accounts,
+        "aggregate_user_ids": sorted({str(acct.get("user_id")) for acct in accounts if acct.get("user_id")}),
+        "aggregate_usernames": sorted(
+            {
+                str(acct.get("username"))
+                for acct in accounts
+                if acct.get("username") and _roblox_is_plausible_username(str(acct.get("username")))
+            }
+        ),
         "note": "Recovers Roblox user IDs and usernames from Chrome, Edge, Brave, Opera, and Firefox history/cookies.",
     }
 
 
 def extract_roblox_signals(text: str) -> dict:
     user_ids = sorted(set(re.findall(r"\b(?:userId|UserId|userid|uid)[=: ]+(\d{3,})\b", text)))[:40]
-    usernames = sorted(set(re.findall(r"\b(?:username|Username|userName|UserName)[=: ]+([A-Za-z0-9_]{3,20})\b", text)))[:40]
+    usernames = sorted(
+        {
+            name
+            for name in re.findall(r"\b(?:username|Username|userName|UserName)[=: ]+([A-Za-z0-9_]{3,20})\b", text)
+            if _roblox_is_plausible_username(name)
+        }
+    )[:40]
     place_ids = sorted(set(re.findall(r"\b(?:placeId|PlaceId|placeid)[=: ]+(\d{3,})\b", text)))[:40]
     load_client_settings = [
         line.strip()[:500]
@@ -6855,24 +7050,48 @@ def roblox_diagnostics() -> dict:
                     logs.append({"name": path.name, "error": str(exc)})
 
     browser_scan = roblox_browser_account_scan()
-    aggregate_user_ids: set[str] = set()
-    aggregate_usernames: set[str] = set()
+    merged_accounts: list[dict] = list(browser_scan.get("accounts") or [])
     for log in logs:
         signals = log.get("signals") or {}
-        aggregate_user_ids.update(str(uid) for uid in signals.get("user_ids") or [])
-        aggregate_usernames.update(str(name) for name in signals.get("usernames") or [])
-    if browser_scan.get("available"):
-        aggregate_user_ids.update(str(uid) for uid in browser_scan.get("aggregate_user_ids") or [])
-        aggregate_usernames.update(str(name) for name in browser_scan.get("aggregate_usernames") or [])
+        log_source = f"log:{log.get('name', 'unknown')}"
+        for uid in signals.get("user_ids") or []:
+            merged_accounts.append(
+                {
+                    "user_id": str(uid),
+                    "username": None,
+                    "headshot_url": None,
+                    "sources": [log_source],
+                    "authenticated": False,
+                }
+            )
+        for name in signals.get("usernames") or []:
+            if not _roblox_is_plausible_username(str(name)):
+                continue
+            merged_accounts.append(
+                {
+                    "user_id": None,
+                    "username": str(name),
+                    "headshot_url": None,
+                    "sources": [log_source],
+                    "authenticated": False,
+                }
+            )
+    accounts = _roblox_enrich_accounts(merged_accounts)
 
     return {
-        "detected": bool(logs) or bool(browser_scan.get("accounts")),
+        "detected": bool(logs) or bool(accounts),
         "log_locations_checked": [str(path) for path in candidates],
         "logs": logs,
         "browser_scan": browser_scan,
-        "accounts": browser_scan.get("accounts") or [],
-        "aggregate_user_ids": sorted(aggregate_user_ids),
-        "aggregate_usernames": sorted(aggregate_usernames),
+        "accounts": accounts,
+        "aggregate_user_ids": sorted({str(acct.get("user_id")) for acct in accounts if acct.get("user_id")}),
+        "aggregate_usernames": sorted(
+            {
+                str(acct.get("username"))
+                for acct in accounts
+                if acct.get("username") and _roblox_is_plausible_username(str(acct.get("username")))
+            }
+        ),
     }
 
 

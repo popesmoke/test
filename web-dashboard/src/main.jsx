@@ -1390,43 +1390,50 @@ function StarterSection({ report }) {
   );
 }
 
+function robloxHeadshotUrl(account) {
+  if (account.headshot_url) return account.headshot_url;
+  if (!account.user_id) return null;
+  return `https://www.roblox.com/headshot-thumbnail/image?userId=${encodeURIComponent(account.user_id)}&width=150&height=150&format=png`;
+}
+
+function collectRobloxAccounts(roblox) {
+  const byId = new Map();
+  const addAccount = (account) => {
+    const userId = account.user_id ? String(account.user_id) : "";
+    if (!userId) return;
+    const existing = byId.get(userId) ?? {
+      user_id: userId,
+      username: null,
+      headshot_url: null,
+      sources: [],
+    };
+    if (account.username) existing.username = account.username;
+    if (account.headshot_url) existing.headshot_url = account.headshot_url;
+    if (account.sources?.length) {
+      existing.sources = [...new Set([...existing.sources, ...account.sources])];
+    }
+    byId.set(userId, existing);
+  };
+  for (const account of roblox.accounts ?? []) {
+    addAccount(account);
+  }
+  if (!byId.size) {
+    for (const userId of roblox.aggregate_user_ids ?? []) {
+      addAccount({ user_id: String(userId), sources: ["Recovered from browser artifacts"] });
+    }
+  }
+  return [...byId.values()].sort((left, right) => {
+    const leftId = Number(left.user_id);
+    const rightId = Number(right.user_id);
+    if (Number.isFinite(leftId) && Number.isFinite(rightId)) return leftId - rightId;
+    return String(left.user_id).localeCompare(String(right.user_id));
+  });
+}
+
 function RobloxSection({ report, query }) {
   const roblox = report.application_diagnostics?.roblox ?? {};
   const logs = roblox.logs ?? [];
-  const accounts = [];
-  const seen = new Set();
-  const pushAccount = (label, detail) => {
-    const key = `${label}|${detail}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-    accounts.push({ label, detail });
-  };
-  for (const account of roblox.accounts ?? []) {
-    if (account.user_id) {
-      pushAccount(
-        account.username || `User ID ${account.user_id}`,
-        `https://www.roblox.com/users/${account.user_id}/profile` +
-          (account.sources?.length ? ` · ${account.sources.join(", ")}` : ""),
-      );
-    } else if (account.username) {
-      pushAccount(account.username, (account.sources ?? []).join(", ") || "Recovered from browser artifacts");
-    }
-  }
-  for (const userId of roblox.aggregate_user_ids ?? []) {
-    pushAccount(`User ID ${userId}`, `https://www.roblox.com/users/${userId}/profile`);
-  }
-  for (const username of roblox.aggregate_usernames ?? []) {
-    pushAccount(username, "Recovered from Roblox client or browser artifacts");
-  }
-  for (const log of logs) {
-    const signals = log.signals ?? {};
-    for (const username of signals.usernames ?? []) {
-      pushAccount(username, `Found in ${log.name}`);
-    }
-    for (const userId of signals.user_ids ?? []) {
-      pushAccount(`User ID ${userId}`, `https://www.roblox.com/users/${userId}/profile`);
-    }
-  }
+  const accounts = collectRobloxAccounts(roblox);
 
   return (
     <>
@@ -1435,15 +1442,32 @@ function RobloxSection({ report, query }) {
           {accounts.length === 0 ? (
             <p className="muted">No Roblox account identifiers found in approved logs.</p>
           ) : (
-            accounts.slice(0, 40).map((account, index) => (
-              <div className="account-row" key={`${account.label}-${index}`}>
-                <div className="avatar">{account.label.slice(0, 1).toUpperCase()}</div>
-                <div>
-                  <strong>{account.label}</strong>
-                  <span>{account.detail}</span>
+            accounts.slice(0, 40).map((account) => {
+              const headshot = robloxHeadshotUrl(account);
+              const profileUrl = `https://www.roblox.com/users/${account.user_id}/profile`;
+              const displayName = account.username || `User ${account.user_id}`;
+              return (
+                <div className="account-row" key={account.user_id}>
+                  <div className="avatar">
+                    {headshot ? (
+                      <img src={headshot} alt="" className="avatar-image" loading="lazy" />
+                    ) : (
+                      displayName.slice(0, 1).toUpperCase()
+                    )}
+                  </div>
+                  <div>
+                    <strong>{displayName}</strong>
+                    <span>User ID {account.user_id}</span>
+                    <span>
+                      <a href={profileUrl} target="_blank" rel="noreferrer">
+                        {profileUrl}
+                      </a>
+                      {account.sources?.length ? ` · ${account.sources.join(", ")}` : ""}
+                    </span>
+                  </div>
                 </div>
-              </div>
-            ))
+              );
+            })
           )}
         </div>
       </Card>
