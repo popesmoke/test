@@ -712,6 +712,75 @@ def effective_session_status(row: sqlite3.Row) -> str:
     return status
 
 
+def fetch_roblox_profiles(user_ids: list[str]) -> list[dict]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_id in user_ids:
+        user_id = str(raw_id or "").strip()
+        if not user_id or not user_id.isdigit() or user_id in seen:
+            continue
+        seen.add(user_id)
+        normalized.append(user_id)
+    if not normalized:
+        return []
+
+    profiles: dict[str, dict] = {
+        user_id: {"user_id": user_id, "username": None, "headshot_url": None}
+        for user_id in normalized
+    }
+
+    def post_json(url: str, payload: dict) -> dict:
+        body = json.dumps(payload).encode("utf-8")
+        request = urlrequest.Request(
+            url,
+            data=body,
+            headers={"Content-Type": "application/json", "User-Agent": "VirelloScanner/1.0"},
+            method="POST",
+        )
+        with urlrequest.urlopen(request, timeout=10) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    def get_json(url: str) -> dict:
+        request = urlrequest.Request(url, headers={"User-Agent": "VirelloScanner/1.0"})
+        with urlrequest.urlopen(request, timeout=10) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    try:
+        user_payload = post_json(
+            "https://users.roblox.com/v1/users",
+            {"userIds": [int(user_id) for user_id in normalized], "excludeBannedUsers": False},
+        )
+        for row in user_payload.get("data") or []:
+            user_id = str(row.get("id") or "").strip()
+            username = str(row.get("name") or "").strip()
+            if user_id in profiles and username:
+                profiles[user_id]["username"] = username
+    except (urlerror.URLError, TimeoutError, json.JSONDecodeError, TypeError, ValueError):
+        pass
+
+    try:
+        thumb_payload = get_json(
+            "https://thumbnails.roblox.com/v1/users/avatar-headshot?"
+            + urlencode(
+                {
+                    "userIds": ",".join(normalized),
+                    "size": "150x150",
+                    "format": "Png",
+                    "isCircular": "false",
+                }
+            )
+        )
+        for row in thumb_payload.get("data") or []:
+            user_id = str(row.get("targetId") or "").strip()
+            image_url = str(row.get("imageUrl") or "").strip()
+            if user_id in profiles and image_url and row.get("state") == "Completed":
+                profiles[user_id]["headshot_url"] = image_url
+    except (urlerror.URLError, TimeoutError, json.JSONDecodeError, TypeError, ValueError):
+        pass
+
+    return [profiles[user_id] for user_id in normalized]
+
+
 def row_to_summary(row: sqlite3.Row) -> dict:
     keys = row.keys()
     return {
@@ -1037,6 +1106,17 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 row = db_execute(conn, "SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
             self.send_json(HTTPStatus.OK, row_to_summary(row))
+            return
+
+        if path == "/roblox/profiles":
+            if not self.require_checker():
+                return
+            user_ids = payload.get("user_ids") or []
+            if not isinstance(user_ids, list):
+                self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "user_ids must be a list"})
+                return
+            profiles = fetch_roblox_profiles([str(item) for item in user_ids])
+            self.send_json(HTTPStatus.OK, {"profiles": profiles})
             return
 
         if path == "/sessions":

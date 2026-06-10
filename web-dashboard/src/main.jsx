@@ -1398,14 +1398,16 @@ function robloxHeadshotUrl(account) {
 
 function collectRobloxAccounts(roblox) {
   const byId = new Map();
-  const addAccount = (account) => {
+  for (const account of roblox.accounts ?? []) {
     const userId = account.user_id ? String(account.user_id) : "";
-    if (!userId) return;
+    if (!userId) continue;
+    if (account.authenticated !== true) continue;
     const existing = byId.get(userId) ?? {
       user_id: userId,
       username: null,
       headshot_url: null,
       sources: [],
+      authenticated: true,
     };
     if (account.username) existing.username = account.username;
     if (account.headshot_url) existing.headshot_url = account.headshot_url;
@@ -1413,14 +1415,6 @@ function collectRobloxAccounts(roblox) {
       existing.sources = [...new Set([...existing.sources, ...account.sources])];
     }
     byId.set(userId, existing);
-  };
-  for (const account of roblox.accounts ?? []) {
-    addAccount(account);
-  }
-  if (!byId.size) {
-    for (const userId of roblox.aggregate_user_ids ?? []) {
-      addAccount({ user_id: String(userId), sources: ["Recovered from browser artifacts"] });
-    }
   }
   return [...byId.values()].sort((left, right) => {
     const leftId = Number(left.user_id);
@@ -1430,17 +1424,61 @@ function collectRobloxAccounts(roblox) {
   });
 }
 
-function RobloxSection({ report, query }) {
+function RobloxSection({ report, query, token }) {
   const roblox = report.application_diagnostics?.roblox ?? {};
   const logs = roblox.logs ?? [];
-  const accounts = collectRobloxAccounts(roblox);
+  const baseAccounts = useMemo(() => collectRobloxAccounts(roblox), [roblox]);
+  const [profiles, setProfiles] = useState({});
+
+  useEffect(() => {
+    const userIds = baseAccounts.map((account) => account.user_id);
+    if (!token || !userIds.length) {
+      setProfiles({});
+      return undefined;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await fetch(`${API_URL}/roblox/profiles`, {
+          method: "POST",
+          headers: authHeaders(token),
+          body: JSON.stringify({ user_ids: userIds }),
+        });
+        if (!response.ok || cancelled) return;
+        const payload = await response.json();
+        const next = {};
+        for (const profile of payload.profiles ?? []) {
+          if (profile?.user_id) next[String(profile.user_id)] = profile;
+        }
+        if (!cancelled) setProfiles(next);
+      } catch {
+        if (!cancelled) setProfiles({});
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [baseAccounts, token]);
+
+  const accounts = useMemo(
+    () =>
+      baseAccounts.map((account) => {
+        const resolved = profiles[account.user_id] ?? {};
+        return {
+          ...account,
+          username: account.username || resolved.username || null,
+          headshot_url: account.headshot_url || resolved.headshot_url || null,
+        };
+      }),
+    [baseAccounts, profiles],
+  );
 
   return (
     <>
       <Card icon={Gamepad2} title="Roblox Accounts">
         <div className="account-list">
           {accounts.length === 0 ? (
-            <p className="muted">No Roblox account identifiers found in approved logs.</p>
+            <p className="muted">No logged-in Roblox accounts were detected in browser sessions or the Roblox client.</p>
           ) : (
             accounts.slice(0, 40).map((account) => {
               const headshot = robloxHeadshotUrl(account);
@@ -1480,6 +1518,8 @@ function RobloxSection({ report, query }) {
               `User IDs: ${(artifact.user_ids ?? []).join(", ") || "none"}`,
               `Usernames: ${(artifact.usernames ?? []).join(", ") || "none"}`,
               `Authenticated session: ${artifact.authenticated ? "yes (.ROBLOSECURITY cookie)" : "not detected"}`,
+              `Logged-in user ID: ${artifact.session_user_id ?? "not resolved"}`,
+              `Logged-in username: ${artifact.session_username ?? "not resolved"}`,
               `History hits: ${artifact.history_hits ?? 0}; Cookie hits: ${artifact.cookie_hits ?? 0}`,
               `Sources: ${sources}`,
               "------------------------------------------------------------",
@@ -2549,7 +2589,7 @@ function Results({ detail, token, onSessionReviewSaved }) {
               onChange={(event) => setQuery(event.target.value)}
               placeholder={`Search ${activeSection.label} keywords...`}
             />
-            <ActiveComponent report={report} query={deferredQuery} />
+            <ActiveComponent report={report} query={deferredQuery} token={token} />
           </>
         ) : (
           <SimpleResults
