@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import ctypes
+import functools
 import hashlib
 import json
 import os
@@ -20,7 +21,7 @@ import shutil
 import sqlite3
 import tempfile
 from collections import Counter, defaultdict
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
@@ -47,7 +48,7 @@ SCAN_STAGES = [
 PROGRESS_TICK_SEC = 0.55
 PROGRESS_STEP = 0.25
 PROGRESS_CAP_DURING_SCAN = 88.0
-PRE_SCAN_STAGE_DELAY_SEC = 0.45
+PRE_SCAN_STAGE_DELAY_SEC = 0.12
 
 COLLECTED_CATEGORIES = [
     "Device and app diagnostic metadata needed for review.",
@@ -2919,15 +2920,23 @@ USER_FOLDER_TRUSTED_APP_STEMS = frozenset(
         "discord",
     }
 )
-SCAN_WORKERS = min(16, max(8, (os.cpu_count() or 4) * 2))
+SCAN_WORKERS = min(24, max(10, (os.cpu_count() or 4) * 3))
 
 # Populated once per build_report() pass to avoid duplicate full USN journal reads.
 _usn_comprehensive_cache: dict[str, object] | None = None
+_roblox_logs_cache: list[dict] | None = None
+_roblox_logs_cache_lock = threading.Lock()
 
 
 def _reset_usn_comprehensive_cache() -> None:
     global _usn_comprehensive_cache
     _usn_comprehensive_cache = None
+
+
+def _reset_roblox_logs_cache() -> None:
+    global _roblox_logs_cache
+    with _roblox_logs_cache_lock:
+        _roblox_logs_cache = None
 
 
 def _windows_user_profile_prefix() -> str:
@@ -2991,6 +3000,7 @@ def executor_user_hash_scan_roots() -> list[tuple[Path, int]]:
     return full_pc_scan_roots()
 
 
+@functools.lru_cache(maxsize=1)
 def executor_name_patterns() -> dict[str, re.Pattern[str]]:
     """Match executor brands as standalone tokens in paths (avoid 'Wave' inside 'shockwave', etc.)."""
     patterns: dict[str, re.Pattern[str]] = {}
@@ -3370,6 +3380,61 @@ def executor_blocklist_hash_known_paths(
     return hits
 
 
+def _executor_blocklist_scan_root(
+    root: Path,
+    max_depth: int,
+    blocklist: dict[str, str],
+    max_hashes: int,
+) -> tuple[list[dict], int]:
+    if not blocklist or max_hashes <= 0:
+        return [], 0
+    patterns = executor_name_patterns()
+    hits: list[dict] = []
+    hashed = 0
+    seen_paths: set[str] = set()
+    try:
+        for path in walk_files_depth_limited(root, max_depth):
+            if hashed >= max_hashes:
+                break
+            try:
+                if not path.is_file() or path.suffix.lower() not in {".exe", ".dll"}:
+                    continue
+            except OSError:
+                continue
+            key = str(path).lower()
+            if key in seen_paths:
+                continue
+            seen_paths.add(key)
+            sha = file_sha256_full(path)
+            hashed += 1
+            if not sha:
+                continue
+            label = blocklist.get(sha.lower())
+            if not label:
+                continue
+            try:
+                stat = path.stat()
+                modified = datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()
+                size_bytes = stat.st_size
+            except OSError:
+                modified = None
+                size_bytes = None
+            hits.append(
+                {
+                    "label": label,
+                    "sha256": sha,
+                    "path": str(path),
+                    "size_bytes": size_bytes,
+                    "modified": modified,
+                    "detection_source": "filesystem_hash_scan",
+                    "renamed_disguise": not any(pat.search(path.name) for pat in patterns.values()),
+                }
+            )
+    except (PermissionError, OSError):
+        pass
+    return hits, hashed
+
+
 def executor_blocklist_path_scan(
     blocklist: dict[str, str],
     max_hashes: int = EXECUTOR_HASH_SCAN_MAX_FILES,
@@ -3377,55 +3442,23 @@ def executor_blocklist_path_scan(
     """Hash user-profile executables; ignores path allowlists so disguised paths still match."""
     if not blocklist:
         return [], 0
+    roots = executor_user_hash_scan_roots()
+    per_root_budget = max(250, max_hashes // max(1, len(roots)))
+    workers = min(SCAN_WORKERS, max(1, len(roots)))
     hits: list[dict] = []
     hashed = 0
-    seen_paths: set[str] = set()
-    for root, max_depth in executor_user_hash_scan_roots():
-        try:
-            for path in walk_files_depth_limited(root, max_depth):
-                if hashed >= max_hashes:
-                    break
-                try:
-                    if not path.is_file() or path.suffix.lower() not in {".exe", ".dll"}:
-                        continue
-                except OSError:
-                    continue
-                key = str(path).lower()
-                if key in seen_paths:
-                    continue
-                seen_paths.add(key)
-                sha = file_sha256_full(path)
-                hashed += 1
-                if not sha:
-                    continue
-                label = blocklist.get(sha.lower())
-                if not label:
-                    continue
-                try:
-                    stat = path.stat()
-                    modified = datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()
-                    size_bytes = stat.st_size
-                except OSError:
-                    modified = None
-                    size_bytes = None
-                hits.append(
-                    {
-                        "label": label,
-                        "sha256": sha,
-                        "path": str(path),
-                        "size_bytes": size_bytes,
-                        "modified": modified,
-                        "detection_source": "filesystem_hash_scan",
-                        "renamed_disguise": not any(
-                            pat.search(path.name) for pat in executor_name_patterns().values()
-                        ),
-                    }
-                )
-        except (PermissionError, OSError):
-            continue
-        if hashed >= max_hashes:
-            break
-    return hits, hashed
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [
+            pool.submit(_executor_blocklist_scan_root, root, max_depth, blocklist, per_root_budget)
+            for root, max_depth in roots
+        ]
+        for future in as_completed(futures):
+            root_hits, root_hashed = future.result()
+            hits.extend(root_hits)
+            hashed += root_hashed
+            if hashed >= max_hashes:
+                break
+    return hits[:max_hashes], min(hashed, max_hashes)
 
 
 def executor_sha256_blocklist_scan(max_hashes: int = EXECUTOR_HASH_SCAN_MAX_FILES) -> dict:
@@ -3983,84 +4016,109 @@ def match_executor_labels(text: str, patterns: dict[str, re.Pattern[str]]) -> li
     return [name for name, pattern in patterns.items() if pattern.search(text)]
 
 
+def _full_pc_scan_root(root: Path, max_depth: int, patterns: dict[str, re.Pattern[str]]) -> dict:
+    hits: list[dict] = []
+    enumerated = 0
+    binary_probes = 0
+    skipped_permission = 0
+    try:
+        for path in walk_files_depth_limited(root, max_depth):
+            enumerated += 1
+            if enumerated > FULL_PC_SCAN_MAX_ENUMERATED:
+                break
+            try:
+                if not path.is_file():
+                    continue
+            except OSError:
+                continue
+            ext = path.suffix.lower()
+            if ext not in USER_FOLDER_SCAN_EXTENSIONS and ext not in FULL_PC_EXECUTABLE_EXTENSIONS:
+                continue
+            if executor_scan_path_excluded(str(path)):
+                continue
+            path_str = str(path)
+            executor_labels = sorted(set(match_executor_labels(path_str, patterns)))
+            cheat_hints = cheat_path_hint_labels(path_str)
+            weird = list(weird_filename_reasons(path.stem, path.name))
+            for part in path.parts[:-1]:
+                weird.extend(weird_filename_reasons(part, part))
+            weird = sorted(set(weird))
+            binary_labels: list[str] = []
+            if ext in {".exe", ".dll"} and binary_probes < FULL_PC_BINARY_PROBE_MAX_FILES:
+                binary_labels = _probe_executable_binary_labels(path)
+                binary_probes += 1
+                if binary_labels:
+                    executor_labels = sorted(set(executor_labels + binary_labels))
+            if not executor_labels and not cheat_hints and not weird:
+                continue
+            try:
+                stat = path.stat()
+                modified = datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()
+                accessed = datetime.fromtimestamp(stat.st_atime, timezone.utc).isoformat()
+            except OSError:
+                modified = None
+                accessed = None
+            hits.append(
+                {
+                    "path": path_str,
+                    "name": path.name,
+                    "extension": ext,
+                    "size_bytes": stat.st_size if modified else None,
+                    "modified": modified,
+                    "accessed": accessed,
+                    "executor_name_hits": executor_labels,
+                    "cheat_filename_hints": cheat_hints,
+                    "name_anomaly_reasons": weird,
+                    "binary_embedded_labels": binary_labels,
+                    "path_allowlisted": path_is_allowlisted(path_str),
+                    "scan_source": "full_pc_drive_walk",
+                }
+            )
+            if len(hits) >= FULL_PC_SCAN_MAX_HITS:
+                break
+    except PermissionError:
+        skipped_permission += 1
+    except OSError:
+        skipped_permission += 1
+    return {
+        "root": str(root),
+        "hits": hits,
+        "enumerated_files": enumerated,
+        "binary_probes": binary_probes,
+        "skipped_permission_roots": skipped_permission,
+    }
+
+
 def full_pc_filesystem_executor_scan() -> dict:
     """Walk every local/removable drive for executor names, cheat hints, and embedded binary branding."""
     if platform.system() != "Windows":
         return {"available": False, "reason": "Full-PC scan is Windows-only", "hits": []}
     patterns = executor_name_patterns()
+    roots = full_pc_scan_roots()
+    workers = min(SCAN_WORKERS, max(1, len(roots)))
     hits: list[dict] = []
     enumerated = 0
     binary_probes = 0
     skipped_permission = 0
     roots_scanned: list[str] = []
-    for root, max_depth in full_pc_scan_roots():
-        roots_scanned.append(str(root))
-        try:
-            for path in walk_files_depth_limited(root, max_depth):
-                enumerated += 1
-                if enumerated > FULL_PC_SCAN_MAX_ENUMERATED:
-                    break
-                try:
-                    if not path.is_file():
-                        continue
-                except OSError:
-                    continue
-                ext = path.suffix.lower()
-                if ext not in USER_FOLDER_SCAN_EXTENSIONS and ext not in FULL_PC_EXECUTABLE_EXTENSIONS:
-                    continue
-                if executor_scan_path_excluded(str(path)):
-                    continue
-                path_str = str(path)
-                executor_labels = sorted(set(match_executor_labels(path_str, patterns)))
-                cheat_hints = cheat_path_hint_labels(path_str)
-                weird = list(weird_filename_reasons(path.stem, path.name))
-                for part in path.parts[:-1]:
-                    weird.extend(weird_filename_reasons(part, part))
-                weird = sorted(set(weird))
-                binary_labels: list[str] = []
-                if ext in {".exe", ".dll"} and binary_probes < FULL_PC_BINARY_PROBE_MAX_FILES:
-                    binary_labels = _probe_executable_binary_labels(path)
-                    binary_probes += 1
-                    if binary_labels:
-                        executor_labels = sorted(set(executor_labels + binary_labels))
-                if not executor_labels and not cheat_hints and not weird:
-                    continue
-                try:
-                    stat = path.stat()
-                    modified = datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()
-                    accessed = datetime.fromtimestamp(stat.st_atime, timezone.utc).isoformat()
-                except OSError:
-                    modified = None
-                    accessed = None
-                hits.append(
-                    {
-                        "path": path_str,
-                        "name": path.name,
-                        "extension": ext,
-                        "size_bytes": stat.st_size if modified else None,
-                        "modified": modified,
-                        "accessed": accessed,
-                        "executor_name_hits": executor_labels,
-                        "cheat_filename_hints": cheat_hints,
-                        "name_anomaly_reasons": weird,
-                        "binary_embedded_labels": binary_labels,
-                        "path_allowlisted": path_is_allowlisted(path_str),
-                        "scan_source": "full_pc_drive_walk",
-                    }
-                )
-                if len(hits) >= FULL_PC_SCAN_MAX_HITS:
-                    break
-        except PermissionError:
-            skipped_permission += 1
-        except OSError:
-            skipped_permission += 1
-        if enumerated > FULL_PC_SCAN_MAX_ENUMERATED or len(hits) >= FULL_PC_SCAN_MAX_HITS:
-            break
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(_full_pc_scan_root, root, max_depth, patterns) for root, max_depth in roots]
+        for future in as_completed(futures):
+            partial = future.result()
+            roots_scanned.append(str(partial.get("root") or ""))
+            hits.extend(partial.get("hits") or [])
+            enumerated += int(partial.get("enumerated_files") or 0)
+            binary_probes += int(partial.get("binary_probes") or 0)
+            skipped_permission += int(partial.get("skipped_permission_roots") or 0)
+            if enumerated >= FULL_PC_SCAN_MAX_ENUMERATED or len(hits) >= FULL_PC_SCAN_MAX_HITS:
+                break
+    if len(hits) > FULL_PC_SCAN_MAX_HITS:
+        hits = hits[:FULL_PC_SCAN_MAX_HITS]
     return {
         "available": True,
         "hit_count": len(hits),
         "hits": hits,
-        "enumerated_files": enumerated,
+        "enumerated_files": min(enumerated, FULL_PC_SCAN_MAX_ENUMERATED),
         "binary_probes": binary_probes,
         "roots_scanned": roots_scanned,
         "skipped_permission_roots": skipped_permission,
@@ -4119,9 +4177,12 @@ def scan_execution_artifact_binaries(
 
 def combined_user_folder_security_scans(max_hashes: int = EXECUTOR_HASH_SCAN_MAX_FILES) -> tuple[dict, dict]:
     """Full-PC name/binary hits plus SHA256 blocklist scan across all drives."""
-    full_pc = full_pc_filesystem_executor_scan()
     blocklist = load_executor_sha256_blocklist()
-    sha_hits, hashed = executor_blocklist_path_scan(blocklist, max_hashes=max_hashes)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        fut_full_pc = pool.submit(full_pc_filesystem_executor_scan)
+        fut_sha = pool.submit(executor_blocklist_path_scan, blocklist, max_hashes)
+        full_pc = fut_full_pc.result()
+        sha_hits, hashed = fut_sha.result()
 
     merged_hits = list(full_pc.get("hits") or [])
     merged_hits.sort(key=lambda row: str(row.get("modified") or ""), reverse=True)
@@ -6989,38 +7050,43 @@ def _roblox_resolve_firefox_session(profile_dir: Path) -> dict | None:
 
 
 def _roblox_read_client_logs() -> list[dict]:
-    candidates: list[Path] = []
-    if platform.system() == "Windows":
-        local_app_data = os.getenv("LOCALAPPDATA")
-        if local_app_data:
-            candidates.append(Path(local_app_data) / "Roblox" / "logs")
-    elif platform.system() == "Darwin":
-        candidates.append(Path.home() / "Library" / "Logs" / "Roblox")
+    global _roblox_logs_cache
+    with _roblox_logs_cache_lock:
+        if _roblox_logs_cache is not None:
+            return _roblox_logs_cache
+        candidates: list[Path] = []
+        if platform.system() == "Windows":
+            local_app_data = os.getenv("LOCALAPPDATA")
+            if local_app_data:
+                candidates.append(Path(local_app_data) / "Roblox" / "logs")
+        elif platform.system() == "Darwin":
+            candidates.append(Path.home() / "Library" / "Logs" / "Roblox")
 
-    logs: list[dict] = []
-    for folder in candidates:
-        if not folder.exists():
-            continue
-        try:
-            log_paths = sorted(folder.glob("*.log"), key=lambda path: path.stat().st_mtime, reverse=True)[:5]
-        except OSError:
-            continue
-        for path in log_paths:
+        logs: list[dict] = []
+        for folder in candidates:
+            if not folder.exists():
+                continue
             try:
-                stat = path.stat()
-                text = path.read_text(errors="replace")
-                logs.append(
-                    {
-                        "name": path.name,
-                        "modified": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
-                        "accessed": datetime.fromtimestamp(stat.st_atime, timezone.utc).isoformat(),
-                        "signals": extract_roblox_signals(text),
-                        "tail": text[-4000:],
-                    }
-                )
-            except Exception as exc:
-                logs.append({"name": path.name, "error": str(exc)})
-    return logs
+                log_paths = sorted(folder.glob("*.log"), key=lambda path: path.stat().st_mtime, reverse=True)[:5]
+            except OSError:
+                continue
+            for path in log_paths:
+                try:
+                    stat = path.stat()
+                    text = path.read_text(errors="replace")
+                    logs.append(
+                        {
+                            "name": path.name,
+                            "modified": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+                            "accessed": datetime.fromtimestamp(stat.st_atime, timezone.utc).isoformat(),
+                            "signals": extract_roblox_signals(text),
+                            "tail": text[-4000:],
+                        }
+                    )
+                except Exception as exc:
+                    logs.append({"name": path.name, "error": str(exc)})
+        _roblox_logs_cache = logs
+        return logs
 
 
 def _roblox_client_session_user() -> dict | None:
@@ -7182,8 +7248,8 @@ def _sqlite_open_readonly(db_path: Path) -> sqlite3.Connection | None:
         return None
     uri = f"file:{db_path.as_posix()}?mode=ro"
     for opener in (
-        lambda: sqlite3.connect(uri, uri=True, timeout=2.5),
-        lambda: sqlite3.connect(str(db_path), timeout=2.5),
+        lambda: sqlite3.connect(uri, uri=True, timeout=1.0),
+        lambda: sqlite3.connect(str(db_path), timeout=1.0),
     ):
         try:
             conn = opener()
@@ -7201,8 +7267,8 @@ def _sqlite_open_readonly(db_path: Path) -> sqlite3.Connection | None:
             if sidecar.is_file():
                 shutil.copy2(sidecar, tmp_root / (db_path.name + suffix))
         for opener in (
-            lambda: sqlite3.connect(f"file:{copied.as_posix()}?mode=ro", uri=True, timeout=2.5),
-            lambda: sqlite3.connect(str(copied), timeout=2.5),
+            lambda: sqlite3.connect(f"file:{copied.as_posix()}?mode=ro", uri=True, timeout=1.0),
+            lambda: sqlite3.connect(str(copied), timeout=1.0),
         ):
             try:
                 conn = opener()
@@ -7410,18 +7476,18 @@ def _close_browsers_for_roblox_scan() -> dict:
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             failed.append(proc_name or "unknown")
     if terminating:
-        _gone, alive = psutil.wait_procs(terminating, timeout=4)
+        _gone, alive = psutil.wait_procs(terminating, timeout=2)
         for proc in alive:
             try:
                 proc.kill()
-                proc.wait(timeout=2)
+                proc.wait(timeout=1)
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.TimeoutExpired):
                 try:
                     failed.append(f"{proc.name()} (pid {proc.pid})")
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     failed.append("unknown")
     if closed or terminating:
-        time.sleep(0.75)
+        time.sleep(0.35)
     return {"closed": closed, "failed": failed}
 
 
@@ -10966,7 +11032,7 @@ def build_forensic_analysis_bundle(
             "reason": "Forensic correlation bundle is Windows-focused in this build",
             "engine_version": _FORENSIC_ENGINE_VERSION,
         }
-    with ThreadPoolExecutor(max_workers=min(6, SCAN_WORKERS)) as pool:
+    with ThreadPoolExecutor(max_workers=min(10, SCAN_WORKERS)) as pool:
         bam_future = pool.submit(bam_execution_records)
         pca_future = pool.submit(pca_executed_records)
         sqlite_future = pool.submit(sqlite_forensic_probe)
@@ -12568,8 +12634,23 @@ def in_scan_binary_change_signals(usn_rows: list[dict], bam_items: list[dict]) -
     }
 
 
+def _process_overview_sample() -> dict:
+    processes = []
+    for proc in psutil.process_iter(["pid", "name", "username", "status"]):
+        try:
+            info = proc.info
+            processes.append({"pid": info["pid"], "name": info["name"], "status": info["status"]})
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return {
+        "count": len(processes),
+        "items": sorted(processes, key=lambda item: (item["name"] or "").lower())[:250],
+    }
+
+
 def build_report() -> dict:
     _reset_usn_comprehensive_cache()
+    _reset_roblox_logs_cache()
     scan_started_at = datetime.now(timezone.utc).isoformat()
     memory = psutil.virtual_memory()
     disk = psutil.disk_usage(str(Path.home().anchor or Path.home()))
@@ -12602,7 +12683,9 @@ def build_report() -> dict:
         fut_disk_exe = pool.submit(recent_disk_executable_scan)
         fut_browser_downloads = pool.submit(browser_download_history_scan)
         fut_dam = pool.submit(dam_execution_records)
+        fut_processes = pool.submit(_process_overview_sample)
 
+        wait({fut_prefetch, fut_deletion, fut_folders})
         prefetch = fut_prefetch.result()
         deletion_signals = fut_deletion.result()
         designated, sha_blocklist = fut_folders.result()
@@ -12610,6 +12693,37 @@ def build_report() -> dict:
         fut_forensic = pool.submit(build_forensic_analysis_bundle, designated, prefetch, deletion_signals)
         fut_pref_health = pool.submit(prefetch_health_signals, prefetch)
         fut_roblox_int = pool.submit(roblox_integrity_scan, prefetch)
+
+        wait(
+            {
+                fut_forensic,
+                fut_pref_health,
+                fut_roblox_int,
+                fut_hardware,
+                fut_apps,
+                fut_trash,
+                fut_roblox,
+                fut_amcache,
+                fut_userassist,
+                fut_defender,
+                fut_events,
+                fut_security_events,
+                fut_powershell_events,
+                fut_service_changes,
+                fut_xml,
+                fut_recent,
+                fut_cmdhist,
+                fut_services,
+                fut_usb,
+                fut_shellbag,
+                fut_exec_ind,
+                fut_persist,
+                fut_disk_exe,
+                fut_browser_downloads,
+                fut_dam,
+                fut_processes,
+            }
+        )
 
         forensic_bundle = fut_forensic.result()
         bam_structured = forensic_bundle.get("bam_structured")
@@ -12635,6 +12749,7 @@ def build_report() -> dict:
                     merged_paths.add(str(hit.get("path") or "").lower())
 
         prefetch_health = fut_pref_health.result()
+        roblox_integrity = fut_roblox_int.result()
         executor_indicators = fut_exec_ind.result()
         persistence = fut_persist.result()
         recent_items = fut_recent.result()
@@ -12645,6 +12760,20 @@ def build_report() -> dict:
         command_history = fut_cmdhist.result()
         browser_download_history = fut_browser_downloads.result()
         services_snapshot = fut_services.result()
+        hardware = fut_hardware.result()
+        installed_apps = fut_apps.result()
+        amcache = fut_amcache.result()
+        defender = fut_defender.result()
+        windows_event_logs = fut_events.result()
+        windows_security_events = fut_security_events.result()
+        powershell_operational_events = fut_powershell_events.result()
+        windows_service_change_events = fut_service_changes.result()
+        xml_event_log_files = fut_xml.result()
+        usb_events = fut_usb.result()
+        shellbag = fut_shellbag.result()
+        disk_executables = fut_disk_exe.result()
+        process_overview = fut_processes.result()
+        dam_registry = fut_dam.result()
         deletion_cleanup_analysis = build_deletion_cleanup_analysis(
             trash=trash,
             deletion=deletion_signals,
@@ -12696,7 +12825,6 @@ def build_report() -> dict:
             command_history=command_history,
         )
         patch_unified_correlation_timeline(forensic_bundle)
-        dam_registry = fut_dam.result()
         executor_artifact_evidence = build_executor_artifact_evidence(
             bam=bam_registry,
             dam=dam_registry,
@@ -12746,12 +12874,12 @@ def build_report() -> dict:
         bypass_resilience = bypass_resilience_signals(
             prefetch=prefetch,
             deletion=deletion_signals,
-            defender=fut_defender.result(),
-            shellbag=fut_shellbag.result(),
+            defender=defender,
+            shellbag=shellbag,
             bam=bam_registry,
             forensic_bundle=forensic_bundle,
             prefetch_health=prefetch_health,
-            amcache=fut_amcache.result(),
+            amcache=amcache,
             command_history=command_history,
             designated=designated,
             trash=trash,
@@ -12761,7 +12889,6 @@ def build_report() -> dict:
             usn_rows=usn_rows if isinstance(usn_rows, list) else [],
             bam_items=bam_registry.get("items") or [],
         )
-        disk_executables = fut_disk_exe.result()
         boot_time_iso = datetime.fromtimestamp(psutil.boot_time(), timezone.utc).isoformat()
         scan_review = build_scan_review_bundle(
             generated_at=generated_at,
@@ -12788,14 +12915,6 @@ def build_report() -> dict:
             filesystem_evidence_integrity=filesystem_evidence_integrity,
         )
 
-    processes = []
-    for proc in psutil.process_iter(["pid", "name", "username", "status"]):
-        try:
-            info = proc.info
-            processes.append({"pid": info["pid"], "name": info["name"], "status": info["status"]})
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            continue
-
     return {
         "scan_started_at": scan_started_at,
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -12809,7 +12928,7 @@ def build_report() -> dict:
             "cpu_count_logical": psutil.cpu_count(logical=True),
             "cpu_count_physical": psutil.cpu_count(logical=False),
             "hostname_hash": hashed_identifier(socket.gethostname()),
-            "hardware": fut_hardware.result(),
+            "hardware": hardware,
         },
         "performance_environment": {
             "memory_total_gb": round(memory.total / (1024**3), 2),
@@ -12817,31 +12936,28 @@ def build_report() -> dict:
             "disk_total_gb": round(disk.total / (1024**3), 2),
             "disk_free_gb": round(disk.free / (1024**3), 2),
             "boot_time": datetime.fromtimestamp(psutil.boot_time(), timezone.utc).isoformat(),
-            "installed_applications": fut_apps.result(),
+            "installed_applications": installed_apps,
             "trash": trash,
             "prefetch": prefetch,
         },
         "application_diagnostics": {"roblox": roblox},
-        "process_overview": {
-            "count": len(processes),
-            "items": sorted(processes, key=lambda item: (item["name"] or "").lower())[:250],
-        },
+        "process_overview": process_overview,
         "security_integrity_signals": {
-            "amcache": fut_amcache.result(),
+            "amcache": amcache,
             "bam": bam_registry,
             "dam": dam_registry,
             "userassist": userassist,
-            "defender": fut_defender.result(),
-            "windows_event_logs": fut_events.result(),
-            "windows_security_events": fut_security_events.result(),
-            "powershell_operational_events": fut_powershell_events.result(),
-            "windows_service_change_events": fut_service_changes.result(),
-            "xml_event_log_files": fut_xml.result(),
-            "recent_items": fut_recent.result(),
+            "defender": defender,
+            "windows_event_logs": windows_event_logs,
+            "windows_security_events": windows_security_events,
+            "powershell_operational_events": powershell_operational_events,
+            "windows_service_change_events": windows_service_change_events,
+            "xml_event_log_files": xml_event_log_files,
+            "recent_items": recent_items,
             "command_history_keyword_hits": command_history,
-            "services": fut_services.result(),
-            "usb_events": fut_usb.result(),
-            "shellbag_clear_signal": fut_shellbag.result(),
+            "services": services_snapshot,
+            "usb_events": usb_events,
+            "shellbag_clear_signal": shellbag,
             "deletion_and_log_clearing_signals": deletion_signals,
             "deletion_cleanup_analysis": deletion_cleanup_analysis,
             "filesystem_evidence_integrity": filesystem_evidence_integrity,
@@ -12853,7 +12969,7 @@ def build_report() -> dict:
             "executor_activity_summary": executor_activity,
             "user_activity_timeline": user_activity,
             "persistence_signals": persistence,
-            "roblox_runtime_integrity": fut_roblox_int.result(),
+            "roblox_runtime_integrity": roblox_integrity,
             "forensic_analysis": forensic_bundle,
             "bypass_resilience": bypass_resilience,
             "scan_review": scan_review,
