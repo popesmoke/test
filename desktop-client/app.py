@@ -12984,6 +12984,13 @@ def _ease_out_cubic(t: float) -> float:
     return 1 - (1 - t) ** 3
 
 
+def _ease_in_out_cubic(t: float) -> float:
+    t = max(0.0, min(1.0, t))
+    if t < 0.5:
+        return 4 * t * t * t
+    return 1 - ((-2 * t + 2) ** 3) / 2
+
+
 def _hex_to_rgb(color: str) -> tuple[int, int, int]:
     color = color.lstrip("#")
     return int(color[0:2], 16), int(color[2:4], 16), int(color[4:6], 16)
@@ -13004,8 +13011,8 @@ def _blend_hex(c1: str, c2: str, t: float) -> str:
     )
 
 
-class SoftButton(Frame):
-    """Minimal rounded button with a subtle hover transition."""
+class RectButton(Frame):
+    """Sharp rectangular button with smooth hover transition."""
 
     def __init__(
         self,
@@ -13013,11 +13020,12 @@ class SoftButton(Frame):
         text: str,
         command,
         *,
-        width: int = 148,
-        height: int = 36,
-        bg: str = "#111114",
-        fill: str = "#c41e3a",
-        hover_fill: str = "#e02545",
+        width: int,
+        height: int = 44,
+        bg: str = "#0a0a0c",
+        fill: str = "#dc2626",
+        hover_fill: str = "#ef4444",
+        outline: str | None = None,
         text_color: str = "#ffffff",
     ) -> None:
         super().__init__(master, bg=bg, highlightthickness=0, bd=0)
@@ -13027,69 +13035,71 @@ class SoftButton(Frame):
         self._fill = fill
         self._hover_fill = hover_fill
         self._rest_fill = fill
+        self._outline = outline or fill
+        self._rest_outline = self._outline
         self._anim_job: str | None = None
         self._canvas = Canvas(self, width=width, height=height, bg=bg, highlightthickness=0, bd=0, cursor="hand2")
         self._canvas.pack()
-        self._shape = self._round_rect(fill)
-        self._canvas.create_text(width // 2, height // 2, text=text, fill=text_color, font=("Segoe UI", 10))
-        self._canvas.bind("<Enter>", lambda _e: self._animate_to(self._hover_fill))
-        self._canvas.bind("<Leave>", lambda _e: self._animate_to(self._rest_fill))
-        self._canvas.bind("<ButtonPress-1>", lambda _e: self._set_fill(_blend_hex(self._fill, "#000000", 0.12)))
+        self._shape = self._canvas.create_rectangle(
+            1, 1, width - 1, height - 1, fill=fill, outline=self._outline, width=1
+        )
+        self._canvas.create_text(
+            width // 2, height // 2, text=text, fill=text_color, font=("Segoe UI", 10, "bold")
+        )
+        self._canvas.bind("<Enter>", lambda _e: self._animate_to(self._hover_fill, self._hover_fill))
+        self._canvas.bind("<Leave>", lambda _e: self._animate_to(self._rest_fill, self._rest_outline))
+        self._canvas.bind("<ButtonPress-1>", lambda _e: self._apply_fill(_blend_hex(self._fill, "#000000", 0.1)))
         self._canvas.bind("<ButtonRelease-1>", self._on_release)
 
-    def _round_rect(self, color: str) -> int:
-        w, h = self._width, self._height
-        r = h // 2
-        return self._canvas.create_polygon(
-            r, 0, w - r, 0, w, 0, w, r, w, h - r, w, h, w - r, h, r, h, 0, h, 0, h - r, 0, r, 0, 0,
-            smooth=True,
-            splinesteps=24,
-            fill=color,
-            outline=color,
-        )
-
-    def _set_fill(self, color: str) -> None:
+    def _apply_fill(self, color: str, outline: str | None = None) -> None:
         self._fill = color
-        self._canvas.itemconfigure(self._shape, fill=color, outline=color)
+        self._canvas.itemconfigure(self._shape, fill=color, outline=outline or color)
 
-    def _animate_to(self, target: str) -> None:
+    def _animate_to(self, target_fill: str, target_outline: str) -> None:
         if self._anim_job is not None:
             self._canvas.after_cancel(self._anim_job)
-        start = self._fill
+        start_fill, start_outline = self._fill, self._rest_outline
         state = {"step": 0}
 
         def tick() -> None:
             state["step"] += 1
-            t = _ease_out_cubic(state["step"] / 6)
-            self._set_fill(_blend_hex(start, target, t))
-            if state["step"] < 6:
-                self._anim_job = self._canvas.after(14, tick)
+            t = _ease_out_cubic(state["step"] / 8)
+            fill = _blend_hex(start_fill, target_fill, t)
+            outline = _blend_hex(start_outline, target_outline, t)
+            self._apply_fill(fill, outline)
+            if state["step"] < 8:
+                self._anim_job = self._canvas.after(12, tick)
             else:
+                self._fill = target_fill
                 self._anim_job = None
 
-        if start != target:
+        if start_fill != target_fill or start_outline != target_outline:
             tick()
 
     def _on_release(self, event) -> None:
         inside = 0 <= event.x <= self._width and 0 <= event.y <= self._height
-        self._animate_to(self._hover_fill if inside else self._rest_fill)
+        hover_outline = self._hover_fill if inside else self._rest_outline
+        self._animate_to(self._hover_fill if inside else self._rest_fill, hover_outline)
         if inside and self._command is not None:
             self._command()
 
 
 class DiagnosticApp:
-    UI_BG = "#0e0e11"
-    UI_ACCENT = "#c41e3a"
-    UI_TEXT = "#f0f0f2"
-    UI_MUTED = "#90909c"
-    UI_SUCCESS = "#2ea872"
-    CONTENT_WIDTH = 360
+    UI_BG = "#0a0a0c"
+    UI_SURFACE = "#121214"
+    UI_BORDER = "#252528"
+    UI_ACCENT = "#dc2626"
+    UI_ACCENT_HOVER = "#ef4444"
+    UI_TEXT = "#fafafa"
+    UI_MUTED = "#71717a"
+    UI_SUCCESS = "#16a34a"
+    CONTENT_WIDTH = 396
 
     def __init__(self) -> None:
         self.root = Tk()
         self.root.title("Virello Scanner")
-        self.root.geometry("480x540")
-        self.root.minsize(480, 540)
+        self.root.geometry("500x580")
+        self.root.minsize(500, 580)
         self.root.resizable(False, False)
         self.root.configure(bg=self.UI_BG)
         self.logo_image = self.load_logo()
@@ -13104,8 +13114,9 @@ class DiagnosticApp:
         self.progress_percent = StringVar(value="0%")
         self.stage_labels: dict[str, ttk.Label] = {}
         self._screen: Frame | None = None
+        self._viewport: Frame | None = None
         self._transition_job: str | None = None
-        self._fade_widgets: list[ttk.Label] = []
+        self._fade_widgets: list[tuple[ttk.Label, float]] = []
         self.progress = ttk.Progressbar(self.root, maximum=100, mode="determinate")
         self.configure_style()
         self._build_shell()
@@ -13118,7 +13129,7 @@ class DiagnosticApp:
                 image = PhotoImage(file=str(path))
             else:
                 image = PhotoImage(data=embedded_logo_data(), format="png")
-            max_size = 80
+            max_size = 64
             factor = max(image.width() // max_size, image.height() // max_size, 1)
             return image.subsample(factor, factor)
         except Exception:
@@ -13129,33 +13140,47 @@ class DiagnosticApp:
         style.theme_use("clam")
         bg = self.UI_BG
         style.configure("TFrame", background=bg)
+        style.configure("Surface.TFrame", background=self.UI_SURFACE)
         style.configure("TLabel", background=bg, foreground=self.UI_TEXT, font=("Segoe UI", 9))
+        style.configure("Surface.TLabel", background=self.UI_SURFACE, foreground=self.UI_TEXT, font=("Segoe UI", 9))
         style.configure("Muted.TLabel", background=bg, foreground=self.UI_MUTED, font=("Segoe UI", 9))
-        style.configure("Title.TLabel", background=bg, foreground="#ffffff", font=("Segoe UI", 20, "bold"))
-        style.configure("Heading.TLabel", background=bg, foreground="#ffffff", font=("Segoe UI", 12, "bold"))
-        style.configure("Percent.TLabel", background=bg, foreground=self.UI_MUTED, font=("Segoe UI", 10))
+        style.configure("Eyebrow.TLabel", background=bg, foreground=self.UI_MUTED, font=("Segoe UI", 8, "bold"))
+        style.configure("Title.TLabel", background=bg, foreground="#ffffff", font=("Segoe UI", 19, "bold"))
+        style.configure("Heading.TLabel", background=bg, foreground="#ffffff", font=("Segoe UI", 11, "bold"))
+        style.configure("Percent.TLabel", background=bg, foreground=self.UI_TEXT, font=("Segoe UI", 11, "bold"))
         style.configure("Stage.TLabel", background=bg, foreground=self.UI_TEXT, font=("Segoe UI", 9))
         style.configure("StageStatus.TLabel", background=bg, foreground=self.UI_MUTED, font=("Segoe UI", 9))
-        style.configure("Ghost.TButton", background=bg, foreground=self.UI_MUTED, padding=(12, 6), borderwidth=0)
-        style.map("Ghost.TButton", foreground=[("active", "#ffffff")], background=[("active", bg)])
-        style.configure("TEntry", fieldbackground="#16161c", foreground="#ffffff", bordercolor="#2a2a34", padding=10)
+        style.configure("Brand.TLabel", background=self.UI_SURFACE, foreground="#ffffff", font=("Segoe UI", 10, "bold"))
+        style.configure("Link.TButton", background=bg, foreground=self.UI_MUTED, padding=(4, 4), borderwidth=0)
+        style.map("Link.TButton", foreground=[("active", "#ffffff")], background=[("active", bg)])
+        style.configure("TEntry", fieldbackground=self.UI_SURFACE, foreground="#ffffff", bordercolor=self.UI_BORDER, padding=12)
         style.configure("TCheckbutton", background=bg, foreground=self.UI_TEXT, font=("Segoe UI", 9))
         style.map("TCheckbutton", background=[("active", bg)], foreground=[("active", "#ffffff")])
         style.configure(
             "Accent.Horizontal.TProgressbar",
-            troughcolor="#16161c",
+            troughcolor=self.UI_SURFACE,
             background=self.UI_ACCENT,
-            bordercolor="#16161c",
+            bordercolor=self.UI_BORDER,
             lightcolor=self.UI_ACCENT,
-            darkcolor="#8f1528",
-            thickness=6,
+            darkcolor="#991b1b",
+            thickness=4,
         )
 
     def _build_shell(self) -> None:
-        viewport = Frame(self.root, bg=self.UI_BG)
+        header = Frame(self.root, bg=self.UI_SURFACE, height=52)
+        header.pack(fill="x")
+        header.pack_propagate(False)
+        header_inner = Frame(header, bg=self.UI_SURFACE, padx=24)
+        header_inner.pack(fill=BOTH, expand=True)
+        if self.logo_image:
+            ttk.Label(header_inner, image=self.logo_image, style="Surface.TLabel").pack(side="left", padx=(0, 10))
+        ttk.Label(header_inner, text="VIRELLO SCANNER", style="Brand.TLabel").pack(side="left", pady=14)
+        Frame(self.root, bg=self.UI_BORDER, height=1).pack(fill="x")
+        viewport = Frame(self.root, bg=self.UI_BG, padx=52, pady=32)
         viewport.pack(fill=BOTH, expand=True)
-        self._screen = Frame(viewport, bg=self.UI_BG)
-        self._screen.place(relx=0.5, rely=0.5, anchor="center")
+        self._viewport = viewport
+        self._screen = Frame(viewport, bg=self.UI_BG, width=self.CONTENT_WIDTH)
+        self._screen.place(x=0, y=0, relwidth=1)
 
     def _cancel_transition(self) -> None:
         if self._transition_job is not None:
@@ -13173,16 +13198,18 @@ class DiagnosticApp:
         self._mount_screen(builder)
 
     def _animate_out(self, on_done) -> None:
-        steps = 7
+        steps = 10
         state = {"step": 0}
 
         def tick() -> None:
             state["step"] += 1
-            t = _ease_out_cubic(state["step"] / steps)
-            if self._screen is not None:
-                self._screen.place(relx=0.5, rely=0.5 - 0.018 * t, anchor="center")
+            t = _ease_in_out_cubic(state["step"] / steps)
+            offset = int(10 * t)
+            opacity = 1.0 - t
+            self._apply_screen_offset(offset)
+            self._apply_fade_opacity(opacity)
             if state["step"] < steps:
-                self._transition_job = self.root.after(16, tick)
+                self._transition_job = self.root.after(14, tick)
             else:
                 self._transition_job = None
                 on_done()
@@ -13199,157 +13226,161 @@ class DiagnosticApp:
         self._animate_in()
 
     def _animate_in(self) -> None:
-        steps = 9
+        steps = 12
         state = {"step": 0}
-        if self._screen is not None:
-            self._screen.place(relx=0.5, rely=0.53, anchor="center")
+        self._apply_screen_offset(12)
+        self._apply_fade_opacity(0.0)
 
         def tick() -> None:
             state["step"] += 1
-            t = _ease_out_cubic(state["step"] / steps)
-            if self._screen is not None:
-                self._screen.place(relx=0.5, rely=0.53 - 0.03 * t, anchor="center")
-            for widget in self._fade_widgets:
-                try:
-                    target = getattr(widget, "_fade_target", self.UI_TEXT)
-                    widget.configure(foreground=_blend_hex(self.UI_BG, target, t))
-                except Exception:
-                    pass
+            t = _ease_in_out_cubic(state["step"] / steps)
+            offset = int(12 * (1 - t))
+            self._apply_screen_offset(offset)
+            self._apply_fade_opacity(t)
             if state["step"] < steps:
-                self._transition_job = self.root.after(16, tick)
+                self._transition_job = self.root.after(14, tick)
             else:
-                if self._screen is not None:
-                    self._screen.place(relx=0.5, rely=0.5, anchor="center")
-                for widget in self._fade_widgets:
-                    try:
-                        widget.configure(foreground=getattr(widget, "_fade_target", self.UI_TEXT))
-                    except Exception:
-                        pass
+                self._apply_screen_offset(0)
+                self._apply_fade_opacity(1.0)
                 self._transition_job = None
 
         tick()
 
-    def _fade_label(self, parent, text: str, style: str, **kwargs) -> ttk.Label:
+    def _apply_screen_offset(self, offset: int) -> None:
+        if self._screen is None:
+            return
+        self._screen.place_configure(y=offset)
+
+    def _apply_fade_opacity(self, opacity: float) -> None:
+        for widget, delay in self._fade_widgets:
+            t = max(0.0, min(1.0, opacity - delay))
+            try:
+                target = widget._fade_target
+                widget.configure(foreground=_blend_hex(self.UI_BG, target, t))
+            except Exception:
+                pass
+
+    def _fade_label(self, parent, text: str, style: str, delay: float = 0.0, **kwargs) -> ttk.Label:
         label = ttk.Label(parent, text=text, style=style, **kwargs)
         targets = {
             "Title.TLabel": "#ffffff",
             "Heading.TLabel": "#ffffff",
+            "Eyebrow.TLabel": self.UI_MUTED,
             "Muted.TLabel": self.UI_MUTED,
-            "Percent.TLabel": self.UI_MUTED,
+            "Percent.TLabel": self.UI_TEXT,
         }
         label._fade_target = targets.get(style, self.UI_TEXT)
         label.configure(foreground=self.UI_BG)
-        self._fade_widgets.append(label)
+        self._fade_widgets.append((label, delay))
         return label
 
-    def _spacer(self, parent, height: int = 12) -> None:
-        Frame(parent, bg=self.UI_BG, height=height).pack()
+    def _rule(self, parent) -> None:
+        Frame(parent, bg=self.UI_BORDER, height=1).pack(fill="x", pady=20)
 
-    def _button_row(self, parent, buttons: list[tuple[str, object, str]]) -> None:
-        row = Frame(parent, bg=self.UI_BG)
-        row.pack(anchor="center", pady=(22, 0))
-        for idx, (label, cmd, kind) in enumerate(buttons):
-            if kind == "ghost":
-                btn = ttk.Button(row, text=label, style="Ghost.TButton", command=cmd)
-                btn.pack(side="left", padx=(14, 0) if idx else (0, 0))
-                continue
-            soft = SoftButton(
-                row,
-                label,
-                cmd,
-                width=150 if kind == "primary" else 130,
-                height=36,
+    def _rect_btn(self, parent, text: str, command, *, primary: bool = True) -> RectButton:
+        if primary:
+            return RectButton(
+                parent,
+                text,
+                command,
+                width=self.CONTENT_WIDTH,
+                height=44,
                 bg=self.UI_BG,
-                fill="#c41e3a" if kind == "primary" else "#22222a",
-                hover_fill="#e02545" if kind == "primary" else "#2e2e38",
+                fill=self.UI_ACCENT,
+                hover_fill=self.UI_ACCENT_HOVER,
             )
-            soft.pack(side="left", padx=(0, 10) if idx == 0 else (0, 0))
+        return RectButton(
+            parent,
+            text,
+            command,
+            width=self.CONTENT_WIDTH,
+            height=44,
+            bg=self.UI_BG,
+            fill=self.UI_SURFACE,
+            hover_fill="#1a1a1e",
+            outline=self.UI_BORDER,
+        )
 
     def _build_welcome_content(self) -> None:
-        col = Frame(self._screen, bg=self.UI_BG)
-        col.pack(anchor="center")
-        if self.logo_image:
-            ttk.Label(col, image=self.logo_image).pack(anchor="center", pady=(0, 14))
-        self._fade_label(col, "Virello Scanner", "Title.TLabel").pack(anchor="center")
+        self._fade_label(self._screen, "WELCOME", "Eyebrow.TLabel", delay=0.0).pack(anchor="w")
+        self._fade_label(self._screen, "Virello Scanner", "Title.TLabel", delay=0.04).pack(anchor="w", pady=(6, 0))
         self._fade_label(
-            col,
-            "Secure remote system diagnostics",
+            self._screen,
+            "Secure remote system diagnostics. Run a one-time scan with your session PIN and submit results to your reviewer.",
             "Muted.TLabel",
+            delay=0.08,
             wraplength=self.CONTENT_WIDTH,
-            justify="center",
-        ).pack(anchor="center", pady=(8, 0))
-        self._spacer(col, 18)
-        self._fade_label(
-            col,
-            "Enter your session PIN to run a one-time scan.\nResults are uploaded to your reviewer.",
-            "Muted.TLabel",
-            wraplength=self.CONTENT_WIDTH,
-            justify="center",
-        ).pack(anchor="center")
-        self._button_row(
-            col,
-            [
-                ("Get Started", lambda: self._show_screen(self._build_pin_content), "primary"),
-                ("Discord", lambda: webbrowser.open(DISCORD_URL), "secondary"),
-            ],
-        )
+        ).pack(anchor="w", pady=(12, 0))
+        self._rule(self._screen)
+        btn_frame = Frame(self._screen, bg=self.UI_BG)
+        btn_frame.pack(fill="x", pady=(4, 0))
+        self._rect_btn(btn_frame, "Get Started", lambda: self._show_screen(self._build_pin_content)).pack(pady=(0, 10))
+        self._rect_btn(btn_frame, "Join Discord", lambda: webbrowser.open(DISCORD_URL), primary=False).pack()
 
     def _build_pin_content(self) -> None:
-        col = Frame(self._screen, bg=self.UI_BG)
-        col.pack(anchor="center")
-        self._fade_label(col, "Session PIN", "Heading.TLabel").pack(anchor="center")
-        self._fade_label(col, "Enter the code from your reviewer", "Muted.TLabel").pack(anchor="center", pady=(8, 18))
-        entry = ttk.Entry(col, textvariable=self.pin, font=("Consolas", 20), width=8, justify="center")
-        entry.pack(anchor="center")
+        self._fade_label(self._screen, "SESSION", "Eyebrow.TLabel", delay=0.0).pack(anchor="w")
+        self._fade_label(self._screen, "Enter PIN", "Title.TLabel", delay=0.04).pack(anchor="w", pady=(6, 0))
+        self._fade_label(
+            self._screen,
+            "Use the code provided by your reviewer.",
+            "Muted.TLabel",
+            delay=0.08,
+        ).pack(anchor="w", pady=(10, 16))
+        entry = ttk.Entry(self._screen, textvariable=self.pin, font=("Consolas", 18), justify="center")
+        entry.pack(fill="x", ipady=4)
         entry.focus()
-        self._spacer(col, 22)
-        self._fade_label(col, "What we collect", "Heading.TLabel").pack(anchor="center", pady=(0, 10))
-        for item in COLLECTED_CATEGORIES:
-            self._fade_label(col, item, "Muted.TLabel", wraplength=self.CONTENT_WIDTH, justify="center").pack(
-                anchor="center", pady=3
+        self._rule(self._screen)
+        self._fade_label(self._screen, "COLLECTION SUMMARY", "Eyebrow.TLabel", delay=0.1).pack(anchor="w")
+        for idx, item in enumerate(COLLECTED_CATEGORIES):
+            self._fade_label(self._screen, f"•  {item}", "Muted.TLabel", delay=0.12 + idx * 0.03, wraplength=self.CONTENT_WIDTH).pack(
+                anchor="w", pady=(8, 0)
             )
-        self._spacer(col, 8)
         ttk.Checkbutton(
-            col,
-            text="I agree to run this scan and submit results.",
+            self._screen,
+            text="I agree to run this scan and submit results for review.",
             variable=self.consent,
-        ).pack(anchor="center", pady=(6, 0))
-        self._button_row(
-            col,
-            [
-                ("Start Scan", self.start_scan, "primary"),
-                ("Back", lambda: self._show_screen(self._build_welcome_content), "ghost"),
-            ],
-        )
+        ).pack(anchor="w", pady=(20, 0))
+        btn_frame = Frame(self._screen, bg=self.UI_BG)
+        btn_frame.pack(fill="x", pady=(24, 0))
+        self._rect_btn(btn_frame, "Start Scan", self.start_scan).pack(pady=(0, 10))
+        ttk.Button(
+            btn_frame,
+            text="Back",
+            style="Link.TButton",
+            command=lambda: self._show_screen(self._build_welcome_content),
+        ).pack(anchor="center")
 
     def _build_progress_content(self) -> None:
-        col = Frame(self._screen, bg=self.UI_BG)
-        col.pack(anchor="center")
-        self._fade_label(col, "Scan in progress", "Heading.TLabel").pack(anchor="center")
-        ttk.Label(col, textvariable=self.status, style="Muted.TLabel").pack(anchor="center", pady=(8, 20))
-        percent = self._fade_label(col, "0%", "Percent.TLabel")
+        self._fade_label(self._screen, "SCAN", "Eyebrow.TLabel", delay=0.0).pack(anchor="w")
+        self._fade_label(self._screen, "In progress", "Title.TLabel", delay=0.04).pack(anchor="w", pady=(6, 0))
+        ttk.Label(self._screen, textvariable=self.status, style="Muted.TLabel").pack(anchor="w", pady=(10, 20))
+        progress_header = Frame(self._screen, bg=self.UI_BG)
+        progress_header.pack(fill="x")
+        ttk.Label(progress_header, text="Progress", style="Muted.TLabel").pack(side="left")
+        percent = self._fade_label(progress_header, "0%", "Percent.TLabel", delay=0.06)
         percent.configure(textvariable=self.progress_percent)
-        percent.pack(anchor="center", pady=(0, 10))
+        percent.pack(side="right")
         self.progress = ttk.Progressbar(
-            col,
+            self._screen,
             maximum=100,
             mode="determinate",
             length=self.CONTENT_WIDTH,
             style="Accent.Horizontal.TProgressbar",
         )
-        self.progress.pack(anchor="center")
-        self._spacer(col, 22)
-        stages = Frame(col, bg=self.UI_BG)
-        stages.pack(anchor="center")
+        self.progress.pack(fill="x", pady=(10, 0))
+        self._rule(self._screen)
+        self._fade_label(self._screen, "STAGES", "Eyebrow.TLabel", delay=0.08).pack(anchor="w", pady=(0, 12))
         self.stage_labels = {}
         for stage in SCAN_STAGES:
-            row = Frame(stages, bg=self.UI_BG, width=self.CONTENT_WIDTH)
-            row.pack(fill="x", pady=4)
-            row.pack_propagate(False)
-            ttk.Label(row, text=stage, style="Stage.TLabel").pack(side="left")
-            status_label = ttk.Label(row, text="Waiting", style="StageStatus.TLabel")
+            row = Frame(self._screen, bg=self.UI_BG)
+            row.pack(fill="x", pady=(0, 0))
+            inner = Frame(row, bg=self.UI_BG)
+            inner.pack(fill="x", pady=10)
+            ttk.Label(inner, text=stage, style="Stage.TLabel").pack(side="left")
+            status_label = ttk.Label(inner, text="Waiting", style="StageStatus.TLabel")
             status_label.pack(side="right")
             self.stage_labels[stage] = status_label
+            Frame(row, bg=self.UI_BORDER, height=1).pack(fill="x")
 
     def build_welcome(self) -> None:
         self._show_screen(self._build_welcome_content)
