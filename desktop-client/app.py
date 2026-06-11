@@ -2992,13 +2992,16 @@ USER_FOLDER_TRUSTED_APP_STEMS = frozenset(
         "discord",
     }
 )
-SCAN_WORKERS = min(64, max(20, (os.cpu_count() or 4) * 4))
-HASH_SCAN_WORKERS = min(48, max(12, (os.cpu_count() or 4) * 3))
+# Disk-bound scans: too many parallel walkers thrash the volume and slow everything down.
+SCAN_WORKERS = min(16, max(6, (os.cpu_count() or 4) * 2))
+HASH_SCAN_WORKERS = min(8, max(4, (os.cpu_count() or 4)))
+RECENT_EXECUTABLE_WINDOW_DAYS = 45
 
 # Populated once per build_report() pass to avoid duplicate full USN journal reads.
 _usn_comprehensive_cache: dict[str, object] | None = None
 _roblox_logs_cache: list[dict] | None = None
 _roblox_logs_cache_lock = threading.Lock()
+_full_pc_recent_executables_cache: list[dict] | None = None
 
 
 def _reset_usn_comprehensive_cache() -> None:
@@ -3010,6 +3013,11 @@ def _reset_roblox_logs_cache() -> None:
     global _roblox_logs_cache
     with _roblox_logs_cache_lock:
         _roblox_logs_cache = None
+
+
+def _reset_full_pc_recent_executables_cache() -> None:
+    global _full_pc_recent_executables_cache
+    _full_pc_recent_executables_cache = None
 
 
 def _windows_user_profile_prefix() -> str:
@@ -3063,15 +3071,114 @@ def file_sha256_full(path: Path, max_bytes: int = EXECUTOR_HASH_MAX_FILE_BYTES) 
         if size <= 0 or size > max_bytes:
             return ""
         digest = hashlib.sha256()
-        with path.open("rb") as handle:
-            while True:
-                chunk = handle.read(4 * 1024 * 1024)
-                if not chunk:
-                    break
-                digest.update(chunk)
+        if size <= 32 * 1024 * 1024:
+            with path.open("rb") as handle:
+                digest.update(handle.read())
+        else:
+            with path.open("rb") as handle:
+                while True:
+                    chunk = handle.read(4 * 1024 * 1024)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
         return digest.hexdigest()
     except OSError:
         return ""
+
+
+class _BlocklistHashPipeline:
+    """One shared hash pool for the whole scan — avoids per-shard thread explosions."""
+
+    def __init__(
+        self,
+        blocklist: dict[str, str],
+        patterns: dict[str, re.Pattern[str]],
+        max_hashes: int,
+    ) -> None:
+        self._blocklist = blocklist
+        self._patterns = patterns
+        self._max_hashes = max_hashes
+        self._submitted = 0
+        self._lock = threading.Lock()
+        self._hits: list[dict] = []
+        self._futures: list = []
+        self._pool = ThreadPoolExecutor(max_workers=HASH_SCAN_WORKERS)
+
+    def submit(self, path: Path) -> bool:
+        with self._lock:
+            if self._submitted >= self._max_hashes:
+                return False
+            self._submitted += 1
+        self._futures.append(self._pool.submit(self._hash_one, path))
+        return True
+
+    def _hash_one(self, path: Path) -> dict | None:
+        sha = file_sha256_full(path)
+        if not sha:
+            return None
+        label = resolve_executor_hash_label(sha, self._blocklist)
+        if not label:
+            return None
+        try:
+            stat = path.stat()
+            modified = datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()
+            size_bytes = stat.st_size
+        except OSError:
+            modified = None
+            size_bytes = None
+        return {
+            "label": label,
+            "sha256": sha,
+            "path": str(path),
+            "size_bytes": size_bytes,
+            "modified": modified,
+            "detection_source": "filesystem_hash_scan",
+            "renamed_disguise": not any(pat.search(path.name) for pat in self._patterns.values()),
+        }
+
+    def collect(self) -> tuple[list[dict], int]:
+        for future in as_completed(self._futures):
+            try:
+                result = future.result()
+            except Exception:
+                continue
+            if result:
+                self._hits.append(result)
+        self._pool.shutdown(wait=True)
+        return self._hits, self._submitted
+
+
+class _RecentExecutableCollector:
+    """Collect recent executables during the full-PC walk to avoid a second drive sweep."""
+
+    _EXEC_EXT = frozenset({".exe", ".dll", ".bat", ".ps1", ".msi", ".vbs", ".scr", ".com"})
+
+    def __init__(self, cutoff: datetime, max_items: int = 400) -> None:
+        self._cutoff = cutoff
+        self._max_items = max_items
+        self._rows: list[dict] = []
+        self._lock = threading.Lock()
+
+    def maybe_add(self, path: Path, stat: os.stat_result) -> None:
+        if path.suffix.lower() not in self._EXEC_EXT:
+            return
+        modified = datetime.fromtimestamp(stat.st_mtime, timezone.utc)
+        if modified < self._cutoff:
+            return
+        row = {
+            "path": str(path),
+            "name": path.name,
+            "modified": modified.isoformat(),
+            "size_bytes": stat.st_size,
+        }
+        with self._lock:
+            if len(self._rows) >= self._max_items:
+                return
+            self._rows.append(row)
+
+    def finalize(self) -> list[dict]:
+        self._rows.sort(key=lambda row: str(row.get("modified") or ""), reverse=True)
+        return self._rows[:300]
 
 
 def executor_user_hash_scan_roots() -> list[tuple[Path, int]]:
@@ -3518,7 +3625,6 @@ def executor_blocklist_hash_known_paths(
     if not candidates or not blocklist:
         return []
 
-    patterns = executor_name_patterns()
     hits: list[dict] = []
     workers = min(HASH_SCAN_WORKERS, max(4, len(candidates)))
 
@@ -3596,7 +3702,7 @@ def executor_blocklist_path_scan(
     """Hash user-profile executables; ignores path allowlists so disguised paths still match."""
     if not blocklist:
         return [], 0
-    roots = expand_scan_roots_for_parallelism(executor_user_hash_scan_roots(), target_workers=SCAN_WORKERS)
+    roots = executor_user_hash_scan_roots()
     per_root_budget = max(250, max_hashes // max(1, len(roots)))
     workers = min(SCAN_WORKERS, max(1, len(roots)))
     hits: list[dict] = []
@@ -4098,40 +4204,6 @@ def walk_files_depth_limited(root: Path, max_depth: int):
             yield current / fn
 
 
-def expand_scan_roots_for_parallelism(
-    roots: list[tuple[Path, int]],
-    *,
-    target_workers: int,
-) -> list[tuple[Path, int]]:
-    """Shard drive roots into top-level folders so parallel workers finish sooner."""
-    if target_workers <= 1 or len(roots) >= target_workers:
-        return roots
-    skip_names = frozenset(
-        {
-            "$recycle.bin",
-            "system volume information",
-            "recovery",
-            "perflogs",
-        }
-    )
-    expanded: list[tuple[Path, int]] = []
-    for root, depth in roots:
-        if len(expanded) >= target_workers:
-            expanded.append((root, depth))
-            continue
-        try:
-            children = [p for p in root.iterdir() if p.is_dir() and p.name.lower() not in skip_names]
-        except OSError:
-            children = []
-        if len(children) >= 2:
-            child_depth = max(1, depth - 1)
-            for child in sorted(children, key=lambda p: p.name.lower()):
-                expanded.append((child, child_depth))
-        else:
-            expanded.append((root, depth))
-    return expanded or roots
-
-
 def _hash_blocklist_candidates(
     paths: list[Path],
     blocklist: dict[str, str],
@@ -4364,14 +4436,14 @@ def _full_pc_scan_root(
     max_depth: int,
     patterns: dict[str, re.Pattern[str]],
     *,
-    blocklist: dict[str, str] | None = None,
-    hash_budget: int = 0,
+    hash_pipeline: _BlocklistHashPipeline | None = None,
+    recent_collector: _RecentExecutableCollector | None = None,
 ) -> dict:
     hits: list[dict] = []
     enumerated = 0
     binary_probes = 0
     skipped_permission = 0
-    hash_candidates: list[Path] = []
+    files_hashed = 0
     try:
         for path in walk_files_depth_limited(root, max_depth):
             enumerated += 1
@@ -4389,9 +4461,17 @@ def _full_pc_scan_root(
                 continue
             if ext == ".log" and not _path_is_user_writable_execution_zone(str(path)):
                 continue
-            if blocklist and ext in {".exe", ".dll"} and len(hash_candidates) < hash_budget:
-                hash_candidates.append(path)
             path_str = str(path)
+            exec_stat: os.stat_result | None = None
+            if recent_collector is not None and ext in _RecentExecutableCollector._EXEC_EXT:
+                try:
+                    exec_stat = path.stat()
+                    recent_collector.maybe_add(path, exec_stat)
+                except OSError:
+                    exec_stat = None
+            if hash_pipeline is not None and ext in {".exe", ".dll"}:
+                if hash_pipeline.submit(path):
+                    files_hashed += 1
             executor_labels = sorted(set(match_executor_labels(path_str, patterns, path_context=True)))
             cheat_hints = cheat_path_hint_labels(path_str)
             weird = list(weird_filename_reasons(path.stem, path.name))
@@ -4422,18 +4502,19 @@ def _full_pc_scan_root(
             if not designated_scan_hit_is_actionable(candidate):
                 continue
             try:
-                stat = path.stat()
+                stat = exec_stat if exec_stat is not None else path.stat()
                 modified = datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()
                 accessed = datetime.fromtimestamp(stat.st_atime, timezone.utc).isoformat()
             except OSError:
                 modified = None
                 accessed = None
+                stat = None
             hits.append(
                 {
                     "path": path_str,
                     "name": path.name,
                     "extension": ext,
-                    "size_bytes": stat.st_size if modified else None,
+                    "size_bytes": stat.st_size if stat is not None else None,
                     "modified": modified,
                     "accessed": accessed,
                     "executor_name_hits": executor_labels,
@@ -4450,15 +4531,13 @@ def _full_pc_scan_root(
         skipped_permission += 1
     except OSError:
         skipped_permission += 1
-    hash_hits = _hash_blocklist_candidates(hash_candidates, blocklist, patterns) if blocklist else []
     return {
         "root": str(root),
         "hits": hits,
         "enumerated_files": enumerated,
         "binary_probes": binary_probes,
         "skipped_permission_roots": skipped_permission,
-        "hash_hits": hash_hits,
-        "files_hashed": len(hash_candidates),
+        "files_hashed": files_hashed,
     }
 
 
@@ -4471,11 +4550,15 @@ def full_pc_filesystem_executor_scan(
     if platform.system() != "Windows":
         return {"available": False, "reason": "Full-PC scan is Windows-only", "hits": []}
     patterns = executor_name_patterns()
-    roots = expand_scan_roots_for_parallelism(full_pc_scan_roots(), target_workers=SCAN_WORKERS)
-    workers = min(SCAN_WORKERS, max(1, len(roots)))
-    per_root_hash_budget = max(250, max_hashes // max(1, len(roots))) if blocklist and max_hashes > 0 else 0
+    roots = full_pc_scan_roots()
+    workers = min(len(roots), SCAN_WORKERS)
+    hash_pipeline: _BlocklistHashPipeline | None = None
+    if blocklist and max_hashes > 0:
+        hash_pipeline = _BlocklistHashPipeline(blocklist, patterns, max_hashes)
+    recent_collector = _RecentExecutableCollector(
+        datetime.now(timezone.utc) - timedelta(days=RECENT_EXECUTABLE_WINDOW_DAYS)
+    )
     hits: list[dict] = []
-    hash_hits: list[dict] = []
     enumerated = 0
     binary_probes = 0
     files_hashed = 0
@@ -4488,8 +4571,8 @@ def full_pc_filesystem_executor_scan(
                 root,
                 max_depth,
                 patterns,
-                blocklist=blocklist,
-                hash_budget=per_root_hash_budget,
+                hash_pipeline=hash_pipeline,
+                recent_collector=recent_collector,
             )
             for root, max_depth in roots
         ]
@@ -4497,13 +4580,16 @@ def full_pc_filesystem_executor_scan(
             partial = future.result()
             roots_scanned.append(str(partial.get("root") or ""))
             hits.extend(partial.get("hits") or [])
-            hash_hits.extend(partial.get("hash_hits") or [])
             enumerated += int(partial.get("enumerated_files") or 0)
             binary_probes += int(partial.get("binary_probes") or 0)
             files_hashed += int(partial.get("files_hashed") or 0)
             skipped_permission += int(partial.get("skipped_permission_roots") or 0)
             if enumerated >= FULL_PC_SCAN_MAX_ENUMERATED or len(hits) >= FULL_PC_SCAN_MAX_HITS:
                 break
+    hash_hits: list[dict] = []
+    if hash_pipeline is not None:
+        hash_hits, files_hashed = hash_pipeline.collect()
+    recent_executables = recent_collector.finalize()
     if len(hits) > FULL_PC_SCAN_MAX_HITS:
         hits = hits[:FULL_PC_SCAN_MAX_HITS]
     if max_hashes > 0 and len(hash_hits) > max_hashes:
@@ -4520,6 +4606,7 @@ def full_pc_filesystem_executor_scan(
         "skipped_permission_roots": skipped_permission,
         "hash_hits": hash_hits,
         "files_hashed": files_hashed,
+        "recent_executables": recent_executables,
         "note": "Full-PC walk of all fixed and removable drives; probes .exe/.dll binaries for embedded executor strings.",
     }
 
@@ -4575,8 +4662,10 @@ def scan_execution_artifact_binaries(
 
 def combined_user_folder_security_scans(max_hashes: int = EXECUTOR_HASH_SCAN_MAX_FILES) -> tuple[dict, dict]:
     """Full-PC name/binary hits plus SHA256 blocklist scan across all drives (single merged walk)."""
+    global _full_pc_recent_executables_cache
     blocklist = load_executor_sha256_blocklist()
     full_pc = full_pc_filesystem_executor_scan(blocklist=blocklist, max_hashes=max_hashes)
+    _full_pc_recent_executables_cache = list(full_pc.get("recent_executables") or [])
     sha_hits = list(full_pc.get("hash_hits") or [])
     hashed = int(full_pc.get("files_hashed") or 0)
 
@@ -9609,11 +9698,11 @@ def _profile_binary_sweep_root(root: Path) -> tuple[list[dict[str, object]], int
             if executor_scan_path_excluded(str(path)):
                 continue
             try:
-                size = path.stat().st_size
-                if size <= 0 or size > 2_500_000:
+                stat = path.stat()
+                if stat.st_size <= 0 or stat.st_size > 2_500_000:
                     continue
                 data = path.read_bytes()[:2_500_000]
-                modified = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
+                modified = datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()
             except OSError:
                 continue
             labels = executor_labels_for_artifact_text(path.name)
@@ -9642,11 +9731,11 @@ def scan_profile_binary_executor_sweep() -> list[dict[str, object]]:
     """Search all drives for leftover strings/paths after delete."""
     if platform.system() != "Windows":
         return []
-    roots = [root for root, _depth in expand_scan_roots_for_parallelism(full_pc_scan_roots(), target_workers=SCAN_WORKERS)]
+    roots = [root for root, _depth in full_pc_scan_roots()]
     hits: list[dict[str, object]] = []
     seen: set[str] = set()
     enumerated = 0
-    workers = min(SCAN_WORKERS, max(1, len(roots)))
+    workers = min(len(roots), 2)
     with ThreadPoolExecutor(max_workers=workers) as pool:
         for local_hits, local_count in pool.map(_profile_binary_sweep_root, roots):
             enumerated += local_count
@@ -11449,7 +11538,7 @@ def build_forensic_analysis_bundle(
             "reason": "Forensic correlation bundle is Windows-focused in this build",
             "engine_version": _FORENSIC_ENGINE_VERSION,
         }
-    with ThreadPoolExecutor(max_workers=SCAN_WORKERS) as pool:
+    with ThreadPoolExecutor(max_workers=min(8, SCAN_WORKERS)) as pool:
         bam_future = pool.submit(bam_execution_records)
         pca_future = pool.submit(pca_executed_records)
         sqlite_future = pool.submit(sqlite_forensic_probe)
@@ -12309,32 +12398,45 @@ def _scan_file_for_strings(path: Path) -> list[dict]:
     return hits
 
 
-def _recent_disk_executable_scan_root(root: Path, cutoff: datetime) -> list[dict]:
-    exec_ext = frozenset({".exe", ".dll", ".bat", ".ps1", ".msi", ".vbs", ".scr", ".com"})
+def _recent_disk_executable_powershell_fallback() -> list[dict]:
+    script = (
+        "$cut=(Get-Date).AddDays(-45);"
+        "$roots = Get-CimInstance Win32_LogicalDisk -ErrorAction SilentlyContinue | "
+        "Where-Object { $_.DriveType -in 2,3 } | ForEach-Object { $_.DeviceID + '\\' };"
+        "$out=@();"
+        "foreach($root in $roots){"
+        " if(-not(Test-Path -LiteralPath $root)){continue}"
+        " Get-ChildItem -LiteralPath $root -Recurse -File -ErrorAction SilentlyContinue |"
+        " Where-Object { $_.Extension -match '^\\.(exe|dll|bat|ps1|msi|vbs|scr|com)$' -and $_.LastWriteTime -ge $cut } |"
+        " Select-Object -First 200 | ForEach-Object {"
+        "  $out += [pscustomobject]@{"
+        "    Path=$_.FullName;"
+        "    Name=$_.Name;"
+        "    Modified=$_.LastWriteTimeUtc.ToString('u');"
+        "    SizeBytes=$_.Length"
+        "  }"
+        " }"
+        "};"
+        "$out | Sort-Object Modified -Descending | Select-Object -First 300 | ConvertTo-Json -Compress"
+    )
+    raw = run_command(["powershell", "-NoProfile", "-Command", script], timeout=90, max_chars=120000)
     rows: list[dict] = []
     try:
-        for path in walk_files_depth_limited(root, FULL_PC_SCAN_MAX_DEPTH):
-            if len(rows) >= 200:
-                break
-            ext = path.suffix.lower()
-            if ext not in exec_ext:
-                continue
-            try:
-                stat = path.stat()
-            except OSError:
-                continue
-            modified = datetime.fromtimestamp(stat.st_mtime, timezone.utc)
-            if modified < cutoff:
-                continue
-            rows.append(
-                {
-                    "path": str(path),
-                    "name": path.name,
-                    "modified": modified.isoformat(),
-                    "size_bytes": stat.st_size,
-                }
-            )
-    except (PermissionError, OSError):
+        if raw and not raw.startswith("Unavailable:"):
+            parsed = json.loads(raw)
+            data = parsed if isinstance(parsed, list) else [parsed]
+            for row in data:
+                if not isinstance(row, dict) or not row.get("Path"):
+                    continue
+                rows.append(
+                    {
+                        "path": str(row.get("Path")),
+                        "name": str(row.get("Name") or ""),
+                        "modified": str(row.get("Modified") or ""),
+                        "size_bytes": row.get("SizeBytes"),
+                    }
+                )
+    except json.JSONDecodeError:
         pass
     return rows
 
@@ -12342,41 +12444,31 @@ def _recent_disk_executable_scan_root(root: Path, cutoff: datetime) -> list[dict
 def recent_disk_executable_scan() -> dict:
     if platform.system() != "Windows":
         return {"available": False, "reason": "Recent executable enumeration is Windows-only"}
-    cutoff = datetime.now(timezone.utc) - timedelta(days=45)
-    roots = expand_scan_roots_for_parallelism(
-        [(root, FULL_PC_SCAN_MAX_DEPTH) for root in all_logical_drive_roots(include_removable=True)],
-        target_workers=SCAN_WORKERS,
-    )
-    workers = min(SCAN_WORKERS, max(1, len(roots)))
-    collected: list[dict] = []
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        for partial in pool.map(lambda pair: _recent_disk_executable_scan_root(pair[0], cutoff), roots):
-            collected.extend(partial)
-    collected.sort(key=lambda row: str(row.get("modified") or ""), reverse=True)
-    rows = collected[:300]
-    items: list[dict] = []
+    rows = list(_full_pc_recent_executables_cache or [])
+    if not rows:
+        rows = _recent_disk_executable_powershell_fallback()
     patterns = executor_name_patterns()
-    probe_workers = min(HASH_SCAN_WORKERS, max(4, len(rows)))
-
-    def enrich_row(row: dict) -> dict:
+    items: list[dict] = []
+    for row in rows:
         path = str(row.get("path") or "")
+        if not path:
+            continue
         labels = sorted(set(match_executor_labels(path, patterns)))
         binary_labels: list[str] = []
         if not labels and path.lower().endswith((".exe", ".dll")):
             binary_labels = _probe_executable_binary_labels(Path(path))
             labels = binary_labels
-        return {
-            "path": path,
-            "name": str(row.get("name") or _digest_basename(path)),
-            "modified": row.get("modified"),
-            "size_bytes": row.get("size_bytes"),
-            "source": "full_pc_disk_enumeration",
-            "executor_name_hits": labels,
-            "binary_embedded_labels": binary_labels,
-        }
-
-    with ThreadPoolExecutor(max_workers=probe_workers) as pool:
-        items = list(pool.map(enrich_row, rows))
+        items.append(
+            {
+                "path": path,
+                "name": str(row.get("name") or _digest_basename(path)),
+                "modified": row.get("modified"),
+                "size_bytes": row.get("size_bytes"),
+                "source": "full_pc_disk_enumeration",
+                "executor_name_hits": labels,
+                "binary_embedded_labels": binary_labels,
+            }
+        )
     executor_items = [item for item in items if item.get("executor_name_hits")]
     return {
         "available": True,
@@ -13328,6 +13420,7 @@ def _process_overview_sample() -> dict:
 def build_report() -> dict:
     _reset_usn_comprehensive_cache()
     _reset_roblox_logs_cache()
+    _reset_full_pc_recent_executables_cache()
     scan_started_at = datetime.now(timezone.utc).isoformat()
     memory = psutil.virtual_memory()
     disk = psutil.disk_usage(str(Path.home().anchor or Path.home()))
@@ -13357,7 +13450,6 @@ def build_report() -> dict:
         fut_shellbag = pool.submit(shellbag_clear_signal)
         fut_exec_ind = pool.submit(executor_indicator_scan)
         fut_persist = pool.submit(persistence_signals)
-        fut_disk_exe = pool.submit(recent_disk_executable_scan)
         fut_browser_downloads = pool.submit(browser_download_history_scan)
         fut_dam = pool.submit(dam_execution_records)
         fut_processes = pool.submit(_process_overview_sample)
@@ -13366,6 +13458,7 @@ def build_report() -> dict:
         prefetch = fut_prefetch.result()
         deletion_signals = fut_deletion.result()
         designated, sha_blocklist = fut_folders.result()
+        fut_disk_exe = pool.submit(recent_disk_executable_scan)
 
         fut_forensic = pool.submit(build_forensic_analysis_bundle, designated, prefetch, deletion_signals)
         fut_pref_health = pool.submit(prefetch_health_signals, prefetch)
