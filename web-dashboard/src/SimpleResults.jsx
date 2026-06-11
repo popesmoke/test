@@ -15,6 +15,7 @@ import {
   Shield,
   ShieldAlert,
   Sparkles,
+  GitBranch,
 } from "lucide-react";
 import { defenderSummary } from "./defenderSignals.js";
 import { scanReviewFromReport } from "./reportDigest.js";
@@ -42,6 +43,7 @@ const VERDICT_META = {
 
 const TABS = [
   { id: "overview", label: "Summary", icon: Sparkles },
+  { id: "chains", label: "Evidence chains", icon: GitBranch },
   { id: "activity", label: "Last activity", icon: Clock3 },
   { id: "downloads", label: "Download history", icon: FileDown },
   { id: "execution", label: "Programs run", icon: Play },
@@ -49,6 +51,29 @@ const TABS = [
   { id: "strings", label: "Word matches", icon: Search },
   { id: "security", label: "Security & AV", icon: Shield },
 ];
+
+const ACTIVITY_FILTERS = [
+  { id: "all", label: "All" },
+  { id: "executors", label: "Executors" },
+  { id: "suspicious", label: "Suspicious files" },
+  { id: "deletions", label: "Deletions" },
+];
+
+function classifyActivityFilter(event) {
+  if (event?.filter) return event.filter;
+  const summary = String(event?.summary || "").toLowerCase();
+  const category = String(event?.category || "").toLowerCase();
+  if (category === "deletions" || summary.includes("no longer on disk") || summary.includes("recycle bin")) {
+    return "deletions";
+  }
+  if (summary.includes("executor") || summary.includes("suspicious program") || category === "commands") {
+    return "executors";
+  }
+  if (category === "files" || summary.includes("suspicious file")) {
+    return "suspicious";
+  }
+  return "other";
+}
 
 function simpleVerdict(score, bypassRisk) {
   const combined = Math.min(100, Math.round(score * 0.75 + (bypassRisk || 0) * 0.35));
@@ -200,6 +225,11 @@ function OverviewTab({ verdict, problems, review, formatGmtPlus3 }) {
       <section className="simple-stats-row">
         <SimpleStat label="Warning signs" value={problems.length} hint="Read the list below" />
         <SimpleStat label="Timeline events" value={activity.event_count ?? 0} hint="Chronological log" />
+        <SimpleStat
+          label="Evidence chains"
+          value={review.evidence_chains?.chain_count ?? 0}
+          hint="Multi-trace matches"
+        />
         <SimpleStat label="Deleted traces" value={deletionCount} hint="Removed but still logged" />
         <SimpleStat label="Word matches" value={review.string_detection?.hit_count ?? 0} hint="In logs & files" />
       </section>
@@ -263,6 +293,7 @@ function OverviewTab({ verdict, problems, review, formatGmtPlus3 }) {
 
 function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 }) {
   const block = review.last_computer_activity ?? {};
+  const [activityFilter, setActivityFilter] = useState("all");
   let events = block.events ?? [];
   if (!events.length && (activity?.events ?? []).length) {
     events = (activity.events ?? [])
@@ -271,19 +302,23 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
         occurred_at: e.occurred_at,
         summary: activityEventSummary(e),
         path: e.path,
+        category: e.category,
+        filter: classifyActivityFilter(e),
       }));
   }
-  const downloads = review.download_history?.items ?? [];
-  for (const dl of downloads) {
-    const when = dl.started_at || dl.ended_at;
-    if (!when) continue;
-    events.push({
-      occurred_at: when,
-      summary: `A file was downloaded in ${dl.browser || "a browser"}: ${dl.file_name || "a file"}.`,
-      path: dl.target_path || dl.url,
-    });
-  }
-  events.sort((a, b) => {
+  events = events.filter((event) => classifyActivityFilter(event) !== "other");
+  const counts = ACTIVITY_FILTERS.reduce((acc, row) => {
+    acc[row.id] =
+      row.id === "all"
+        ? events.length
+        : events.filter((event) => classifyActivityFilter(event) === row.id).length;
+    return acc;
+  }, {});
+  const shown =
+    activityFilter === "all"
+      ? events
+      : events.filter((event) => classifyActivityFilter(event) === activityFilter);
+  shown.sort((a, b) => {
     const aMs = a.occurred_at ? new Date(a.occurred_at).getTime() : 0;
     const bMs = b.occurred_at ? new Date(b.occurred_at).getTime() : 0;
     return bMs - aMs;
@@ -295,9 +330,21 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
         <Clock3 size={22} />
         <div>
           <h4>Last computer activity</h4>
-          <p>What this PC did lately. Newest first (MM/DD/YY, GMT+3).</p>
+          <p>Executors, suspicious files, and deletions only. Newest first (MM/DD/YY, GMT+3).</p>
         </div>
       </header>
+      <div className="simple-filter-row">
+        {ACTIVITY_FILTERS.map((row) => (
+          <button
+            key={row.id}
+            type="button"
+            className={activityFilter === row.id ? "active" : ""}
+            onClick={() => setActivityFilter(row.id)}
+          >
+            {row.label} ({counts[row.id] ?? 0})
+          </button>
+        ))}
+      </div>
       {(block.milestones ?? []).length ? (
         <ul className="simple-milestones">
           {block.milestones.map((m) => (
@@ -309,9 +356,9 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
           ))}
         </ul>
       ) : null}
-      {events.length ? (
+      {shown.length ? (
         <ul className="simple-timeline simple-timeline--forensic">
-          {events.map((event, index) => {
+          {shown.map((event, index) => {
             const badge = activityEventBadge(event);
             const isDeletion = badge.tone === "deletion";
             return (
@@ -339,7 +386,81 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
           })}
         </ul>
       ) : (
-        <p className="muted">No timed activity on this report. Try a new scan with the latest app.</p>
+        <p className="muted">No activity in this filter. Try another tab or run a new scan.</p>
+      )}
+    </section>
+  );
+}
+
+const CHAIN_ACTION_LABELS = {
+  executed: "Ran",
+  ran: "Ran",
+  downloaded: "Downloaded",
+  deleted: "Deleted",
+  on_disk: "On disk",
+  known_hash: "Known hash",
+  removed_trace: "Trace remains",
+  filesystem: "Filesystem",
+  correlated: "Correlated",
+  traced: "Traced",
+};
+
+function EvidenceChainsTab({ review, formatGmtPlus3 }) {
+  const block = review.evidence_chains ?? {};
+  const chains = block.chains ?? [];
+  const [onlyHigh, setOnlyHigh] = useState(false);
+  const shown = onlyHigh ? chains.filter((c) => c.confidence === "high") : chains;
+
+  return (
+    <section className="simple-panel">
+      <header className="simple-panel-head">
+        <GitBranch size={22} />
+        <div>
+          <h4>Evidence chains</h4>
+          <p>When multiple traces agree — e.g. downloaded, ran, then deleted but still logged.</p>
+        </div>
+      </header>
+      <div className="simple-filter-row">
+        <button type="button" className={!onlyHigh ? "active" : ""} onClick={() => setOnlyHigh(false)}>
+          All chains ({block.chain_count ?? chains.length})
+        </button>
+        <button type="button" className={onlyHigh ? "active" : ""} onClick={() => setOnlyHigh(true)}>
+          High confidence ({chains.filter((c) => c.confidence === "high").length})
+        </button>
+      </div>
+      {shown.length ? (
+        <ul className="simple-chain-list">
+          {shown.map((chain) => (
+            <li key={chain.stem} className={`simple-chain-card simple-chain-card--${chain.confidence || "medium"}`}>
+              <div className="simple-chain-head">
+                <strong>{chain.labels?.length ? chain.labels.join(", ") : chain.stem}</strong>
+                <span className={`simple-chain-badge simple-chain-badge--${chain.confidence || "medium"}`}>
+                  {chain.confidence === "high" ? "High confidence" : "Medium"}
+                </span>
+              </div>
+              <p>{chain.summary}</p>
+              <ol className="simple-chain-steps">
+                {(chain.steps ?? []).map((step, index) => (
+                  <li key={`${step.source}-${step.path}-${index}`}>
+                    <div className="simple-chain-step-meta">
+                      <span className="simple-chain-step-action">
+                        {CHAIN_ACTION_LABELS[step.action] || step.action}
+                      </span>
+                      <time>{step.occurred_at ? formatGmtPlus3(step.occurred_at) : "Time unknown"}</time>
+                    </div>
+                    <p>{step.detail}</p>
+                    <PathFold path={step.path} />
+                  </li>
+                ))}
+              </ol>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <div className="simple-empty">
+          <CheckCircle2 size={28} />
+          <p>No multi-trace evidence chains on this scan.</p>
+        </div>
       )}
     </section>
   );
@@ -635,6 +756,7 @@ export function SimpleResults({
       {tab === "overview" ? (
         <OverviewTab verdict={verdict} problems={problems} review={review} formatGmtPlus3={formatGmtPlus3} />
       ) : null}
+      {tab === "chains" ? <EvidenceChainsTab review={review} formatGmtPlus3={formatGmtPlus3} /> : null}
       {tab === "activity" ? (
         <ActivityTab
           review={review}

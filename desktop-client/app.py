@@ -2805,6 +2805,75 @@ EXECUTOR_ALIASES: dict[str, list[str]] = {
     "Codex": ["codexexecutor", "codex.exe"],
 }
 
+# Common English, game-asset, and dev-tool tokens — require stronger filename evidence.
+EXECUTOR_AMBIGUOUS_NAMES = frozenset(
+    {
+        "Volt",
+        "Wave",
+        "Delta",
+        "Photon",
+        "Cosmic",
+        "Codex",
+        "Velocity",
+        "Lumen",
+        "Matcha",
+        "Severe",
+        "Xeno",
+        "Velocity",
+    }
+)
+
+EXECUTOR_BENIGN_PATH_FRAGMENTS = (
+    "\\epic games\\",
+    "\\riot games\\",
+    "\\rocketleague\\",
+    "\\fortnite\\",
+    "\\bitdefender\\",
+    "\\program files\\dotnet\\",
+    "\\program files\\google\\",
+    "\\program files\\microsoft\\",
+    "\\program files\\common files\\",
+    "openai.codex",
+    "openai.chatgpt",
+    "\\appdata\\local\\packages\\openai.codex",
+    "\\.codex\\",
+    "\\local\\openai\\codex\\",
+    "\\.vscode\\extensions\\",
+    "\\vscode\\extensions\\",
+    "\\cursor\\logs\\",
+    "anysphere.cursor",
+    "\\githubdesktop\\",
+    "\\programs\\python\\",
+    "codex-command-runner",
+    "codex-windows-sandbox",
+    "codex-path\\",
+    "\\.adspower_global\\",
+    "\\internet explorer\\",
+    "\\program files\\git\\",
+    "\\program files\\npcap\\",
+    "\\nvidia corporation\\",
+    "\\gamedvr\\",
+)
+
+GAME_CONTENT_EXTENSIONS = frozenset(
+    {".upk", ".bnk", ".pak", ".ucas", ".utoc", ".uasset", ".umap", ".usf", ".mp4", ".wem", ".ogg"}
+)
+
+SYSTEM_DLL_NAME_PREFIXES = (
+    "api-ms-win",
+    "vcruntime",
+    "msvcp",
+    "ucrtbase",
+    "concrt",
+    "vccorlib",
+    "dbghelp",
+    "tbb",
+    "nvml",
+    "d3d12",
+    "vk_swiftshader",
+    "icu",
+)
+
 # Verified sample SHA256 (lowercase hex) -> label. Extend in code or assets/executor_sha256_blocklist.json.
 EXECUTOR_SHA256_BLOCKLIST: dict[str, str] = {}
 EXECUTOR_HASH_SCAN_MAX_FILES = 15_000
@@ -2852,6 +2921,9 @@ PATH_ALLOWLIST_FRAGMENTS = (
     "\\steam\\",
     "\\discord\\",
     "\\epic games\\",
+    "\\rocketleague\\",
+    "\\fortnite\\",
+    "\\bitdefender\\",
     "\\node_modules\\",
     "\\cursor\\",
     "\\google\\chrome\\",
@@ -2920,7 +2992,8 @@ USER_FOLDER_TRUSTED_APP_STEMS = frozenset(
         "discord",
     }
 )
-SCAN_WORKERS = min(24, max(10, (os.cpu_count() or 4) * 3))
+SCAN_WORKERS = min(64, max(20, (os.cpu_count() or 4) * 4))
+HASH_SCAN_WORKERS = min(48, max(12, (os.cpu_count() or 4) * 3))
 
 # Populated once per build_report() pass to avoid duplicate full USN journal reads.
 _usn_comprehensive_cache: dict[str, object] | None = None
@@ -2978,6 +3051,12 @@ def load_executor_sha256_blocklist() -> dict[str, str]:
     return merged
 
 
+def resolve_executor_hash_label(sha: str, blocklist: dict[str, str]) -> str | None:
+    if not sha:
+        return None
+    return blocklist.get(sha.lower())
+
+
 def file_sha256_full(path: Path, max_bytes: int = EXECUTOR_HASH_MAX_FILE_BYTES) -> str:
     try:
         size = path.stat().st_size
@@ -2986,7 +3065,7 @@ def file_sha256_full(path: Path, max_bytes: int = EXECUTOR_HASH_MAX_FILE_BYTES) 
         digest = hashlib.sha256()
         with path.open("rb") as handle:
             while True:
-                chunk = handle.read(1024 * 1024)
+                chunk = handle.read(4 * 1024 * 1024)
                 if not chunk:
                     break
                 digest.update(chunk)
@@ -3030,6 +3109,55 @@ def cheat_path_hint_labels(path: str) -> list[str]:
     return sorted(set(labels))
 
 
+def executor_path_is_benign_context(path_str: str) -> bool:
+    low = path_str.lower().replace("/", "\\")
+    if any(fragment in low for fragment in EXECUTOR_BENIGN_PATH_FRAGMENTS):
+        return True
+    if re.search(r"\\documents\\codex\\", low) and not low.endswith(".exe"):
+        return True
+    return False
+
+
+def _path_is_trusted_install_zone(path_str: str) -> bool:
+    low = path_str.lower().replace("/", "\\")
+    return any(marker in low for marker in SYSTEM_PATH_MARKERS)
+
+
+def ambiguous_executor_stem_match(stem: str, name: str, *, full_name: str = "") -> bool:
+    if not stem:
+        return False
+    stem_value = stem.lower()
+    token = name.lower().replace(" ", "")
+    name_low = full_name.lower()
+    if name_low.endswith((".log", ".json", ".md", ".txt", ".ts", ".js", ".map", ".pyc")):
+        if stem_value == token or stem_value.startswith(f"{token}."):
+            return False
+    if stem_value in {token, f"{token}.exe", f"{token}.dll", f"{token}executor", f"{token}ware"}:
+        return True
+    for separator in ("-", "_", "."):
+        if stem_value.startswith(f"{token}{separator}"):
+            suffix = stem_value[len(token) + 1 :].split(separator)[0]
+            if suffix in {"executor", "ware", "loader", "bootstrap", "cli"}:
+                return True
+    for alias in EXECUTOR_ALIASES.get(name, []):
+        alias_token = re.sub(r"[\s._\-]+", "", alias.lower())
+        if len(alias_token) < 5:
+            continue
+        if stem_value in {alias_token, f"{alias_token}.exe"}:
+            return True
+        if stem_value.startswith(f"{alias_token}.") or stem_value.startswith(f"{alias_token}-"):
+            return True
+        if f"{alias_token}executor" in stem_value or f"{alias_token}ware" in stem_value:
+            return True
+    return False
+
+
+def should_skip_binary_executor_probe(path_str: str) -> bool:
+    if executor_path_is_benign_context(path_str) or _path_is_trusted_install_zone(path_str):
+        return True
+    return Path(path_str).suffix.lower() in GAME_CONTENT_EXTENSIONS
+
+
 def suspicious_path_profile(
     path: str,
     patterns: dict[str, re.Pattern[str]] | None = None,
@@ -3038,7 +3166,7 @@ def suspicious_path_profile(
     norm = forensic_normalize_pathish(path) if path else ""
     if not norm:
         return {"executor_name_hits": [], "cheat_filename_hints": [], "name_anomaly_reasons": []}
-    executor_labels = sorted(set(match_executor_labels(norm, patterns)))
+    executor_labels = sorted(set(match_executor_labels(norm, patterns, path_context=True)))
     cheat_hints = cheat_path_hint_labels(norm)
     stem = Path(norm).stem
     full_name = Path(norm).name
@@ -3064,6 +3192,10 @@ def path_is_suspicious_profile(path: str, patterns: dict[str, re.Pattern[str]] |
 def executor_scan_path_excluded(path_str: str) -> bool:
     """Skip game/content trees that cause noisy executor-token matches."""
     low = path_str.lower().replace("/", "\\")
+    if executor_path_is_benign_context(path_str):
+        return True
+    if Path(path_str).suffix.lower() in GAME_CONTENT_EXTENSIONS:
+        return True
     excluded = (
         "\\roblox\\versions\\",
         "\\roblox\\content\\",
@@ -3077,6 +3209,10 @@ def executor_scan_path_excluded(path_str: str) -> bool:
         "\\appdata\\local\\packages\\",
         "\\winsat\\",
         "\\windows defender\\",
+        "\\epic games\\",
+        "\\riot games\\",
+        "\\bitdefender\\",
+        "\\program files\\dotnet\\",
     )
     return any(fragment in low for fragment in excluded)
 
@@ -3094,12 +3230,22 @@ def path_is_allowlisted(path_str: str) -> bool:
 
 
 def loose_executor_labels_for_artifact(text: str) -> list[str]:
-    """Aggressive token match for Prefetch stems, registry blobs, and binary artifacts."""
+    """Token match for short artifact strings (Prefetch stems, registry values)."""
     if not text:
         return []
-    compact = re.sub(r"[\s._\-\\/]", "", str(text).upper())
+    text_value = str(text)
+    if len(text_value) > 420:
+        return []
+    compact = re.sub(r"[\s._\-\\/]", "", text_value.upper())
     labels: list[str] = []
     for name in EXECUTOR_NAMES:
+        if name in EXECUTOR_AMBIGUOUS_NAMES:
+            for alias in EXECUTOR_ALIASES.get(name, []):
+                alias_token = re.sub(r"[\s._\-]", "", alias.upper())
+                if len(alias_token) >= 8 and alias_token in compact:
+                    labels.append(name)
+                    break
+            continue
         token = re.sub(r"[\s._\-]", "", name.upper())
         if len(token) < 4:
             continue
@@ -3293,9 +3439,12 @@ def artifact_path_is_review_noise(path: str) -> bool:
 
 
 def executor_labels_for_artifact_text(text: str) -> list[str]:
+    text_value = str(text or "")
     patterns = executor_name_patterns()
-    labels = sorted(set(match_executor_labels(str(text or ""), patterns)))
-    labels.extend(loose_executor_labels_for_artifact(str(text or "")))
+    is_path = "\\" in text_value or "/" in text_value
+    labels = sorted(set(match_executor_labels(text_value, patterns, path_context=is_path)))
+    if len(text_value) <= 420:
+        labels.extend(loose_executor_labels_for_artifact(text_value))
     return sorted(set(labels))
 
 
@@ -3304,15 +3453,30 @@ def scan_binary_blob_for_executor_names(data: bytes, *, limit: int = 12) -> list
         return []
     hits: list[str] = []
     for name in EXECUTOR_NAMES:
-        if len(name) < 4:
-            continue
-        for encoding in ("utf-16le", "utf-8"):
-            try:
-                if name.encode(encoding) in data or name.lower().encode(encoding) in data:
-                    hits.append(name)
-                    break
-            except UnicodeEncodeError:
+        if name in EXECUTOR_AMBIGUOUS_NAMES:
+            search_tokens = [
+                alias
+                for alias in EXECUTOR_ALIASES.get(name, [])
+                if len(re.sub(r"[\s._\-]", "", alias)) >= 8
+            ]
+        else:
+            search_tokens = [name, *EXECUTOR_ALIASES.get(name, [])]
+        matched = False
+        for token in search_tokens:
+            if len(re.sub(r"[\s._\-]", "", token)) < 4:
                 continue
+            for encoding in ("utf-16le", "utf-8"):
+                try:
+                    encoded = token.encode(encoding)
+                    encoded_lower = token.lower().encode(encoding)
+                except UnicodeEncodeError:
+                    continue
+                if encoded in data or encoded_lower in data:
+                    hits.append(name)
+                    matched = True
+                    break
+            if matched:
+                break
         if len(hits) >= limit:
             break
     return sorted(set(hits))
@@ -3331,7 +3495,7 @@ def executor_blocklist_hash_known_paths(
     *,
     source: str,
 ) -> list[dict]:
-    hits: list[dict] = []
+    candidates: list[Path] = []
     seen: set[str] = set()
     for path_str in paths:
         if not path_str:
@@ -3347,36 +3511,50 @@ def executor_blocklist_hash_known_paths(
         if path.suffix.lower() not in {".exe", ".dll"}:
             continue
         try:
-            if not path.is_file():
-                continue
+            if path.is_file():
+                candidates.append(path)
         except OSError:
             continue
+    if not candidates or not blocklist:
+        return []
+
+    patterns = executor_name_patterns()
+    hits: list[dict] = []
+    workers = min(HASH_SCAN_WORKERS, max(4, len(candidates)))
+
+    def hash_known(path: Path) -> dict | None:
         sha = file_sha256_full(path)
         if not sha:
-            continue
-        label = blocklist.get(sha.lower())
+            return None
+        label = resolve_executor_hash_label(sha, blocklist)
         if not label:
-            continue
+            return None
+        norm = str(path)
         try:
             stat = path.stat()
             modified = datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()
+            size_bytes = stat.st_size
         except OSError:
             modified = None
-        hits.append(
-            {
-                "label": label,
-                "sha256": sha,
-                "path": norm,
-                "size_bytes": path.stat().st_size if path.exists() else None,
-                "modified": modified,
-                "detection_source": source,
-                "renamed_disguise": path.name.lower() not in {
-                    f"{label.lower()}.exe",
-                    f"{label.lower()}.dll",
-                    f"{label.lower().replace(' ', '')}.exe",
-                },
-            }
-        )
+            size_bytes = None
+        return {
+            "label": label,
+            "sha256": sha,
+            "path": norm,
+            "size_bytes": size_bytes,
+            "modified": modified,
+            "detection_source": source,
+            "renamed_disguise": path.name.lower() not in {
+                f"{label.lower()}.exe",
+                f"{label.lower()}.dll",
+                f"{label.lower().replace(' ', '')}.exe",
+            },
+        }
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for result in pool.map(hash_known, candidates):
+            if result:
+                hits.append(result)
     return hits
 
 
@@ -3389,12 +3567,11 @@ def _executor_blocklist_scan_root(
     if not blocklist or max_hashes <= 0:
         return [], 0
     patterns = executor_name_patterns()
-    hits: list[dict] = []
-    hashed = 0
+    candidates: list[Path] = []
     seen_paths: set[str] = set()
     try:
         for path in walk_files_depth_limited(root, max_depth):
-            if hashed >= max_hashes:
+            if len(candidates) >= max_hashes:
                 break
             try:
                 if not path.is_file() or path.suffix.lower() not in {".exe", ".dll"}:
@@ -3405,34 +3582,11 @@ def _executor_blocklist_scan_root(
             if key in seen_paths:
                 continue
             seen_paths.add(key)
-            sha = file_sha256_full(path)
-            hashed += 1
-            if not sha:
-                continue
-            label = blocklist.get(sha.lower())
-            if not label:
-                continue
-            try:
-                stat = path.stat()
-                modified = datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()
-                size_bytes = stat.st_size
-            except OSError:
-                modified = None
-                size_bytes = None
-            hits.append(
-                {
-                    "label": label,
-                    "sha256": sha,
-                    "path": str(path),
-                    "size_bytes": size_bytes,
-                    "modified": modified,
-                    "detection_source": "filesystem_hash_scan",
-                    "renamed_disguise": not any(pat.search(path.name) for pat in patterns.values()),
-                }
-            )
+            candidates.append(path)
     except (PermissionError, OSError):
         pass
-    return hits, hashed
+    hits = _hash_blocklist_candidates(candidates, blocklist, patterns)
+    return hits, len(candidates)
 
 
 def executor_blocklist_path_scan(
@@ -3442,7 +3596,7 @@ def executor_blocklist_path_scan(
     """Hash user-profile executables; ignores path allowlists so disguised paths still match."""
     if not blocklist:
         return [], 0
-    roots = executor_user_hash_scan_roots()
+    roots = expand_scan_roots_for_parallelism(executor_user_hash_scan_roots(), target_workers=SCAN_WORKERS)
     per_root_budget = max(250, max_hashes // max(1, len(roots)))
     workers = min(SCAN_WORKERS, max(1, len(roots)))
     hits: list[dict] = []
@@ -3614,7 +3768,7 @@ def _roblox_module_reasons(path_norm: str, patterns: dict[str, re.Pattern[str]])
     sha_label = ""
     if path_lower.endswith((".exe", ".dll")) and Path(path_norm).is_file():
         sha, _, _ = forensic_file_peek(Path(path_norm))
-        sha_label = load_executor_sha256_blocklist().get(sha.lower(), "")
+        sha_label = resolve_executor_hash_label(sha, load_executor_sha256_blocklist()) or ""
         if sha_label:
             reasons.append(f"sha256_blocklist:{sha_label}")
     return reasons, executor_labels, cheat_hints, sha_label
@@ -3944,6 +4098,82 @@ def walk_files_depth_limited(root: Path, max_depth: int):
             yield current / fn
 
 
+def expand_scan_roots_for_parallelism(
+    roots: list[tuple[Path, int]],
+    *,
+    target_workers: int,
+) -> list[tuple[Path, int]]:
+    """Shard drive roots into top-level folders so parallel workers finish sooner."""
+    if target_workers <= 1 or len(roots) >= target_workers:
+        return roots
+    skip_names = frozenset(
+        {
+            "$recycle.bin",
+            "system volume information",
+            "recovery",
+            "perflogs",
+        }
+    )
+    expanded: list[tuple[Path, int]] = []
+    for root, depth in roots:
+        if len(expanded) >= target_workers:
+            expanded.append((root, depth))
+            continue
+        try:
+            children = [p for p in root.iterdir() if p.is_dir() and p.name.lower() not in skip_names]
+        except OSError:
+            children = []
+        if len(children) >= 2:
+            child_depth = max(1, depth - 1)
+            for child in sorted(children, key=lambda p: p.name.lower()):
+                expanded.append((child, child_depth))
+        else:
+            expanded.append((root, depth))
+    return expanded or roots
+
+
+def _hash_blocklist_candidates(
+    paths: list[Path],
+    blocklist: dict[str, str],
+    patterns: dict[str, re.Pattern[str]],
+) -> list[dict]:
+    if not paths or not blocklist:
+        return []
+    workers = min(HASH_SCAN_WORKERS, max(4, len(paths)))
+    hits: list[dict] = []
+
+    def hash_one(path: Path) -> dict | None:
+        sha = file_sha256_full(path)
+        if not sha:
+            return None
+        label = resolve_executor_hash_label(sha, blocklist)
+        if not label:
+            return None
+        try:
+            stat = path.stat()
+            modified = datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()
+            size_bytes = stat.st_size
+        except OSError:
+            modified = None
+            size_bytes = None
+        return {
+            "label": label,
+            "sha256": sha,
+            "path": str(path),
+            "size_bytes": size_bytes,
+            "modified": modified,
+            "detection_source": "filesystem_hash_scan",
+            "renamed_disguise": not any(pat.search(path.name) for pat in patterns.values()),
+        }
+
+    chunksize = max(1, len(paths) // (workers * 4))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for result in pool.map(hash_one, paths, chunksize=chunksize):
+            if result:
+                hits.append(result)
+    return hits
+
+
 def _path_is_user_writable_execution_zone(path_str: str) -> bool:
     low = path_str.lower().replace("/", "\\")
     zones = (
@@ -3958,8 +4188,16 @@ def _path_is_user_writable_execution_zone(path_str: str) -> bool:
     return any(zone in low for zone in zones)
 
 
+def _path_is_suspicious_file_zone(path_str: str) -> bool:
+    """High-signal folders for weird-name-only file triage."""
+    low = path_str.lower().replace("/", "\\")
+    return any(zone in low for zone in ("\\downloads\\", "\\desktop\\", "\\temp\\", "\\tmp\\"))
+
+
 def _probe_executable_binary_labels(path: Path) -> list[str]:
     """Read PE/binary content and match embedded executor branding (survives renames)."""
+    if should_skip_binary_executor_probe(str(path)):
+        return []
     try:
         if not path.is_file():
             return []
@@ -3984,10 +4222,20 @@ def weird_filename_reasons(stem: str, full_name: str) -> list[str]:
     alnum = sum(1 for c in stem if c.isalnum())
     if len(stem) >= 52:
         reasons.append("very_long_name")
-    if full_name.count(".") >= 3:
+    name_low = full_name.lower()
+    system_dll = any(name_low.startswith(prefix) for prefix in SYSTEM_DLL_NAME_PREFIXES)
+    if (
+        full_name.count(".") >= 3
+        and not system_dll
+        and not name_low.endswith(".license.txt")
+        and not name_low.endswith(".min.js")
+        and not name_low.endswith(".bundle.js")
+        and not name_low.endswith(".log")
+    ):
         reasons.append("multiple_dot_segments")
     if re.search(r"\.[A-Za-z0-9]{1,5}\.(exe|dll|bat|ps1)\Z", full_name, re.IGNORECASE):
-        reasons.append("double_extension_style")
+        if not re.search(r"^pip\d+(?:\.\d+)?\.exe\Z", name_low):
+            reasons.append("double_extension_style")
     if digits and alnum and (digits / max(alnum, 1)) >= 0.38 and len(stem) >= 12:
         reasons.append("high_digit_ratio")
     if re.fullmatch(r"[0-9A-Fa-f]{24,}", stem):
@@ -4003,7 +4251,7 @@ def weird_filename_reasons(stem: str, full_name: str) -> list[str]:
         reasons.append("unusual_symbols")
     if stem.lower() in USER_FOLDER_TRUSTED_APP_STEMS:
         reasons.append("trusted_app_name_in_user_folder_context")
-    if len(letters) >= 14:
+    if len(letters) >= 14 and not name_low.endswith(".log"):
         transitions = sum(1 for i in range(len(letters) - 1) if letters[i].islower() != letters[i + 1].islower())
         if transitions >= min(10, max(6, len(letters) // 3)):
             reasons.append("chaotic_mixed_case")
@@ -4012,15 +4260,118 @@ def weird_filename_reasons(stem: str, full_name: str) -> list[str]:
     return reasons
 
 
-def match_executor_labels(text: str, patterns: dict[str, re.Pattern[str]]) -> list[str]:
-    return [name for name, pattern in patterns.items() if pattern.search(text)]
+def match_executor_labels(
+    text: str,
+    patterns: dict[str, re.Pattern[str]],
+    *,
+    path_context: bool = False,
+) -> list[str]:
+    if not text:
+        return []
+    is_path = path_context or ("\\" in text or "/" in text)
+    if not is_path:
+        return [name for name, pattern in patterns.items() if pattern.search(text)]
+
+    norm = text.replace("/", "\\")
+    if executor_path_is_benign_context(norm):
+        return []
+    try:
+        path_obj = Path(norm)
+    except Exception:
+        return []
+    if path_obj.suffix.lower() in GAME_CONTENT_EXTENSIONS:
+        return []
+
+    labels: list[str] = []
+    stem = path_obj.stem
+    basename = path_obj.name
+    parent_name = path_obj.parent.name if path_obj.parent else ""
+    parent_stem = path_obj.parent.stem if path_obj.parent else ""
+    executable_ext = path_obj.suffix.lower() in {".exe", ".dll", ".msi", ".bat", ".ps1", ".vbs", ".scr", ".com", ".jar"}
+    name_segments = [segment for segment in (basename, stem, parent_name, parent_stem) if segment]
+    for name, pattern in patterns.items():
+        if name in EXECUTOR_AMBIGUOUS_NAMES:
+            if ambiguous_executor_stem_match(stem, name, full_name=basename) or ambiguous_executor_stem_match(
+                parent_stem, name, full_name=basename
+            ):
+                labels.append(name)
+            continue
+        if any(pattern.search(segment) for segment in (basename, stem)):
+            labels.append(name)
+            continue
+        if executable_ext and any(pattern.search(segment) for segment in (parent_name, parent_stem)):
+            labels.append(name)
+    return sorted(set(labels))
 
 
-def _full_pc_scan_root(root: Path, max_depth: int, patterns: dict[str, re.Pattern[str]]) -> dict:
+def designated_scan_hit_is_actionable(item: dict) -> bool:
+    path = str(item.get("path") or "")
+    cheat_hints = item.get("cheat_filename_hints") or []
+    weird = item.get("name_anomaly_reasons") or []
+    if cheat_hints:
+        return True
+
+    patterns = executor_name_patterns()
+    executor_labels = sorted(set(match_executor_labels(path, patterns, path_context=True)))
+    if executor_labels:
+        if path_is_allowlisted(path) and all(label in EXECUTOR_AMBIGUOUS_NAMES for label in executor_labels):
+            return False
+        return True
+
+    if not weird:
+        return False
+
+    path_low = path.lower().replace("/", "\\")
+    name_low = Path(path).name.lower()
+    if (
+        name_low.endswith(".license.txt")
+        or name_low.endswith(".log")
+        or "\\microsoft\\onedrive\\" in path_low
+        or "\\.adspower_global\\" in path_low
+        or "\\windowsapps\\" in path_low
+        or executor_path_is_benign_context(path)
+        or "\\cursor\\logs\\" in path_low
+        or "anysphere.cursor" in path_low
+        or "\\programs\\python\\" in path_low
+        or re.search(r"pip\d+(?:\.\d+)?\.exe\Z", name_low)
+    ):
+        return False
+    if _path_is_trusted_install_zone(path) or executor_path_is_benign_context(path):
+        return False
+    if not _path_is_suspicious_file_zone(path):
+        return False
+    if "\\windows\\" in path_low:
+        return False
+    if re.search(r"ps-script-[0-9a-f-]+\.ps1\Z", name_low) or re.search(r"ps-state-out-[0-9a-f-]+", name_low):
+        return False
+    if re.search(r"(setup|installer|redist|usersetup)[-_.]", name_low) and "generic_risky_token" not in weird:
+        return False
+    if name_low.endswith((".json", ".json.gz", ".txt", ".md")) and "generic_risky_token" not in weird:
+        return False
+
+    strong_weird = {"generic_risky_token", "double_extension_style", "hex_like_name", "cheat_label"}
+    if strong_weird.intersection(weird):
+        return True
+    if "chaotic_mixed_case" in weird and ("unusual_symbols" in weird or "very_long_name" in weird):
+        return True
+    if len(weird) >= 3 and name_low.endswith((".exe", ".dll", ".zip", ".rar", ".7z")):
+        return True
+    return False
+
+
+def _full_pc_scan_root(
+    root: Path,
+    max_depth: int,
+    patterns: dict[str, re.Pattern[str]],
+    *,
+    blocklist: dict[str, str] | None = None,
+    hash_budget: int = 0,
+) -> dict:
     hits: list[dict] = []
     enumerated = 0
     binary_probes = 0
     skipped_permission = 0
+    hash_candidates: list[Path] = []
     try:
         for path in walk_files_depth_limited(root, max_depth):
             enumerated += 1
@@ -4036,20 +4387,39 @@ def _full_pc_scan_root(root: Path, max_depth: int, patterns: dict[str, re.Patter
                 continue
             if executor_scan_path_excluded(str(path)):
                 continue
+            if ext == ".log" and not _path_is_user_writable_execution_zone(str(path)):
+                continue
+            if blocklist and ext in {".exe", ".dll"} and len(hash_candidates) < hash_budget:
+                hash_candidates.append(path)
             path_str = str(path)
-            executor_labels = sorted(set(match_executor_labels(path_str, patterns)))
+            executor_labels = sorted(set(match_executor_labels(path_str, patterns, path_context=True)))
             cheat_hints = cheat_path_hint_labels(path_str)
             weird = list(weird_filename_reasons(path.stem, path.name))
-            for part in path.parts[:-1]:
-                weird.extend(weird_filename_reasons(part, part))
+            if not _path_is_trusted_install_zone(path_str):
+                for part in path.parts[:-1]:
+                    weird.extend(weird_filename_reasons(part, part))
             weird = sorted(set(weird))
             binary_labels: list[str] = []
             if ext in {".exe", ".dll"} and binary_probes < FULL_PC_BINARY_PROBE_MAX_FILES:
                 binary_labels = _probe_executable_binary_labels(path)
                 binary_probes += 1
                 if binary_labels:
-                    executor_labels = sorted(set(executor_labels + binary_labels))
-            if not executor_labels and not cheat_hints and not weird:
+                    path_labels = set(executor_labels)
+                    if _path_is_trusted_install_zone(path_str):
+                        binary_labels = [
+                            label
+                            for label in binary_labels
+                            if label not in EXECUTOR_AMBIGUOUS_NAMES or label in path_labels
+                        ]
+                    if binary_labels:
+                        executor_labels = sorted(set(executor_labels + binary_labels))
+            candidate = {
+                "path": path_str,
+                "executor_name_hits": executor_labels,
+                "cheat_filename_hints": cheat_hints,
+                "name_anomaly_reasons": weird,
+            }
+            if not designated_scan_hit_is_actionable(candidate):
                 continue
             try:
                 stat = path.stat()
@@ -4080,40 +4450,66 @@ def _full_pc_scan_root(root: Path, max_depth: int, patterns: dict[str, re.Patter
         skipped_permission += 1
     except OSError:
         skipped_permission += 1
+    hash_hits = _hash_blocklist_candidates(hash_candidates, blocklist, patterns) if blocklist else []
     return {
         "root": str(root),
         "hits": hits,
         "enumerated_files": enumerated,
         "binary_probes": binary_probes,
         "skipped_permission_roots": skipped_permission,
+        "hash_hits": hash_hits,
+        "files_hashed": len(hash_candidates),
     }
 
 
-def full_pc_filesystem_executor_scan() -> dict:
-    """Walk every local/removable drive for executor names, cheat hints, and embedded binary branding."""
+def full_pc_filesystem_executor_scan(
+    *,
+    blocklist: dict[str, str] | None = None,
+    max_hashes: int = 0,
+) -> dict:
+    """Walk every local/removable drive for executor names, cheat hints, embedded branding, and optional SHA256 blocklist."""
     if platform.system() != "Windows":
         return {"available": False, "reason": "Full-PC scan is Windows-only", "hits": []}
     patterns = executor_name_patterns()
-    roots = full_pc_scan_roots()
+    roots = expand_scan_roots_for_parallelism(full_pc_scan_roots(), target_workers=SCAN_WORKERS)
     workers = min(SCAN_WORKERS, max(1, len(roots)))
+    per_root_hash_budget = max(250, max_hashes // max(1, len(roots))) if blocklist and max_hashes > 0 else 0
     hits: list[dict] = []
+    hash_hits: list[dict] = []
     enumerated = 0
     binary_probes = 0
+    files_hashed = 0
     skipped_permission = 0
     roots_scanned: list[str] = []
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = [pool.submit(_full_pc_scan_root, root, max_depth, patterns) for root, max_depth in roots]
+        futures = [
+            pool.submit(
+                _full_pc_scan_root,
+                root,
+                max_depth,
+                patterns,
+                blocklist=blocklist,
+                hash_budget=per_root_hash_budget,
+            )
+            for root, max_depth in roots
+        ]
         for future in as_completed(futures):
             partial = future.result()
             roots_scanned.append(str(partial.get("root") or ""))
             hits.extend(partial.get("hits") or [])
+            hash_hits.extend(partial.get("hash_hits") or [])
             enumerated += int(partial.get("enumerated_files") or 0)
             binary_probes += int(partial.get("binary_probes") or 0)
+            files_hashed += int(partial.get("files_hashed") or 0)
             skipped_permission += int(partial.get("skipped_permission_roots") or 0)
             if enumerated >= FULL_PC_SCAN_MAX_ENUMERATED or len(hits) >= FULL_PC_SCAN_MAX_HITS:
                 break
     if len(hits) > FULL_PC_SCAN_MAX_HITS:
         hits = hits[:FULL_PC_SCAN_MAX_HITS]
+    if max_hashes > 0 and len(hash_hits) > max_hashes:
+        hash_hits = hash_hits[:max_hashes]
+    if max_hashes > 0 and files_hashed > max_hashes:
+        files_hashed = max_hashes
     return {
         "available": True,
         "hit_count": len(hits),
@@ -4122,6 +4518,8 @@ def full_pc_filesystem_executor_scan() -> dict:
         "binary_probes": binary_probes,
         "roots_scanned": roots_scanned,
         "skipped_permission_roots": skipped_permission,
+        "hash_hits": hash_hits,
+        "files_hashed": files_hashed,
         "note": "Full-PC walk of all fixed and removable drives; probes .exe/.dll binaries for embedded executor strings.",
     }
 
@@ -4151,7 +4549,7 @@ def scan_execution_artifact_binaries(
                     labels = _probe_executable_binary_labels(file_path)
                 if blocklist:
                     sha = file_sha256_full(file_path)
-                    block_label = blocklist.get(sha.lower()) if sha else None
+                    block_label = resolve_executor_hash_label(sha, blocklist) if sha else None
                     if block_label:
                         labels = sorted(set(labels + [block_label]))
             if not labels and file_exists and _path_is_user_writable_execution_zone(path):
@@ -4176,15 +4574,13 @@ def scan_execution_artifact_binaries(
 
 
 def combined_user_folder_security_scans(max_hashes: int = EXECUTOR_HASH_SCAN_MAX_FILES) -> tuple[dict, dict]:
-    """Full-PC name/binary hits plus SHA256 blocklist scan across all drives."""
+    """Full-PC name/binary hits plus SHA256 blocklist scan across all drives (single merged walk)."""
     blocklist = load_executor_sha256_blocklist()
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        fut_full_pc = pool.submit(full_pc_filesystem_executor_scan)
-        fut_sha = pool.submit(executor_blocklist_path_scan, blocklist, max_hashes)
-        full_pc = fut_full_pc.result()
-        sha_hits, hashed = fut_sha.result()
+    full_pc = full_pc_filesystem_executor_scan(blocklist=blocklist, max_hashes=max_hashes)
+    sha_hits = list(full_pc.get("hash_hits") or [])
+    hashed = int(full_pc.get("files_hashed") or 0)
 
-    merged_hits = list(full_pc.get("hits") or [])
+    merged_hits = [item for item in (full_pc.get("hits") or []) if designated_scan_hit_is_actionable(item)]
     merged_hits.sort(key=lambda row: str(row.get("modified") or ""), reverse=True)
     cheat_only = sum(
         1
@@ -6541,8 +6937,10 @@ def executor_indicator_scan() -> dict:
                     name_text = str(path)
                     if executor_scan_path_excluded(name_text):
                         continue
-                    matched = [name for name, pattern in patterns.items() if pattern.search(name_text)]
+                    matched = match_executor_labels(name_text, patterns, path_context=True)
                     cheat_h = cheat_filename_hint_labels(path.name)
+                    if matched and path_is_allowlisted(name_text) and not cheat_h:
+                        matched = []
                     if matched or cheat_h:
                         stat = path.stat()
                         file_hits.append(
@@ -8934,8 +9332,9 @@ def scan_recycle_bin_content_hits(
         sha = ""
         if blocklist and 0 < size <= RECYCLE_BIN_HASH_MAX_BYTES:
             sha = file_sha256_full(data_path, max_bytes=RECYCLE_BIN_HASH_MAX_BYTES)
-            if sha and blocklist.get(sha.lower()):
-                labels = sorted(set(labels + [blocklist[sha.lower()]]))
+            block_label = resolve_executor_hash_label(sha, blocklist) if sha else None
+            if block_label:
+                labels = sorted(set(labels + [block_label]))
         blob_labels: list[str] = []
         try:
             blob = data_path.read_bytes()[:4_000_000]
@@ -9193,56 +9592,74 @@ PROFILE_BINARY_SWEEP_MAX_FILES = 40_000
 PROFILE_BINARY_SWEEP_MAX_HITS = 300
 
 
+def _profile_binary_sweep_root(root: Path) -> tuple[list[dict[str, object]], int]:
+    local_hits: list[dict[str, object]] = []
+    seen: set[str] = set()
+    enumerated = 0
+    if not root.is_dir():
+        return local_hits, enumerated
+    try:
+        for path in walk_files_depth_limited(root, USER_FOLDER_SCAN_MAX_DEPTH):
+            enumerated += 1
+            if enumerated > PROFILE_BINARY_SWEEP_MAX_FILES or len(local_hits) >= PROFILE_BINARY_SWEEP_MAX_HITS:
+                break
+            ext = path.suffix.lower()
+            if ext not in PROFILE_BINARY_SWEEP_EXTENSIONS and ext != ".exe" and ext != ".dll":
+                continue
+            if executor_scan_path_excluded(str(path)):
+                continue
+            try:
+                size = path.stat().st_size
+                if size <= 0 or size > 2_500_000:
+                    continue
+                data = path.read_bytes()[:2_500_000]
+                modified = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
+            except OSError:
+                continue
+            labels = executor_labels_for_artifact_text(path.name)
+            if not labels:
+                labels = scan_binary_blob_for_executor_names(data)
+            if not labels:
+                continue
+            extracted = extract_dos_paths_from_binary(data, limit=2)
+            display = extracted[0] if extracted else str(path)
+            _append_executor_artifact_hit(
+                local_hits,
+                seen,
+                path=display,
+                labels=labels,
+                occurred_at=modified,
+                artifact_source="profile_binary_sweep",
+                file_exists=path_exists_on_disk(display),
+                note="User-profile binary/text sweep found a checked executor name or path residue.",
+            )
+    except (PermissionError, OSError):
+        pass
+    return local_hits, enumerated
+
+
 def scan_profile_binary_executor_sweep() -> list[dict[str, object]]:
     """Search all drives for leftover strings/paths after delete."""
     if platform.system() != "Windows":
         return []
-    roots = [root for root, _depth in full_pc_scan_roots()]
+    roots = [root for root, _depth in expand_scan_roots_for_parallelism(full_pc_scan_roots(), target_workers=SCAN_WORKERS)]
     hits: list[dict[str, object]] = []
     seen: set[str] = set()
     enumerated = 0
-    for root in roots:
-        if not root.is_dir():
-            continue
-        try:
-            for path in walk_files_depth_limited(root, USER_FOLDER_SCAN_MAX_DEPTH):
-                enumerated += 1
-                if enumerated > PROFILE_BINARY_SWEEP_MAX_FILES or len(hits) >= PROFILE_BINARY_SWEEP_MAX_HITS:
+    workers = min(SCAN_WORKERS, max(1, len(roots)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for local_hits, local_count in pool.map(_profile_binary_sweep_root, roots):
+            enumerated += local_count
+            for hit in local_hits:
+                path_key = str(hit.get("path") or "").lower()
+                if path_key in seen:
+                    continue
+                seen.add(path_key)
+                hits.append(hit)
+                if len(hits) >= PROFILE_BINARY_SWEEP_MAX_HITS:
                     break
-                ext = path.suffix.lower()
-                if ext not in PROFILE_BINARY_SWEEP_EXTENSIONS and ext != ".exe" and ext != ".dll":
-                    continue
-                if executor_scan_path_excluded(str(path)):
-                    continue
-                try:
-                    size = path.stat().st_size
-                    if size <= 0 or size > 2_500_000:
-                        continue
-                    data = path.read_bytes()[:2_500_000]
-                    modified = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
-                except OSError:
-                    continue
-                labels = executor_labels_for_artifact_text(path.name)
-                if not labels:
-                    labels = scan_binary_blob_for_executor_names(data)
-                if not labels:
-                    continue
-                extracted = extract_dos_paths_from_binary(data, limit=2)
-                display = extracted[0] if extracted else str(path)
-                _append_executor_artifact_hit(
-                    hits,
-                    seen,
-                    path=display,
-                    labels=labels,
-                    occurred_at=modified,
-                    artifact_source="profile_binary_sweep",
-                    file_exists=path_exists_on_disk(display),
-                    note="User-profile binary/text sweep found a checked executor name or path residue.",
-                )
-        except (PermissionError, OSError):
-            continue
-        if enumerated > PROFILE_BINARY_SWEEP_MAX_FILES or len(hits) >= PROFILE_BINARY_SWEEP_MAX_HITS:
-            break
+            if enumerated > PROFILE_BINARY_SWEEP_MAX_FILES or len(hits) >= PROFILE_BINARY_SWEEP_MAX_HITS:
+                break
     return hits
 
 
@@ -11032,7 +11449,7 @@ def build_forensic_analysis_bundle(
             "reason": "Forensic correlation bundle is Windows-focused in this build",
             "engine_version": _FORENSIC_ENGINE_VERSION,
         }
-    with ThreadPoolExecutor(max_workers=min(10, SCAN_WORKERS)) as pool:
+    with ThreadPoolExecutor(max_workers=SCAN_WORKERS) as pool:
         bam_future = pool.submit(bam_execution_records)
         pca_future = pool.submit(pca_executed_records)
         sqlite_future = pool.submit(sqlite_forensic_probe)
@@ -11073,6 +11490,45 @@ def build_forensic_analysis_bundle(
 
 def _activity_recency_bucket(timestamp: str | None, report_end: str | None) -> str:
     return _executor_activity_recency_bucket(timestamp, report_end)
+
+
+def _user_activity_event_is_review_worthy(event: dict) -> bool:
+    """Only surface executor, cheat, suspicious-file, deletion, and shell-history activity."""
+    category = str(event.get("category") or "")
+    kind = str(event.get("kind") or "")
+    label = str(event.get("label") or "").strip()
+    path = str(event.get("path") or "")
+    label_low = label.lower()
+
+    if category == "deletions":
+        return True
+    if kind == "shell_history":
+        return True
+    if event.get("suspicious"):
+        return True
+    if kind in {"sha256_blocklist", "removed_executor_artifact", "prefetch_indicator"}:
+        return True
+    if kind in {"profile_folder", "filesystem_scan", "recent_download"}:
+        return bool(label)
+    if kind == "bam_execution":
+        return bool(label) and label_low not in {"program executed"}
+    if kind == "browser_download" and event.get("extra", {}).get("suspicious"):
+        return True
+    if kind == "usn_journal" and category == "deletions":
+        return path_is_suspicious_profile(path) or bool(executor_labels_for_artifact_text(path))
+    if kind == "usn_journal":
+        return False
+    if kind in {"prefetch", "userassist", "pca_compat"}:
+        return False
+    if category == "roblox":
+        return False
+    if category == "browser" and kind != "browser_download":
+        return False
+    if category == "filesystem":
+        return path_is_suspicious_profile(path) or bool(executor_labels_for_artifact_text(path))
+    if category == "persistence" and label:
+        return True
+    return bool(label) and any(name.lower() in label_low for name in EXECUTOR_NAMES)
 
 
 def _append_activity_event(
@@ -11286,33 +11742,21 @@ def build_user_activity_timeline(
             extra={"file_exists": item.get("file_exists")},
         )
 
-    for item in userassist.get("items") or []:
-        path = str(item.get("path") or "")
-        if not path:
-            continue
-        _append_activity_event(
-            events,
-            category="execution",
-            kind="userassist",
-            label=", ".join(item.get("matched_keywords") or []) or "GUI launch",
-            path=path,
-            occurred_at=item.get("display_at") or item.get("last_run_utc"),
-            timestamp_source=item.get("timestamp_source") or "userassist",
-            detail="Explorer UserAssist records a GUI program run.",
-            generated_at=generated_at,
-            scan_started_at=scan_started_at,
-        )
-
     pca_items = (forensic_bundle.get("pca_executed") or {}).get("items") or []
     for item in pca_items[:120]:
         path = str(item.get("normalized_path") or item.get("raw") or "")
         if not path:
             continue
+        labels = executor_labels_for_artifact_text(path)
+        if not labels and item.get("file_exists") is not False:
+            continue
+        if artifact_path_is_review_noise(path) and not labels:
+            continue
         _append_activity_event(
             events,
             category="execution",
             kind="pca_compat",
-            label="Compatibility Assistant",
+            label=", ".join(labels) if labels else "Removed program trace",
             path=path,
             occurred_at=(
                 item.get("display_at")
@@ -11329,26 +11773,8 @@ def build_user_activity_timeline(
             extra={
                 "file_exists": item.get("file_exists"),
                 "correlated_timestamps": item.get("correlated_timestamps"),
+                "suspicious": bool(labels) or item.get("file_exists") is False,
             },
-        )
-
-    for item in prefetch.get("items") or []:
-        name = str(item.get("name") or "")
-        if not name:
-            continue
-        folder = str(prefetch.get("folder") or "")
-        path = f"{folder}\\{name}" if folder else name
-        _append_activity_event(
-            events,
-            category="execution",
-            kind="prefetch",
-            label="Prefetch trace",
-            path=path,
-            occurred_at=item.get("modified"),
-            timestamp_source="prefetch_mtime",
-            detail="Windows Prefetch records that this executable ran.",
-            generated_at=generated_at,
-            scan_started_at=scan_started_at,
         )
 
     for item in prefetch_health.get("indicator_hits") or []:
@@ -11385,22 +11811,24 @@ def build_user_activity_timeline(
         )
 
     for item in designated.get("hits") or []:
-        if item.get("path_allowlisted"):
+        if not designated_scan_hit_is_actionable(item):
             continue
         labels = list(item.get("executor_name_hits") or []) + list(item.get("cheat_filename_hints") or [])
-        if not labels:
+        if not labels and not item.get("name_anomaly_reasons"):
             continue
+        label_text = ", ".join(labels) if labels else "Suspicious filename"
         _append_activity_event(
             events,
             category="files",
             kind="profile_folder",
-            label=", ".join(labels),
+            label=label_text,
             path=str(item.get("path") or ""),
             occurred_at=item.get("modified"),
             timestamp_source="file_mtime",
             detail="User profile folder file matched executor or cheat filename rules.",
             generated_at=generated_at,
             scan_started_at=scan_started_at,
+            extra={"suspicious": True},
         )
 
     for item in executor_indicators.get("file_hits") or []:
@@ -11881,58 +12309,74 @@ def _scan_file_for_strings(path: Path) -> list[dict]:
     return hits
 
 
+def _recent_disk_executable_scan_root(root: Path, cutoff: datetime) -> list[dict]:
+    exec_ext = frozenset({".exe", ".dll", ".bat", ".ps1", ".msi", ".vbs", ".scr", ".com"})
+    rows: list[dict] = []
+    try:
+        for path in walk_files_depth_limited(root, FULL_PC_SCAN_MAX_DEPTH):
+            if len(rows) >= 200:
+                break
+            ext = path.suffix.lower()
+            if ext not in exec_ext:
+                continue
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            modified = datetime.fromtimestamp(stat.st_mtime, timezone.utc)
+            if modified < cutoff:
+                continue
+            rows.append(
+                {
+                    "path": str(path),
+                    "name": path.name,
+                    "modified": modified.isoformat(),
+                    "size_bytes": stat.st_size,
+                }
+            )
+    except (PermissionError, OSError):
+        pass
+    return rows
+
+
 def recent_disk_executable_scan() -> dict:
     if platform.system() != "Windows":
         return {"available": False, "reason": "Recent executable enumeration is Windows-only"}
-    script = (
-        "$cut=(Get-Date).AddDays(-45);"
-        "$roots = Get-CimInstance Win32_LogicalDisk -ErrorAction SilentlyContinue | "
-        "Where-Object { $_.DriveType -in 2,3 } | ForEach-Object { $_.DeviceID + '\\' };"
-        "$out=@();"
-        "foreach($root in $roots){"
-        " if(-not(Test-Path -LiteralPath $root)){continue}"
-        " Get-ChildItem -LiteralPath $root -Recurse -File -ErrorAction SilentlyContinue |"
-        " Where-Object { $_.Extension -match '^\\.(exe|dll|bat|ps1|msi|vbs|scr|com)$' -and $_.LastWriteTime -ge $cut } |"
-        " Select-Object -First 200 | ForEach-Object {"
-        "  $out += [pscustomobject]@{"
-        "    Path=$_.FullName;"
-        "    Name=$_.Name;"
-        "    Modified=$_.LastWriteTimeUtc.ToString('u');"
-        "    SizeBytes=$_.Length"
-        "  }"
-        " }"
-        "};"
-        "$out | Sort-Object Modified -Descending | Select-Object -First 300 | ConvertTo-Json -Compress"
+    cutoff = datetime.now(timezone.utc) - timedelta(days=45)
+    roots = expand_scan_roots_for_parallelism(
+        [(root, FULL_PC_SCAN_MAX_DEPTH) for root in all_logical_drive_roots(include_removable=True)],
+        target_workers=SCAN_WORKERS,
     )
-    raw = run_command(["powershell", "-NoProfile", "-Command", script], timeout=90, max_chars=120000)
+    workers = min(SCAN_WORKERS, max(1, len(roots)))
+    collected: list[dict] = []
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for partial in pool.map(lambda pair: _recent_disk_executable_scan_root(pair[0], cutoff), roots):
+            collected.extend(partial)
+    collected.sort(key=lambda row: str(row.get("modified") or ""), reverse=True)
+    rows = collected[:300]
     items: list[dict] = []
     patterns = executor_name_patterns()
-    try:
-        if raw and not raw.startswith("Unavailable:"):
-            parsed = json.loads(raw)
-            rows = parsed if isinstance(parsed, list) else [parsed]
-            for row in rows:
-                if not isinstance(row, dict) or not row.get("Path"):
-                    continue
-                path = str(row.get("Path"))
-                labels = sorted(set(match_executor_labels(path, patterns)))
-                binary_labels: list[str] = []
-                if not labels and path.lower().endswith((".exe", ".dll")):
-                    binary_labels = _probe_executable_binary_labels(Path(path))
-                    labels = binary_labels
-                items.append(
-                    {
-                        "path": path,
-                        "name": str(row.get("Name") or _digest_basename(path)),
-                        "modified": row.get("Modified"),
-                        "size_bytes": row.get("SizeBytes"),
-                        "source": "full_pc_disk_enumeration",
-                        "executor_name_hits": labels,
-                        "binary_embedded_labels": binary_labels,
-                    }
-                )
-    except json.JSONDecodeError:
-        pass
+    probe_workers = min(HASH_SCAN_WORKERS, max(4, len(rows)))
+
+    def enrich_row(row: dict) -> dict:
+        path = str(row.get("path") or "")
+        labels = sorted(set(match_executor_labels(path, patterns)))
+        binary_labels: list[str] = []
+        if not labels and path.lower().endswith((".exe", ".dll")):
+            binary_labels = _probe_executable_binary_labels(Path(path))
+            labels = binary_labels
+        return {
+            "path": path,
+            "name": str(row.get("name") or _digest_basename(path)),
+            "modified": row.get("modified"),
+            "size_bytes": row.get("size_bytes"),
+            "source": "full_pc_disk_enumeration",
+            "executor_name_hits": labels,
+            "binary_embedded_labels": binary_labels,
+        }
+
+    with ThreadPoolExecutor(max_workers=probe_workers) as pool:
+        items = list(pool.map(enrich_row, rows))
     executor_items = [item for item in items if item.get("executor_name_hits")]
     return {
         "available": True,
@@ -12139,30 +12583,18 @@ def build_execution_activity_feed(
         path = str(item.get("normalized_path") or "")
         if not path or item.get("path_allowlisted") or bam_path_is_benign_system(path):
             continue
-        labels = match_executor_labels(path, patterns)
-        if not labels and not item.get("cheat_filename_hints"):
+        labels = match_executor_labels(path, patterns, path_context=True)
+        cheat_hints = list(item.get("cheat_filename_hints") or [])
+        if not labels and not cheat_hints:
             continue
-        suspicious = bool(labels) or item.get("file_exists") is False
+        label_text = ", ".join(labels + cheat_hints)
         add(
             path=path,
             occurred_at=item.get("last_execution_utc"),
             source="execution_history",
-            summary="A program was run on this PC."
-            + (" The file is no longer on disk." if item.get("file_exists") is False else ""),
-            suspicious=suspicious,
-        )
-
-    for item in userassist.get("items") or []:
-        path = str(item.get("path") or "")
-        if not path:
-            continue
-        keywords = item.get("matched_keywords") or []
-        add(
-            path=path,
-            occurred_at=item.get("display_at") or item.get("last_run_utc"),
-            source="app_launch",
-            summary="An app was opened from the desktop or Start menu.",
-            suspicious=bool(keywords),
+            summary=f"Executor or suspicious program ran: {label_text}."
+            + (" File is no longer on disk." if item.get("file_exists") is False else ""),
+            suspicious=True,
         )
 
     pf_folder = str(prefetch.get("folder") or "")
@@ -12171,13 +12603,17 @@ def build_execution_activity_feed(
         path = f"{pf_folder}\\{name}" if pf_folder and name else name
         stem = re.sub(r"-[0-9A-F]{8}\.pf$", "", name, flags=re.IGNORECASE)
         stem = re.sub(r"\.pf$", "", stem, flags=re.IGNORECASE)
-        labels = [label for label, pat in patterns.items() if pat.search(stem)]
+        labels = match_executor_labels(stem, patterns, path_context=False)
+        labels.extend(loose_executor_labels_for_artifact(stem))
+        labels = sorted(set(labels))
+        if not labels:
+            continue
         add(
             path=path,
             occurred_at=item.get("modified"),
             source="runtime_cache",
-            summary="Windows cached evidence that a program ran recently.",
-            suspicious=bool(labels),
+            summary=f"Prefetch shows executor activity: {', '.join(labels)}.",
+            suspicious=True,
         )
 
     pca_items = (forensic_bundle.get("pca_executed") or {}).get("items") or []
@@ -12185,12 +12621,19 @@ def build_execution_activity_feed(
         path = str(item.get("normalized_path") or item.get("raw") or "")
         if not path:
             continue
+        labels = executor_labels_for_artifact_text(path)
+        if not labels and item.get("file_exists") is not False:
+            continue
         add(
             path=path,
             occurred_at=item.get("display_at") or item.get("last_execution_utc") or item.get("file_modified_utc"),
             source="compatibility_trace",
-            summary="Windows recorded compatibility activity for a program.",
-            suspicious=item.get("file_exists") is False,
+            summary=(
+                f"Removed executor trace: {', '.join(labels)}."
+                if labels
+                else "Removed program trace with no file on disk."
+            ),
+            suspicious=True,
         )
 
     for event in executor_activity.get("events") or []:
@@ -12344,6 +12787,7 @@ def _gather_priority_deletion_events(
             "kind": kind,
             "summary": summary,
             "path": path,
+            "filter": "deletions",
         }
         if cleanup:
             payload.update(
@@ -12467,6 +12911,8 @@ def build_last_computer_activity(
     )
     other_events: list[dict] = []
     for dl in (download_history or {}).get("items") or []:
+        if not dl.get("suspicious") and not dl.get("matched_labels"):
+            continue
         started = dl.get("started_at") or dl.get("ended_at")
         if not started:
             continue
@@ -12485,11 +12931,34 @@ def build_last_computer_activity(
         cat = str(event.get("category") or "")
         if cat == "deletions":
             continue
+        if not _user_activity_event_is_review_worthy(event):
+            continue
+        label = str(event.get("label") or "").strip()
+        if cat == "execution" and label:
+            summary = f"Executor or suspicious program activity: {label}."
+        elif cat == "files" and label:
+            summary = f"Suspicious file matched: {label}."
+        elif cat == "commands":
+            summary = f"Shell history matched reviewed words: {label or 'keyword'}."
+        else:
+            summary = event.get("summary") or category_plain.get(cat) or "Activity was recorded on this PC."
+        if cat == "deletions":
+            event_filter = "deletions"
+        elif cat == "execution" or "executor" in summary.lower():
+            event_filter = "executors"
+        elif cat == "files" or "suspicious file" in summary.lower():
+            event_filter = "suspicious"
+        elif cat == "commands":
+            event_filter = "executors"
+        else:
+            event_filter = "other"
         payload = {
             "occurred_at": event.get("occurred_at"),
             "category": cat,
-            "summary": event.get("summary") or category_plain.get(cat) or "Activity was recorded on this PC.",
+            "summary": summary,
             "path": event.get("path"),
+            "kind": event.get("kind"),
+            "filter": event_filter,
         }
         for extra_key in (
             "cleanup_at",
@@ -12524,6 +12993,206 @@ def build_last_computer_activity(
         "events": events[:120],
         "deletion_cleanup_insights": (deletion_cleanup_analysis or {}).get("insights") or [],
         "filesystem_evidence_integrity": filesystem_evidence_integrity or {"available": False},
+    }
+
+
+_EVIDENCE_CHAIN_ACTIONS: dict[str, tuple[str, str]] = {
+    "bam_execution": ("executed", "Windows recorded this program ran (BAM)."),
+    "bam_execution_binary": ("executed", "Binary execution trace in BAM/DAM."),
+    "dam_execution": ("executed", "Windows recorded this program ran (DAM)."),
+    "prefetch_execution": ("ran", "Prefetch shows this program ran recently."),
+    "recycle_bin": ("deleted", "Moved to the Recycle Bin."),
+    "recycle_bin_content": ("deleted", "Deleted payload still referenced in Recycle Bin."),
+    "full_pc_filesystem": ("on_disk", "Found on disk during the scan."),
+    "browser_download": ("downloaded", "Downloaded in a browser."),
+    "sha256_blocklist": ("known_hash", "Matched a known executor file fingerprint."),
+    "usn_journal": ("filesystem", "NTFS journal recorded a change."),
+    "removed_artifact": ("removed_trace", "File removed but a system trace remains."),
+    "deletion_log_mention": ("deleted", "Deletion mentioned in Windows logs."),
+}
+
+
+def _evidence_chain_stem(path: str) -> str:
+    if not path:
+        return ""
+    try:
+        cleaned = str(path).replace("/", "\\").split("\x00", 1)[0]
+        return Path(cleaned).stem.upper()
+    except Exception:
+        return ""
+
+
+def _summarize_evidence_chain(chain: dict) -> str:
+    labels = ", ".join(chain.get("labels") or []) or str(chain.get("stem") or "Program")
+    actions = [str(step.get("action") or "") for step in chain.get("steps") or []]
+    if "removed_trace" in actions or ("deleted" in actions and "ran" in actions):
+        return f"{labels}: ran on this PC, was deleted or removed, but Windows traces still prove it was there."
+    if "downloaded" in actions and ("executed" in actions or "ran" in actions):
+        return f"{labels}: downloaded, then executed — multiple independent traces agree."
+    if len(set(actions)) >= 2:
+        return f"{labels}: multiple independent traces ({len(chain.get('steps') or [])} events) line up."
+    return f"{labels}: flagged by forensic traces on this PC."
+
+
+def build_reviewer_evidence_chains(
+    *,
+    executor_artifact_evidence: dict | None,
+    trash: dict | None,
+    browser_download_history: dict | None,
+    forensic_bundle: dict | None,
+    bam: dict | None,
+) -> dict:
+    by_stem: dict[str, dict] = {}
+
+    def ensure(stem: str, labels: list[str] | None = None) -> dict:
+        key = stem or "UNKNOWN"
+        row = by_stem.get(key)
+        if not row:
+            row = {"stem": key, "labels": [], "steps": []}
+            by_stem[key] = row
+        for label in labels or []:
+            if label and label not in row["labels"]:
+                row["labels"].append(label)
+        return row
+
+    def add_step(
+        *,
+        stem: str,
+        labels: list[str],
+        source: str,
+        path: str,
+        occurred_at: str | None,
+        file_exists: bool | None = None,
+        detail: str | None = None,
+    ) -> None:
+        if not stem and not labels:
+            return
+        chain = ensure(stem or (labels[0] if labels else "UNKNOWN"), labels)
+        action, default_detail = _EVIDENCE_CHAIN_ACTIONS.get(source, ("traced", "Forensic trace recorded."))
+        if file_exists is False and action not in {"deleted", "removed_trace"}:
+            action = "removed_trace"
+            default_detail = "File is gone but Windows still has a trace."
+        chain["steps"].append(
+            {
+                "action": action,
+                "detail": detail or default_detail,
+                "source": source,
+                "path": (path or "")[:520],
+                "occurred_at": occurred_at,
+                "file_exists": file_exists,
+            }
+        )
+
+    for hit in (executor_artifact_evidence or {}).get("hits") or []:
+        path = str(hit.get("path") or "")
+        labels = list(hit.get("executor_name_hits") or [])
+        if hit.get("cheat_filename_hints"):
+            labels.extend(f"cheat:{hint}" for hint in hit.get("cheat_filename_hints") or [])
+        if not labels and not path_is_suspicious_profile(path):
+            continue
+        stem = _evidence_chain_stem(path) or (labels[0].upper() if labels else "")
+        add_step(
+            stem=stem,
+            labels=labels,
+            source=str(hit.get("artifact_source") or "artifact"),
+            path=path,
+            occurred_at=str(hit.get("display_at") or hit.get("modified") or "") or None,
+            file_exists=hit.get("file_exists"),
+            detail=str(hit.get("note") or "") or None,
+        )
+
+    for item in (trash or {}).get("items") or []:
+        path = str(item.get("original_path") or "").strip()
+        if not path:
+            continue
+        labels = list(item.get("executor_name_hits") or [])
+        if not labels and not item.get("suspicious_recycle_item"):
+            continue
+        stem = _evidence_chain_stem(path)
+        add_step(
+            stem=stem,
+            labels=labels,
+            source="recycle_bin",
+            path=path,
+            occurred_at=str(item.get("display_at") or item.get("deleted_at") or item.get("modified") or "") or None,
+            file_exists=False,
+        )
+
+    for item in (browser_download_history or {}).get("items") or []:
+        if not item.get("suspicious") and not item.get("matched_labels"):
+            continue
+        path = str(item.get("target_path") or item.get("url") or "")
+        labels = list(item.get("matched_labels") or [])
+        stem = _evidence_chain_stem(path) or _evidence_chain_stem(str(item.get("file_name") or ""))
+        add_step(
+            stem=stem,
+            labels=labels,
+            source="browser_download",
+            path=path,
+            occurred_at=str(item.get("started_at") or item.get("ended_at") or "") or None,
+        )
+
+    for item in (bam or {}).get("items") or []:
+        path = str(item.get("normalized_path") or "")
+        labels = list(item.get("executor_name_hits") or [])
+        if not labels or not path:
+            continue
+        add_step(
+            stem=_evidence_chain_stem(path),
+            labels=labels,
+            source="bam_execution",
+            path=path,
+            occurred_at=str(item.get("last_execution_utc") or "") or None,
+            file_exists=item.get("file_exists"),
+        )
+
+    for raw in (forensic_bundle or {}).get("unified_correlation", {}).get("execution_chains") or []:
+        stem = str(raw.get("stem") or "").upper()
+        if not stem:
+            continue
+        chain = ensure(stem, [])
+        for piece in raw.get("evidence") or []:
+            source = str(piece.get("source") or "correlation")
+            action, detail = _EVIDENCE_CHAIN_ACTIONS.get(source, ("correlated", str(piece.get("detail") or "Correlated trace.")))
+            chain["steps"].append(
+                {
+                    "action": action,
+                    "detail": detail,
+                    "source": source,
+                    "path": str(piece.get("path") or "")[:520],
+                    "occurred_at": None,
+                    "file_exists": None,
+                }
+            )
+
+    chains: list[dict] = []
+    for chain in by_stem.values():
+        steps = chain.get("steps") or []
+        if len(steps) < 2:
+            continue
+        unique_sources = {str(step.get("source") or "") for step in steps}
+        chain["steps"] = sorted(steps, key=lambda row: str(row.get("occurred_at") or ""), reverse=True)
+        chain["confidence"] = (
+            "high"
+            if len(unique_sources) >= 3
+            or any(step.get("action") == "removed_trace" for step in chain["steps"])
+            else "medium"
+        )
+        chain["summary"] = _summarize_evidence_chain(chain)
+        chains.append(chain)
+
+    chains.sort(
+        key=lambda row: (
+            0 if row.get("confidence") == "high" else 1,
+            -len(row.get("steps") or []),
+            str(row.get("stem") or ""),
+        )
+    )
+    return {
+        "available": True,
+        "chain_count": len(chains),
+        "chains": chains[:40],
+        "note": "Grouped forensic traces for the same program name across BAM, Prefetch, downloads, and deletions.",
     }
 
 
@@ -12592,6 +13261,13 @@ def build_scan_review_bundle(
         deletion_cleanup_analysis=deletion_cleanup_analysis,
         filesystem_evidence_integrity=filesystem_evidence_integrity,
     )
+    evidence_chains = build_reviewer_evidence_chains(
+        executor_artifact_evidence=executor_artifact_evidence,
+        trash=trash,
+        browser_download_history=browser_download_history,
+        forensic_bundle=forensic_bundle,
+        bam=bam,
+    )
     return {
         "available": True,
         "last_computer_activity": last_computer_activity,
@@ -12599,6 +13275,7 @@ def build_scan_review_bundle(
         "string_detection": string_detection,
         "execution_activity": execution_activity,
         "download_history": browser_download_history or {"available": False, "items": []},
+        "evidence_chains": evidence_chains,
     }
 
 
@@ -13012,7 +13689,7 @@ def _blend_hex(c1: str, c2: str, t: float) -> str:
 
 
 class RectButton(Frame):
-    """Sharp rectangular button with smooth hover transition."""
+    """Rectangular button with gradient fill, hover glow, and press animation."""
 
     def __init__(
         self,
@@ -13024,64 +13701,164 @@ class RectButton(Frame):
         height: int = 44,
         bg: str = "#0a0a0c",
         fill: str = "#dc2626",
+        fill_bottom: str | None = None,
         hover_fill: str = "#ef4444",
+        hover_fill_bottom: str | None = None,
         outline: str | None = None,
+        hover_outline: str | None = None,
         text_color: str = "#ffffff",
+        primary: bool = True,
     ) -> None:
         super().__init__(master, bg=bg, highlightthickness=0, bd=0)
         self._command = command
         self._width = width
         self._height = height
-        self._fill = fill
-        self._hover_fill = hover_fill
-        self._rest_fill = fill
-        self._outline = outline or fill
-        self._rest_outline = self._outline
+        self._text = text
+        self._text_color = text_color
+        self._primary = primary
+        self._hovered = False
+        self._pressed = False
+        self._press_offset = 0.0
         self._anim_job: str | None = None
+
+        self._rest_top = fill
+        self._rest_bottom = fill_bottom or _blend_hex(fill, "#000000", 0.28)
+        self._hover_top = hover_fill
+        self._hover_bottom = hover_fill_bottom or _blend_hex(hover_fill, "#000000", 0.18)
+        self._rest_outline = outline or (_blend_hex(fill, "#ffffff", 0.14) if primary else outline or fill)
+        self._hover_outline = hover_outline or (
+            _blend_hex(hover_fill, "#ffffff", 0.22) if primary else _blend_hex(outline or "#252528", "#ffffff", 0.1)
+        )
+
+        self._top = self._rest_top
+        self._bottom = self._rest_bottom
+        self._outline_color = self._rest_outline
+
         self._canvas = Canvas(self, width=width, height=height, bg=bg, highlightthickness=0, bd=0, cursor="hand2")
         self._canvas.pack()
-        self._shape = self._canvas.create_rectangle(
-            1, 1, width - 1, height - 1, fill=fill, outline=self._outline, width=1
-        )
-        self._canvas.create_text(
-            width // 2, height // 2, text=text, fill=text_color, font=("Segoe UI", 10, "bold")
-        )
-        self._canvas.bind("<Enter>", lambda _e: self._animate_to(self._hover_fill, self._hover_fill))
-        self._canvas.bind("<Leave>", lambda _e: self._animate_to(self._rest_fill, self._rest_outline))
-        self._canvas.bind("<ButtonPress-1>", lambda _e: self._apply_fill(_blend_hex(self._fill, "#000000", 0.1)))
+        self._paint()
+
+        self._canvas.bind("<Enter>", self._on_enter)
+        self._canvas.bind("<Leave>", self._on_leave)
+        self._canvas.bind("<ButtonPress-1>", self._on_press)
         self._canvas.bind("<ButtonRelease-1>", self._on_release)
 
-    def _apply_fill(self, color: str, outline: str | None = None) -> None:
-        self._fill = color
-        self._canvas.itemconfigure(self._shape, fill=color, outline=outline or color)
+    def _paint(self) -> None:
+        self._canvas.delete("all")
+        offset = int(round(self._press_offset))
+        x0, y0 = 1, 1 + offset
+        x1, y1 = self._width - 1, self._height - 1 + offset
+        height = max(y1 - y0, 1)
 
-    def _animate_to(self, target_fill: str, target_outline: str) -> None:
+        for i in range(height):
+            t = i / max(height - 1, 1)
+            color = _blend_hex(self._top, self._bottom, t)
+            if self._primary and self._hovered and i < height // 3:
+                color = _blend_hex(color, "#ffffff", 0.12 * (1 - i / max(height // 3, 1)))
+            y = y0 + i
+            self._canvas.create_line(x0, y, x1, y, fill=color)
+
+        self._canvas.create_rectangle(x0, y0, x1, y1, outline=self._outline_color, width=1)
+
+        if self._primary and self._hovered and not self._pressed:
+            shine = _blend_hex(self._top, "#ffffff", 0.35)
+            self._canvas.create_line(x0 + 3, y0 + 1, x1 - 3, y0 + 1, fill=shine)
+
+        text_y = (y0 + y1) // 2
+        self._canvas.create_text(
+            self._width // 2,
+            text_y,
+            text=self._text,
+            fill=self._text_color,
+            font=("Segoe UI", 10, "bold"),
+        )
+
+    def _cancel_anim(self) -> None:
         if self._anim_job is not None:
-            self._canvas.after_cancel(self._anim_job)
-        start_fill, start_outline = self._fill, self._rest_outline
+            try:
+                self._canvas.after_cancel(self._anim_job)
+            except Exception:
+                pass
+            self._anim_job = None
+
+    def destroy(self) -> None:
+        self._cancel_anim()
+        super().destroy()
+
+    def _target_state(self) -> tuple[str, str, str, float]:
+        if self._pressed:
+            top = _blend_hex(self._hover_top if self._hovered else self._rest_top, "#000000", 0.14)
+            bottom = _blend_hex(self._hover_bottom if self._hovered else self._rest_bottom, "#000000", 0.14)
+            outline = self._hover_outline if self._hovered else self._rest_outline
+            return top, bottom, outline, 2.0
+        if self._hovered:
+            return self._hover_top, self._hover_bottom, self._hover_outline, 0.0
+        return self._rest_top, self._rest_bottom, self._rest_outline, 0.0
+
+    def _animate_state(self) -> None:
+        self._cancel_anim()
+        target_top, target_bottom, target_outline, target_offset = self._target_state()
+        start_top, start_bottom = self._top, self._bottom
+        start_outline = self._outline_color
+        start_offset = self._press_offset
         state = {"step": 0}
+        steps = 8
 
         def tick() -> None:
+            if not self.winfo_exists():
+                self._anim_job = None
+                return
             state["step"] += 1
-            t = _ease_out_cubic(state["step"] / 8)
-            fill = _blend_hex(start_fill, target_fill, t)
-            outline = _blend_hex(start_outline, target_outline, t)
-            self._apply_fill(fill, outline)
-            if state["step"] < 8:
+            t = _ease_out_cubic(state["step"] / steps)
+            self._top = _blend_hex(start_top, target_top, t)
+            self._bottom = _blend_hex(start_bottom, target_bottom, t)
+            self._outline_color = _blend_hex(start_outline, target_outline, t)
+            self._press_offset = start_offset + (target_offset - start_offset) * t
+            self._paint()
+            if state["step"] < steps:
                 self._anim_job = self._canvas.after(12, tick)
             else:
-                self._fill = target_fill
+                self._top = target_top
+                self._bottom = target_bottom
+                self._outline_color = target_outline
+                self._press_offset = target_offset
                 self._anim_job = None
 
-        if start_fill != target_fill or start_outline != target_outline:
+        if (
+            start_top != target_top
+            or start_bottom != target_bottom
+            or start_outline != target_outline
+            or abs(start_offset - target_offset) > 0.01
+        ):
             tick()
+        else:
+            self._paint()
+
+    def _on_enter(self, _event) -> None:
+        self._hovered = True
+        self._animate_state()
+
+    def _on_leave(self, _event) -> None:
+        self._hovered = False
+        self._pressed = False
+        self._animate_state()
+
+    def _on_press(self, _event) -> None:
+        self._pressed = True
+        self._animate_state()
 
     def _on_release(self, event) -> None:
         inside = 0 <= event.x <= self._width and 0 <= event.y <= self._height
-        hover_outline = self._hover_fill if inside else self._rest_outline
-        self._animate_to(self._hover_fill if inside else self._rest_fill, hover_outline)
+        self._pressed = False
         if inside and self._command is not None:
-            self._command()
+            self._cancel_anim()
+            self._press_offset = 0.0
+            command = self._command
+            self.after_idle(command)
+            return
+        if not inside:
+            self._hovered = False
+        self._animate_state()
 
 
 class DiagnosticApp:
@@ -13097,6 +13874,8 @@ class DiagnosticApp:
     WIN_HEIGHT = 400
     TEXT_WRAP = 320
     BTN_WIDTH = 164
+    RIGHT_COL_WIDTH = 272
+    WELCOME_BTN_WIDTH = 248
 
     def __init__(self) -> None:
         self.root = Tk()
@@ -13120,7 +13899,7 @@ class DiagnosticApp:
         self._viewport: Frame | None = None
         self._transition_job: str | None = None
         self._fade_widgets: list[tuple[ttk.Label, float]] = []
-        self.progress = ttk.Progressbar(self.root, maximum=100, mode="determinate")
+        self.progress: ttk.Progressbar | None = None
         self.configure_style()
         self._build_shell()
         self._show_screen(self._build_welcome_content)
@@ -13193,12 +13972,12 @@ class DiagnosticApp:
                 pass
             self._transition_job = None
 
-    def _show_screen(self, builder) -> None:
+    def _show_screen(self, builder, *, animated: bool = True) -> None:
         self._cancel_transition()
-        if self._screen is not None and self._screen.winfo_children():
-            self._animate_out(lambda: self._mount_screen(builder))
+        if animated and self._screen is not None and self._screen.winfo_children():
+            self._animate_out(lambda: self._mount_screen(builder, animated=animated))
             return
-        self._mount_screen(builder)
+        self._mount_screen(builder, animated=animated)
 
     def _animate_out(self, on_done) -> None:
         steps = 10
@@ -13219,14 +13998,25 @@ class DiagnosticApp:
 
         tick()
 
-    def _mount_screen(self, builder) -> None:
+    def _mount_screen(self, builder, *, animated: bool = True) -> None:
         if self._screen is None:
             return
         for child in self._screen.winfo_children():
             child.destroy()
         self._fade_widgets = []
         builder()
-        self._animate_in()
+        if animated:
+            self._animate_in()
+        else:
+            self._apply_screen_offset(0)
+            self._finalize_fade_widgets()
+
+    def _finalize_fade_widgets(self) -> None:
+        for widget, _delay in self._fade_widgets:
+            try:
+                widget.configure(foreground=widget._fade_target)
+            except Exception:
+                pass
 
     def _animate_in(self) -> None:
         steps = 12
@@ -13260,7 +14050,7 @@ class DiagnosticApp:
         left = Frame(row, bg=self.UI_BG)
         left.pack(side="left", fill=BOTH, expand=True)
         Frame(row, bg=self.UI_BORDER, width=1).pack(side="left", fill="y", padx=24)
-        right = Frame(row, bg=self.UI_BG, width=300)
+        right = Frame(row, bg=self.UI_BG, width=self.RIGHT_COL_WIDTH)
         right.pack(side="left", fill=BOTH)
         right.pack_propagate(False)
         return left, right
@@ -13296,42 +14086,64 @@ class DiagnosticApp:
                 text,
                 command,
                 width=btn_width,
-                height=40,
+                height=44,
                 bg=self.UI_BG,
                 fill=self.UI_ACCENT,
+                fill_bottom="#991b1b",
                 hover_fill=self.UI_ACCENT_HOVER,
+                hover_fill_bottom="#dc2626",
+                primary=True,
             )
         return RectButton(
             parent,
             text,
             command,
             width=btn_width,
-            height=40,
+            height=44,
             bg=self.UI_BG,
             fill=self.UI_SURFACE,
-            hover_fill="#1a1a1e",
+            fill_bottom="#0c0c0e",
+            hover_fill="#1c1c20",
+            hover_fill_bottom="#141418",
             outline=self.UI_BORDER,
+            hover_outline="#3f3f46",
+            primary=False,
         )
 
     def _build_welcome_content(self) -> None:
         left, right = self._split_columns()
-        self._fade_label(left, "WELCOME", "Eyebrow.TLabel", delay=0.0).pack(anchor="w")
-        self._fade_label(left, "Virello Scanner", "Title.TLabel", delay=0.04).pack(anchor="w", pady=(6, 0))
+        left_block = Frame(left, bg=self.UI_BG)
+        left_block.pack(fill=BOTH, expand=True)
+        left_inner = Frame(left_block, bg=self.UI_BG)
+        left_inner.pack(expand=True, anchor="w")
+        self._fade_label(left_inner, "WELCOME", "Eyebrow.TLabel", delay=0.0).pack(anchor="w")
+        self._fade_label(left_inner, "Virello Scanner", "Title.TLabel", delay=0.04).pack(anchor="w", pady=(6, 0))
         self._fade_label(
-            left,
+            left_inner,
             "Secure remote system diagnostics. Run a one-time scan with your session PIN and submit results to your reviewer.",
             "Muted.TLabel",
             delay=0.08,
             wraplength=self.TEXT_WRAP,
         ).pack(anchor="w", pady=(12, 0))
-        actions = Frame(right, bg=self.UI_BG)
-        actions.pack(expand=True)
-        btn_row = Frame(actions, bg=self.UI_BG)
-        btn_row.pack(expand=True)
-        self._rect_btn(btn_row, "Get Started", lambda: self._show_screen(self._build_pin_content)).pack(
-            side="left", padx=(0, 8)
-        )
-        self._rect_btn(btn_row, "Discord", lambda: webbrowser.open(DISCORD_URL), primary=False).pack(side="left")
+        right_block = Frame(right, bg=self.UI_BG)
+        right_block.pack(fill=BOTH, expand=True)
+        btn_col = Frame(right_block, bg=self.UI_BG)
+        btn_col.pack(expand=True)
+        btn_stack = Frame(btn_col, bg=self.UI_BG)
+        btn_stack.pack(expand=True)
+        self._rect_btn(
+            btn_stack,
+            "Get Started",
+            lambda: self._show_screen(self._build_pin_content),
+            width=self.WELCOME_BTN_WIDTH,
+        ).pack(fill="x", pady=(0, 10))
+        self._rect_btn(
+            btn_stack,
+            "Discord",
+            lambda: webbrowser.open(DISCORD_URL),
+            primary=False,
+            width=self.WELCOME_BTN_WIDTH,
+        ).pack(fill="x")
 
     def _build_pin_content(self) -> None:
         left, right = self._split_columns()
@@ -13403,7 +14215,7 @@ class DiagnosticApp:
         self._show_screen(self._build_pin_content)
 
     def build_progress_screen(self) -> None:
-        self._show_screen(self._build_progress_content)
+        self._show_screen(self._build_progress_content, animated=False)
 
     def set_stage(self, stage: str, state: str) -> None:
         label = self.stage_labels.get(stage)
@@ -13419,7 +14231,8 @@ class DiagnosticApp:
 
     def set_progress_percent(self, percent: float) -> None:
         clamped = max(0.0, min(100.0, float(percent)))
-        self.progress.config(maximum=100, value=clamped)
+        if self.progress is not None:
+            self.progress.config(maximum=100, value=clamped)
         self.progress_percent.set(f"{round(clamped)}%")
         self.root.update_idletasks()
 
@@ -13430,7 +14243,13 @@ class DiagnosticApp:
         if not self.consent.get():
             messagebox.showerror("Agreement required", "Please agree to run the diagnostic scan before continuing.")
             return
+        self.progress_percent.set("0%")
+        self.status.set("Starting scan...")
+        self.stage_labels = {}
         self.build_progress_screen()
+        self.root.after_idle(self._begin_scan_thread)
+
+    def _begin_scan_thread(self) -> None:
         thread = threading.Thread(target=self.scan_and_upload, daemon=True)
         thread.start()
 

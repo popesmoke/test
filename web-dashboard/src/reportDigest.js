@@ -51,7 +51,29 @@ const SYSTEM_NOISE_EXES = new Set([
   "windowsterminal.exe",
   "nvidia overlay.exe",
   "nvcontainer.exe",
+  "searchprotocolhost.exe",
+  "searchindexer.exe",
+  "searchfilterhost.exe",
+  "compattelrunner.exe",
+  "mousocoreworker.exe",
 ]);
+
+function isActivityEventWorthy(event) {
+  const summary = String(event?.summary || "").toLowerCase();
+  const path = String(event?.path || "").toLowerCase();
+  const kind = String(event?.kind || "").toLowerCase();
+  const category = String(event?.category || "").toLowerCase();
+
+  if (category === "deletions") return true;
+  if (kind === "shell_history" || kind === "removed_executor_artifact") return true;
+  if (summary.includes("executor") || summary.includes("suspicious")) return true;
+  if (summary.includes("a program was run or launched on this pc")) return false;
+  if (summary.includes("a program was run on this pc")) return false;
+  if (summary.includes("windows cached evidence")) return false;
+  if (path.includes("\\prefetch\\") && !summary.includes("executor")) return false;
+  if (kind === "prefetch" || kind === "userassist" || kind === "pca_compat") return false;
+  return category === "files" || category === "commands" || category === "execution";
+}
 
 const SYSTEM_PATH_MARKERS = [
   "\\windows\\system32\\",
@@ -91,13 +113,15 @@ export function scanReviewFromReport(report) {
 
 function enrichBundledScanReview(bundled, report) {
   const fallback = buildClientScanReview(report);
-  const events = [...(bundled.last_computer_activity?.events ?? [])].map((event) => {
-    const safeAt = sanitizeEventTimestamp(report, event.occurred_at, event.kind || event.category);
-    if (!safeAt) {
-      return { ...event, occurred_at: null, time_unknown: true };
-    }
-    return event;
-  });
+  const events = [...(bundled.last_computer_activity?.events ?? [])]
+    .filter(isActivityEventWorthy)
+    .map((event) => {
+      const safeAt = sanitizeEventTimestamp(report, event.occurred_at, event.kind || event.category);
+      if (!safeAt) {
+        return { ...event, occurred_at: null, time_unknown: true };
+      }
+      return event;
+    });
   const seenEvents = new Set(events.map((e) => `${String(e.path || "").toLowerCase()}|${e.occurred_at || ""}`));
 
   for (const event of fallback.last_computer_activity?.events ?? []) {
@@ -139,6 +163,86 @@ function enrichBundledScanReview(bundled, report) {
       total_count: inventory.length,
       suspicious_count: inventory.filter((row) => row.suspicious).length,
     },
+    evidence_chains: bundled.evidence_chains ?? buildEvidenceChainsFromReport(report),
+  };
+}
+
+function buildEvidenceChainsFromReport(report) {
+  const sec = report.security_integrity_signals ?? {};
+  const perf = report.performance_environment ?? {};
+  const byStem = new Map();
+
+  const ensure = (stem, labels = []) => {
+    const key = (stem || "UNKNOWN").toUpperCase();
+    if (!byStem.has(key)) byStem.set(key, { stem: key, labels: [], steps: [] });
+    const row = byStem.get(key);
+    for (const label of labels) {
+      if (label && !row.labels.includes(label)) row.labels.push(label);
+    }
+    return row;
+  };
+
+  const addStep = ({ stem, labels, source, path, occurredAt, fileExists, detail }) => {
+    const chain = ensure(stem || labels[0] || "UNKNOWN", labels);
+    chain.steps.push({
+      action: source.includes("delete") || source.includes("recycle") ? "deleted" : "traced",
+      detail: detail || "Forensic trace recorded.",
+      source,
+      path: (path || "").slice(0, 520),
+      occurred_at: occurredAt || null,
+      file_exists: fileExists ?? null,
+    });
+  };
+
+  for (const hit of sec.executor_artifact_evidence?.hits ?? []) {
+    const path = hit.path || "";
+    const labels = [...(hit.executor_name_hits ?? [])];
+    if (!labels.length && isReviewNoisePath(path)) continue;
+    const stem = pathBasename(path).replace(/\.[^.]+$/, "").toUpperCase();
+    addStep({
+      stem,
+      labels,
+      source: hit.artifact_source || "artifact",
+      path,
+      occurredAt: hit.display_at || hit.modified,
+      fileExists: hit.file_exists,
+      detail: hit.note,
+    });
+  }
+
+  for (const item of perf.trash?.items ?? []) {
+    const path = item.original_path || "";
+    if (!path || (!item.suspicious_recycle_item && !(item.executor_name_hits ?? []).length)) continue;
+    addStep({
+      stem: pathBasename(path).replace(/\.[^.]+$/, "").toUpperCase(),
+      labels: item.executor_name_hits ?? [],
+      source: "recycle_bin",
+      path,
+      occurredAt: item.display_at || item.deleted_at || item.modified,
+      fileExists: false,
+    });
+  }
+
+  const chains = [];
+  for (const chain of byStem.values()) {
+    if ((chain.steps ?? []).length < 2) continue;
+    const sources = new Set(chain.steps.map((s) => s.source));
+    chain.confidence = sources.size >= 3 || chain.steps.some((s) => s.action === "deleted") ? "high" : "medium";
+    chain.summary = chain.labels.length
+      ? `${chain.labels.join(", ")}: ${chain.steps.length} traces line up.`
+      : `${chain.stem}: ${chain.steps.length} traces line up.`;
+    chain.steps.sort((a, b) => tsMs(b.occurred_at) - tsMs(a.occurred_at));
+    chains.push(chain);
+  }
+  chains.sort((a, b) => {
+    if (a.confidence !== b.confidence) return a.confidence === "high" ? -1 : 1;
+    return (b.steps?.length ?? 0) - (a.steps?.length ?? 0);
+  });
+
+  return {
+    available: true,
+    chain_count: chains.length,
+    chains: chains.slice(0, 40),
   };
 }
 
@@ -297,16 +401,27 @@ function buildClientScanReview(report) {
       hit.artifact_source || "removed_executor_artifact",
     );
   }
+  const taggedDeletions = deletionEvents.map((event) => ({ ...event, filter: "deletions" }));
   const activityEvents = [
-    ...deletionEvents,
+    ...taggedDeletions,
     ...(activity.events ?? [])
       .filter((e) => e.occurred_at && e.category !== "deletions" && !isReviewNoisePath(e.path))
-      .map((e) => ({
-        occurred_at: e.occurred_at,
-        category: e.category,
-        summary: e.label || e.detail,
-        path: e.path,
-      })),
+      .map((e) => {
+        const summary = e.label || e.detail;
+        const category = e.category || "";
+        let filter = "other";
+        if (category === "execution" || String(summary).toLowerCase().includes("executor")) filter = "executors";
+        else if (category === "files") filter = "suspicious";
+        else if (category === "commands") filter = "executors";
+        return {
+          occurred_at: e.occurred_at,
+          category,
+          summary,
+          path: e.path,
+          filter,
+        };
+      })
+      .filter((e) => e.filter !== "other"),
   ].sort((a, b) => tsMs(b.occurred_at) - tsMs(a.occurred_at));
 
   const downloadItems = (sec.browser_download_history?.items ?? []).map((dl) => ({
@@ -358,5 +473,6 @@ function buildClientScanReview(report) {
       suspicious_count: downloadItems.filter((i) => i.suspicious).length,
       items: downloadItems.slice(0, 120),
     },
+    evidence_chains: buildEvidenceChainsFromReport(report),
   };
 }
