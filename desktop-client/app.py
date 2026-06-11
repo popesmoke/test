@@ -13093,13 +13093,16 @@ class DiagnosticApp:
     UI_TEXT = "#fafafa"
     UI_MUTED = "#71717a"
     UI_SUCCESS = "#16a34a"
-    CONTENT_WIDTH = 396
+    WIN_WIDTH = 720
+    WIN_HEIGHT = 400
+    TEXT_WRAP = 320
+    BTN_WIDTH = 164
 
     def __init__(self) -> None:
         self.root = Tk()
         self.root.title("Virello Scanner")
-        self.root.geometry("500x580")
-        self.root.minsize(500, 580)
+        self.root.geometry(f"{self.WIN_WIDTH}x{self.WIN_HEIGHT}")
+        self.root.minsize(self.WIN_WIDTH, self.WIN_HEIGHT)
         self.root.resizable(False, False)
         self.root.configure(bg=self.UI_BG)
         self.logo_image = self.load_logo()
@@ -13167,20 +13170,20 @@ class DiagnosticApp:
         )
 
     def _build_shell(self) -> None:
-        header = Frame(self.root, bg=self.UI_SURFACE, height=52)
+        header = Frame(self.root, bg=self.UI_SURFACE, height=44)
         header.pack(fill="x")
         header.pack_propagate(False)
-        header_inner = Frame(header, bg=self.UI_SURFACE, padx=24)
+        header_inner = Frame(header, bg=self.UI_SURFACE, padx=20)
         header_inner.pack(fill=BOTH, expand=True)
         if self.logo_image:
             ttk.Label(header_inner, image=self.logo_image, style="Surface.TLabel").pack(side="left", padx=(0, 10))
-        ttk.Label(header_inner, text="VIRELLO SCANNER", style="Brand.TLabel").pack(side="left", pady=14)
+        ttk.Label(header_inner, text="VIRELLO SCANNER", style="Brand.TLabel").pack(side="left", pady=10)
         Frame(self.root, bg=self.UI_BORDER, height=1).pack(fill="x")
-        viewport = Frame(self.root, bg=self.UI_BG, padx=52, pady=32)
+        viewport = Frame(self.root, bg=self.UI_BG, padx=28, pady=22)
         viewport.pack(fill=BOTH, expand=True)
         self._viewport = viewport
-        self._screen = Frame(viewport, bg=self.UI_BG, width=self.CONTENT_WIDTH)
-        self._screen.place(x=0, y=0, relwidth=1)
+        self._screen = Frame(viewport, bg=self.UI_BG)
+        self._screen.pack(fill=BOTH, expand=True)
 
     def _cancel_transition(self) -> None:
         if self._transition_job is not None:
@@ -13249,7 +13252,18 @@ class DiagnosticApp:
     def _apply_screen_offset(self, offset: int) -> None:
         if self._screen is None:
             return
-        self._screen.place_configure(y=offset)
+        self._screen.pack_configure(pady=(offset, 0))
+
+    def _split_columns(self) -> tuple[Frame, Frame]:
+        row = Frame(self._screen, bg=self.UI_BG)
+        row.pack(fill=BOTH, expand=True)
+        left = Frame(row, bg=self.UI_BG)
+        left.pack(side="left", fill=BOTH, expand=True)
+        Frame(row, bg=self.UI_BORDER, width=1).pack(side="left", fill="y", padx=24)
+        right = Frame(row, bg=self.UI_BG, width=300)
+        right.pack(side="left", fill=BOTH)
+        right.pack_propagate(False)
+        return left, right
 
     def _apply_fade_opacity(self, opacity: float) -> None:
         for widget, delay in self._fade_widgets:
@@ -13274,17 +13288,15 @@ class DiagnosticApp:
         self._fade_widgets.append((label, delay))
         return label
 
-    def _rule(self, parent) -> None:
-        Frame(parent, bg=self.UI_BORDER, height=1).pack(fill="x", pady=20)
-
-    def _rect_btn(self, parent, text: str, command, *, primary: bool = True) -> RectButton:
+    def _rect_btn(self, parent, text: str, command, *, primary: bool = True, width: int | None = None) -> RectButton:
+        btn_width = width or self.BTN_WIDTH
         if primary:
             return RectButton(
                 parent,
                 text,
                 command,
-                width=self.CONTENT_WIDTH,
-                height=44,
+                width=btn_width,
+                height=40,
                 bg=self.UI_BG,
                 fill=self.UI_ACCENT,
                 hover_fill=self.UI_ACCENT_HOVER,
@@ -13293,8 +13305,8 @@ class DiagnosticApp:
             parent,
             text,
             command,
-            width=self.CONTENT_WIDTH,
-            height=44,
+            width=btn_width,
+            height=40,
             bg=self.UI_BG,
             fill=self.UI_SURFACE,
             hover_fill="#1a1a1e",
@@ -13302,80 +13314,82 @@ class DiagnosticApp:
         )
 
     def _build_welcome_content(self) -> None:
-        self._fade_label(self._screen, "WELCOME", "Eyebrow.TLabel", delay=0.0).pack(anchor="w")
-        self._fade_label(self._screen, "Virello Scanner", "Title.TLabel", delay=0.04).pack(anchor="w", pady=(6, 0))
+        left, right = self._split_columns()
+        self._fade_label(left, "WELCOME", "Eyebrow.TLabel", delay=0.0).pack(anchor="w")
+        self._fade_label(left, "Virello Scanner", "Title.TLabel", delay=0.04).pack(anchor="w", pady=(6, 0))
         self._fade_label(
-            self._screen,
+            left,
             "Secure remote system diagnostics. Run a one-time scan with your session PIN and submit results to your reviewer.",
             "Muted.TLabel",
             delay=0.08,
-            wraplength=self.CONTENT_WIDTH,
+            wraplength=self.TEXT_WRAP,
         ).pack(anchor="w", pady=(12, 0))
-        self._rule(self._screen)
-        btn_frame = Frame(self._screen, bg=self.UI_BG)
-        btn_frame.pack(fill="x", pady=(4, 0))
-        self._rect_btn(btn_frame, "Get Started", lambda: self._show_screen(self._build_pin_content)).pack(pady=(0, 10))
-        self._rect_btn(btn_frame, "Join Discord", lambda: webbrowser.open(DISCORD_URL), primary=False).pack()
+        actions = Frame(right, bg=self.UI_BG)
+        actions.pack(expand=True)
+        btn_row = Frame(actions, bg=self.UI_BG)
+        btn_row.pack(expand=True)
+        self._rect_btn(btn_row, "Get Started", lambda: self._show_screen(self._build_pin_content)).pack(
+            side="left", padx=(0, 8)
+        )
+        self._rect_btn(btn_row, "Discord", lambda: webbrowser.open(DISCORD_URL), primary=False).pack(side="left")
 
     def _build_pin_content(self) -> None:
-        self._fade_label(self._screen, "SESSION", "Eyebrow.TLabel", delay=0.0).pack(anchor="w")
-        self._fade_label(self._screen, "Enter PIN", "Title.TLabel", delay=0.04).pack(anchor="w", pady=(6, 0))
-        self._fade_label(
-            self._screen,
-            "Use the code provided by your reviewer.",
-            "Muted.TLabel",
-            delay=0.08,
-        ).pack(anchor="w", pady=(10, 16))
-        entry = ttk.Entry(self._screen, textvariable=self.pin, font=("Consolas", 18), justify="center")
+        left, right = self._split_columns()
+        self._fade_label(left, "SESSION", "Eyebrow.TLabel", delay=0.0).pack(anchor="w")
+        self._fade_label(left, "Enter PIN", "Title.TLabel", delay=0.04).pack(anchor="w", pady=(6, 0))
+        self._fade_label(left, "Use the code provided by your reviewer.", "Muted.TLabel", delay=0.08).pack(
+            anchor="w", pady=(10, 14)
+        )
+        entry = ttk.Entry(left, textvariable=self.pin, font=("Consolas", 18), justify="center")
         entry.pack(fill="x", ipady=4)
         entry.focus()
-        self._rule(self._screen)
-        self._fade_label(self._screen, "COLLECTION SUMMARY", "Eyebrow.TLabel", delay=0.1).pack(anchor="w")
-        for idx, item in enumerate(COLLECTED_CATEGORIES):
-            self._fade_label(self._screen, f"•  {item}", "Muted.TLabel", delay=0.12 + idx * 0.03, wraplength=self.CONTENT_WIDTH).pack(
-                anchor="w", pady=(8, 0)
-            )
         ttk.Checkbutton(
-            self._screen,
+            left,
             text="I agree to run this scan and submit results for review.",
             variable=self.consent,
-        ).pack(anchor="w", pady=(20, 0))
-        btn_frame = Frame(self._screen, bg=self.UI_BG)
-        btn_frame.pack(fill="x", pady=(24, 0))
-        self._rect_btn(btn_frame, "Start Scan", self.start_scan).pack(pady=(0, 10))
-        ttk.Button(
-            btn_frame,
-            text="Back",
-            style="Link.TButton",
-            command=lambda: self._show_screen(self._build_welcome_content),
-        ).pack(anchor="center")
+        ).pack(anchor="w", pady=(16, 0))
+        btn_row = Frame(left, bg=self.UI_BG)
+        btn_row.pack(anchor="w", pady=(18, 0))
+        self._rect_btn(btn_row, "Start Scan", self.start_scan, width=140).pack(side="left", padx=(0, 8))
+        self._rect_btn(btn_row, "Back", lambda: self._show_screen(self._build_welcome_content), primary=False, width=100).pack(
+            side="left"
+        )
+        self._fade_label(right, "COLLECTION SUMMARY", "Eyebrow.TLabel", delay=0.1).pack(anchor="w")
+        for idx, item in enumerate(COLLECTED_CATEGORIES):
+            self._fade_label(
+                right,
+                f"•  {item}",
+                "Muted.TLabel",
+                delay=0.12 + idx * 0.03,
+                wraplength=260,
+            ).pack(anchor="w", pady=(10, 0))
 
     def _build_progress_content(self) -> None:
-        self._fade_label(self._screen, "SCAN", "Eyebrow.TLabel", delay=0.0).pack(anchor="w")
-        self._fade_label(self._screen, "In progress", "Title.TLabel", delay=0.04).pack(anchor="w", pady=(6, 0))
-        ttk.Label(self._screen, textvariable=self.status, style="Muted.TLabel").pack(anchor="w", pady=(10, 20))
-        progress_header = Frame(self._screen, bg=self.UI_BG)
+        left, right = self._split_columns()
+        self._fade_label(left, "SCAN", "Eyebrow.TLabel", delay=0.0).pack(anchor="w")
+        self._fade_label(left, "In progress", "Title.TLabel", delay=0.04).pack(anchor="w", pady=(6, 0))
+        ttk.Label(left, textvariable=self.status, style="Muted.TLabel").pack(anchor="w", pady=(10, 16))
+        progress_header = Frame(left, bg=self.UI_BG)
         progress_header.pack(fill="x")
         ttk.Label(progress_header, text="Progress", style="Muted.TLabel").pack(side="left")
         percent = self._fade_label(progress_header, "0%", "Percent.TLabel", delay=0.06)
         percent.configure(textvariable=self.progress_percent)
         percent.pack(side="right")
         self.progress = ttk.Progressbar(
-            self._screen,
+            left,
             maximum=100,
             mode="determinate",
-            length=self.CONTENT_WIDTH,
+            length=320,
             style="Accent.Horizontal.TProgressbar",
         )
         self.progress.pack(fill="x", pady=(10, 0))
-        self._rule(self._screen)
-        self._fade_label(self._screen, "STAGES", "Eyebrow.TLabel", delay=0.08).pack(anchor="w", pady=(0, 12))
+        self._fade_label(right, "STAGES", "Eyebrow.TLabel", delay=0.08).pack(anchor="w", pady=(0, 10))
         self.stage_labels = {}
         for stage in SCAN_STAGES:
-            row = Frame(self._screen, bg=self.UI_BG)
-            row.pack(fill="x", pady=(0, 0))
+            row = Frame(right, bg=self.UI_BG)
+            row.pack(fill="x")
             inner = Frame(row, bg=self.UI_BG)
-            inner.pack(fill="x", pady=10)
+            inner.pack(fill="x", pady=7)
             ttk.Label(inner, text=stage, style="Stage.TLabel").pack(side="left")
             status_label = ttk.Label(inner, text="Waiting", style="StageStatus.TLabel")
             status_label.pack(side="right")
