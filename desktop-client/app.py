@@ -5748,15 +5748,52 @@ def windows_service_signals() -> dict:
     if platform.system() != "Windows":
         return {"available": False, "reason": "Windows services are Windows-only"}
 
-    services = ["SysMain", "EventLog", "WinDefend", "SecurityHealthService", "DiagTrack", "PcaSvc"]
+    services = [
+        "SysMain",
+        "PcaSvc",
+        "DPS",
+        "EventLog",
+        "Schedule",
+        "WSearch",
+        "DusmSvc",
+        "Appinfo",
+        "CDPUserSvc",
+        "WinDefend",
+        "SecurityHealthService",
+        "DiagTrack",
+    ]
+    ps_names = ",".join(f"'{name}'" for name in services)
     script = (
-        "$names=@('SysMain','EventLog','WinDefend','SecurityHealthService','DiagTrack','PcaSvc');"
+        f"$names=@({ps_names});"
         "$names | ForEach-Object {"
         "$s=Get-Service -Name $_ -ErrorAction SilentlyContinue;"
         "if($s){ [pscustomobject]@{Name=$s.Name; DisplayName=$s.DisplayName; Status=$s.Status; StartType=$s.StartType} }"
         "} | ConvertTo-Json -Depth 3"
     )
-    return {"available": True, "services_checked": services, "raw": run_command(["powershell", "-NoProfile", "-Command", script])[:8000]}
+    raw = run_command(["powershell", "-NoProfile", "-Command", script])[:8000]
+    items: list[dict[str, object]] = []
+    try:
+        parsed = json.loads(raw) if raw and not raw.startswith("Unavailable:") else None
+        rows = parsed if isinstance(parsed, list) else ([parsed] if isinstance(parsed, dict) else [])
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            items.append(
+                {
+                    "name": str(row.get("Name") or ""),
+                    "display_name": str(row.get("DisplayName") or ""),
+                    "status": str(row.get("Status") or ""),
+                    "start_type": str(row.get("StartType") or ""),
+                }
+            )
+    except json.JSONDecodeError:
+        items = []
+    return {
+        "available": True,
+        "services_checked": services,
+        "items": items,
+        "raw": raw,
+    }
 
 
 def usb_event_summary() -> dict:
@@ -6114,7 +6151,41 @@ def build_filesystem_evidence_integrity(
         )
 
     services_raw = str((services or {}).get("raw") or "")
-    if services_raw and re.search(r'"Name"\s*:\s*"EventLog"[^}]*"Status"\s*:\s*(?:1|"Stopped")', services_raw, re.I):
+    # Prefer structured service parse, fall back to raw regex matching.
+    service_items = list((services or {}).get("items") or [])
+    if not service_items:
+        try:
+            parsed = json.loads(services_raw) if services_raw.strip().startswith(("[", "{")) else None
+            rows = parsed if isinstance(parsed, list) else ([parsed] if isinstance(parsed, dict) else [])
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                service_items.append(
+                    {
+                        "name": str(row.get("Name") or row.get("name") or ""),
+                        "status": str(row.get("Status") or row.get("status") or ""),
+                        "start_type": str(row.get("StartType") or row.get("start_type") or ""),
+                    }
+                )
+        except json.JSONDecodeError:
+            service_items = []
+
+    def _svc_lookup(name: str) -> dict[str, str] | None:
+        low = name.lower()
+        for row in service_items:
+            if str(row.get("name") or "").lower() == low:
+                return {
+                    "name": str(row.get("name") or name),
+                    "status": str(row.get("status") or ""),
+                    "start_type": str(row.get("start_type") or ""),
+                }
+        return None
+
+    ev = _svc_lookup("EventLog")
+    ev_stopped = (
+        ev is not None and str(ev.get("status") or "").lower() == "stopped"
+    ) or (services_raw and re.search(r'"Name"\s*:\s*"EventLog"[^}]*"Status"\s*:\s*(?:1|"Stopped")', services_raw, re.I))
+    if ev_stopped:
         add_finding(
             severity="high",
             category="event_log",
@@ -6126,6 +6197,50 @@ def build_filesystem_evidence_integrity(
             ),
             evidence_source="windows_services",
         )
+
+    # Additional service health detections requested (no skipping; just surface if stopped/disabled/missing).
+    critical_services: list[tuple[str, str, str]] = [
+        ("SysMain", "system", "SysMain service affects prefetching heuristics and runtime context."),
+        ("PcaSvc", "pca", "PCA service affects Program Compatibility Assistant execution records."),
+        ("DPS", "diagnostics", "DPS provides diagnostic telemetry used by Windows subsystems."),
+        ("Schedule", "scheduled_tasks", "Task Scheduler service affects scheduled task enumeration and execution."),
+        ("WSearch", "search", "Windows Search service can affect file indexing and related traces."),
+        ("DusmSvc", "telemetry", "Data Usage service provides system usage telemetry."),
+        ("Appinfo", "uac", "Application Information service is involved in UAC and app launch context."),
+        ("CDPUserSvc", "telemetry", "Connected Devices Platform User service provides device/activity signals."),
+    ]
+    for svc_name, category, note in critical_services:
+        row = _svc_lookup(svc_name)
+        if row is None:
+            add_finding(
+                severity="medium",
+                category="windows_service",
+                action="missing",
+                detail=f"Service '{svc_name}' was not returned by Get-Service.",
+                impact=f"{note} If absent or unreadable, related evidence may be reduced.",
+                evidence_source="windows_services",
+            )
+            continue
+        status = str(row.get("status") or "").lower()
+        start_type = str(row.get("start_type") or "").lower()
+        if status == "stopped":
+            add_finding(
+                severity="medium" if svc_name not in {"Schedule", "PcaSvc"} else "high",
+                category=category,
+                action="service_stopped",
+                detail=f"Service '{svc_name}' is stopped.",
+                impact=f"{note} While stopped, related evidence may not be produced.",
+                evidence_source="windows_services",
+            )
+        if start_type == "disabled":
+            add_finding(
+                severity="high" if svc_name in {"Schedule", "PcaSvc"} else "medium",
+                category=category,
+                action="service_disabled",
+                detail=f"Service '{svc_name}' start type is Disabled.",
+                impact=f"{note} Disabling it can reduce forensic artifacts and may indicate tampering.",
+                evidence_source="windows_services",
+            )
     if services_raw and not re.search(r"Sysmon", services_raw, re.I):
         sysmon_log_missing = True
         if isinstance(evidence, dict):
@@ -6559,6 +6674,20 @@ def bypass_resilience_signals(
             detail="The Windows Event Log service is not running, which reduces visibility into deletes and security events.",
             category="tamper",
             weight=20,
+        )
+
+    # BAM disablement reduces one of the strongest independent execution artifacts.
+    try:
+        bam_start = int(reg_data.get("BamDisabled")) if reg_data.get("BamDisabled") is not None else None
+    except (TypeError, ValueError):
+        bam_start = None
+    if bam_start == 4:
+        add(
+            severity="high",
+            title="BAM execution logging appears disabled",
+            detail="BAM registry state indicates Start=4 (Disabled), reducing historical execution evidence.",
+            category="tamper",
+            weight=18,
         )
 
     if str(reg_data.get("VssStatus") or "").lower() == "stopped":
