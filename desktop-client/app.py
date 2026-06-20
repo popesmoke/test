@@ -2907,6 +2907,22 @@ FULL_PC_SKIP_DIR_FRAGMENTS = (
     "\\windows\\assembly\\nativeimages_",
     "\\microsoft\\windows\\inetcache\\",
     "\\appdata\\local\\microsoft\\windows\\inetcache\\",
+    "\\roblox\\versions\\",
+    "\\roblox\\content\\",
+    "\\node_modules\\",
+    "\\windowsapps\\",
+    "\\appdata\\local\\packages\\",
+    "\\winsat\\",
+    "\\windows defender\\",
+    "\\epic games\\",
+    "\\riot games\\",
+    "\\bitdefender\\",
+    "\\program files\\dotnet\\",
+    "\\microsoft\\windows\\inetcache\\",
+    "\\package cache\\",
+    "\\nuget\\packages\\",
+    "\\steam\\steamapps\\common\\",
+    "\\steamapps\\common\\",
 )
 FULL_PC_PRUNE_DIR_NAMES = frozenset(
     {
@@ -2921,7 +2937,51 @@ FULL_PC_PRUNE_DIR_NAMES = frozenset(
         "winsxs",
     }
 )
-DISK_WALK_WORKERS = 2
+# Extensions skipped for indicator path scans outside user-writable zones (media/game assets).
+INDICATOR_LOW_VALUE_EXTENSIONS = frozenset(
+    {
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".gif",
+        ".webp",
+        ".bmp",
+        ".tif",
+        ".tiff",
+        ".ico",
+        ".svg",
+        ".heic",
+        ".mp4",
+        ".mkv",
+        ".avi",
+        ".mov",
+        ".wmv",
+        ".mp3",
+        ".wav",
+        ".flac",
+        ".ogg",
+        ".css",
+        ".map",
+        ".woff",
+        ".woff2",
+        ".ttf",
+        ".eot",
+        ".pak",
+        ".uasset",
+        ".umap",
+        ".dds",
+        ".fbx",
+        ".glb",
+        ".gltf",
+        ".unity3d",
+        ".bundle",
+        ".res",
+        ".resS",
+        ".assets",
+    }
+)
+BINARY_PROBE_QUICK_BYTES = 1_048_576
+DISK_WALK_WORKERS = 1
 BINARY_PROBE_WORKERS = min(12, max(6, (os.cpu_count() or 4)))
 
 ROBLOX_PROCESS_NAMES = frozenset({"robloxplayerbeta.exe", "robloxplayer.exe", "roblox.exe"})
@@ -3218,6 +3278,10 @@ class _BlocklistHashPipeline:
             thread.join(timeout=2.0)
         return self._hits, self._submitted
 
+    def is_full(self) -> bool:
+        with self._lock:
+            return self._submitted >= self._max_hashes
+
 
 class _FullPcScanBudget:
     """Shared walk budget so all drive workers stop once global limits are reached."""
@@ -3247,6 +3311,18 @@ class _FullPcScanBudget:
             self.total_hits += count
             if self.total_hits >= self._max_hits:
                 self.stop.set()
+
+    def check_early_stop(
+        self,
+        hash_pipeline: _BlocklistHashPipeline | None,
+        binary_pipeline: _BinaryProbePipeline | None,
+        indicator_collector: _ExecutorIndicatorCollector | None,
+    ) -> None:
+        hash_full = hash_pipeline is None or hash_pipeline.is_full()
+        binary_full = binary_pipeline is None or binary_pipeline.is_full()
+        indicator_full = indicator_collector is None or indicator_collector.is_saturated()
+        if hash_full and binary_full and indicator_full:
+            self.stop.set()
 
 
 class _BinaryProbePipeline:
@@ -3311,6 +3387,10 @@ class _BinaryProbePipeline:
         with self._lock:
             return dict(self._results), dict(self._paths)
 
+    def is_full(self) -> bool:
+        with self._lock:
+            return self._submitted >= FULL_PC_BINARY_PROBE_MAX_FILES
+
 
 class _RecentExecutableCollector:
     """Collect recent executables during the full-PC walk to avoid a second drive sweep."""
@@ -3366,6 +3446,13 @@ class _ExecutorIndicatorCollector:
             len(self._file_hits) >= self._MAX_FILE_HITS
             and len(self._traceback_hits) >= self._MAX_TRACEBACK_HITS
         )
+
+    def is_saturated(self) -> bool:
+        with self._lock:
+            return (
+                len(self._file_hits) >= self._MAX_FILE_HITS
+                and len(self._traceback_hits) >= self._MAX_TRACEBACK_HITS
+            )
 
     def observe_file(self, path: Path, patterns: dict[str, re.Pattern[str]]) -> None:
         with self._lock:
@@ -3456,6 +3543,35 @@ class _ExecutorIndicatorCollector:
 def executor_user_hash_scan_roots() -> list[tuple[Path, int]]:
     """Hash executables on every local and removable drive."""
     return full_pc_scan_roots()
+
+
+@functools.lru_cache(maxsize=1)
+def _executor_path_needles() -> tuple[str, ...]:
+    needles: set[str] = set()
+    for name in EXECUTOR_NAMES:
+        needles.add(name.lower())
+        for alias in EXECUTOR_ALIASES.get(name, ()):
+            if len(alias) >= 4:
+                needles.add(alias.lower())
+    for label, pattern in CHEAT_FILENAME_HINT_PATTERNS:
+        needles.add(label.replace("_", ""))
+    return tuple(sorted(needles, key=len, reverse=True))
+
+
+def path_warrants_indicator_scan(path_str: str) -> bool:
+    if executor_scan_path_excluded(path_str):
+        return False
+    if _path_is_user_writable_execution_zone(path_str):
+        return True
+    ext = Path(path_str).suffix.lower()
+    if ext in INDICATOR_LOW_VALUE_EXTENSIONS:
+        return False
+    if ext in {".log", ".txt", ".traceback", ".json", ".xml"}:
+        return True
+    if ext in USER_FOLDER_SCAN_EXTENSIONS or ext in FULL_PC_EXECUTABLE_EXTENSIONS:
+        return True
+    low = path_str.lower()
+    return any(needle in low for needle in _executor_path_needles() if len(needle) >= 4)
 
 
 @functools.lru_cache(maxsize=1)
@@ -4465,9 +4581,6 @@ def walk_files_depth_limited(
     if not root.is_dir():
         return
 
-    def _on_walk_error(_err: OSError) -> None:
-        return
-
     def _prioritize_dirnames(dirnames: list[str]) -> None:
         priority_names = ("downloads", "desktop", "documents", "appdata", "temp", "tmp", "users")
 
@@ -4480,36 +4593,46 @@ def walk_files_depth_limited(
 
         dirnames.sort(key=sort_key)
 
-    for dirpath, dirnames, filenames in os.walk(
-        root, topdown=True, followlinks=False, onerror=_on_walk_error
-    ):
+    def _prune_dirnames(dirnames: list[str]) -> None:
+        dirnames[:] = [
+            name
+            for name in dirnames
+            if name.lower() in {"downloads", "desktop", "documents", "appdata"}
+            or (name.lower() not in FULL_PC_PRUNE_DIR_NAMES and not name.startswith("."))
+        ]
+        _prioritize_dirnames(dirnames)
+
+    stack: list[tuple[Path, int]] = [(root, 0)]
+    while stack:
         if stop is not None and stop.is_set():
             return
-        current = Path(dirpath)
+        current, depth = stack.pop()
         current_low = str(current).lower().replace("/", "\\")
         if any(skip in current_low for skip in FULL_PC_SKIP_DIR_FRAGMENTS):
-            dirnames.clear()
             continue
         try:
-            rel_depth = len(current.relative_to(root).parts)
-        except ValueError:
-            dirnames[:] = []
+            with os.scandir(current) as entries:
+                subdirs: list[tuple[Path, int]] = []
+                for entry in entries:
+                    if stop is not None and stop.is_set():
+                        return
+                    try:
+                        if entry.is_file(follow_symlinks=False):
+                            yield Path(entry.path)
+                        elif entry.is_dir(follow_symlinks=False) and depth < max_depth:
+                            subdirs.append((Path(entry.path), depth + 1))
+                    except OSError:
+                        continue
+                if depth < max_depth and subdirs:
+                    names = [path.name for path, _child_depth in subdirs]
+                    _prune_dirnames(names)
+                    kept = set(names)
+                    pruned = [(path, child_depth) for path, child_depth in subdirs if path.name in kept]
+                    pruned.sort(key=lambda item: names.index(item[0].name))
+                    for path, child_depth in reversed(pruned):
+                        stack.append((path, child_depth))
+        except OSError:
             continue
-        if rel_depth >= max_depth:
-            dirnames.clear()
-        else:
-            dirnames[:] = [
-                name
-                for name in dirnames
-                if name.lower() in {"downloads", "desktop", "documents", "appdata"}
-                or (
-                    name.lower() not in FULL_PC_PRUNE_DIR_NAMES
-                    and not name.startswith(".")
-                )
-            ]
-            _prioritize_dirnames(dirnames)
-        for fn in filenames:
-            yield current / fn
 
 
 def _hash_blocklist_candidates(
@@ -4576,7 +4699,8 @@ def _path_is_suspicious_file_zone(path_str: str) -> bool:
 
 def _probe_executable_binary_labels(path: Path) -> list[str]:
     """Read PE/binary content and match embedded executor branding (survives renames)."""
-    if should_skip_binary_executor_probe(str(path)):
+    path_str = str(path)
+    if should_skip_binary_executor_probe(path_str):
         return []
     try:
         if not path.is_file():
@@ -4584,18 +4708,30 @@ def _probe_executable_binary_labels(path: Path) -> list[str]:
         size = path.stat().st_size
         if size <= 0 or size > FULL_PC_BINARY_PROBE_MAX_BYTES:
             return []
-        read_len = min(size, FULL_PC_BINARY_PROBE_MAX_BYTES)
+        user_zone = _path_is_user_writable_execution_zone(path_str)
+        max_read = FULL_PC_BINARY_PROBE_MAX_BYTES if user_zone else min(FULL_PC_BINARY_PROBE_MAX_BYTES, 2_097_152)
+        quick_read = min(size, BINARY_PROBE_QUICK_BYTES, max_read)
         with path.open("rb") as handle:
             try:
-                with mmap.mmap(handle.fileno(), read_len, access=mmap.ACCESS_READ) as mapped:
-                    data = mapped[:read_len]
+                with mmap.mmap(handle.fileno(), quick_read, access=mmap.ACCESS_READ) as mapped:
+                    data = mapped[:quick_read]
             except (OSError, ValueError, BufferError):
                 handle.seek(0)
-                data = handle.read(read_len)
+                data = handle.read(quick_read)
+        labels = scan_binary_blob_for_executor_names(data)
+        labels.extend(loose_executor_labels_for_artifact(data.decode("utf-16le", errors="ignore")[:500000]))
+        if labels or quick_read >= max_read or quick_read >= size:
+            return sorted(set(labels))
+        read_len = min(size, max_read)
+        if read_len <= quick_read:
+            return sorted(set(labels))
+        with path.open("rb") as handle:
+            handle.seek(quick_read)
+            data += handle.read(read_len - quick_read)
+        labels.extend(scan_binary_blob_for_executor_names(data))
+        labels.extend(loose_executor_labels_for_artifact(data.decode("utf-16le", errors="ignore")[:500000]))
     except OSError:
         return []
-    labels = scan_binary_blob_for_executor_names(data)
-    labels.extend(loose_executor_labels_for_artifact(data.decode("utf-16le", errors="ignore")[:500000]))
     return sorted(set(labels))
 
 
@@ -4698,8 +4834,12 @@ def designated_scan_hit_is_actionable(item: dict) -> bool:
     if cheat_hints:
         return True
 
-    patterns = executor_name_patterns()
-    executor_labels = sorted(set(match_executor_labels(path, patterns, path_context=True)))
+    executor_labels = item.get("executor_name_hits")
+    if executor_labels is None:
+        patterns = executor_name_patterns()
+        executor_labels = sorted(set(match_executor_labels(path, patterns, path_context=True)))
+    else:
+        executor_labels = sorted(set(executor_labels))
     if executor_labels:
         if path_is_allowlisted(path) and all(label in EXECUTOR_AMBIGUOUS_NAMES for label in executor_labels):
             return False
@@ -4844,11 +4984,17 @@ def _full_pc_scan_root(
     try:
         stop_event = budget.stop if budget is not None else None
         for path in walk_files_depth_limited(root, max_depth, stop=stop_event):
+            if budget is not None and budget.should_stop():
+                break
             if budget is not None and budget.note_enumerated():
                 break
             enumerated += 1
+            if budget is not None and enumerated % 256 == 0:
+                budget.check_early_stop(hash_pipeline, binary_pipeline, indicator_collector)
+                if budget.should_stop():
+                    break
             path_str = str(path)
-            if indicator_collector is not None and not executor_scan_path_excluded(path_str):
+            if indicator_collector is not None and path_warrants_indicator_scan(path_str):
                 indicator_collector.observe_file(path, patterns)
             ext = path.suffix.lower()
             if ext not in USER_FOLDER_SCAN_EXTENSIONS and ext not in FULL_PC_EXECUTABLE_EXTENSIONS:
@@ -4857,22 +5003,22 @@ def _full_pc_scan_root(
                 continue
             if ext == ".log" and not _path_is_user_writable_execution_zone(path_str):
                 continue
-            exec_stat: os.stat_result | None = None
             try:
                 exec_stat = path.stat()
             except OSError:
                 continue
             if recent_collector is not None and ext in _RecentExecutableCollector._EXEC_EXT:
                 recent_collector.maybe_add(path, exec_stat)
-            if hash_pipeline is not None and ext in {".exe", ".dll"}:
+            if hash_pipeline is not None and ext in {".exe", ".dll"} and not should_skip_binary_executor_probe(path_str):
                 if hash_pipeline.submit(path):
                     files_hashed += 1
             if binary_pipeline is not None and ext in {".exe", ".dll"}:
                 binary_pipeline.submit(path)
             executor_labels = sorted(set(match_executor_labels(path_str, patterns, path_context=True)))
             cheat_hints = cheat_path_hint_labels(path_str)
-            weird = list(weird_filename_reasons(path.stem, path.name))
-            if not _path_is_trusted_install_zone(path_str):
+            user_or_suspicious = _path_is_user_writable_execution_zone(path_str) or _path_is_suspicious_file_zone(path_str)
+            weird = list(weird_filename_reasons(path.stem, path.name)) if user_or_suspicious else []
+            if weird and not _path_is_trusted_install_zone(path_str):
                 for part in path.parts[:-1]:
                     weird.extend(weird_filename_reasons(part, part))
             weird = sorted(set(weird))
@@ -4906,6 +5052,8 @@ def _full_pc_scan_root(
                 break
         if budget is not None:
             budget.note_hits(len(hits))
+        if budget is not None:
+            budget.check_early_stop(hash_pipeline, binary_pipeline, indicator_collector)
     except PermissionError:
         skipped_permission += 1
     except OSError:
@@ -14040,12 +14188,21 @@ def _process_overview_sample() -> dict:
 
 
 def build_report() -> dict:
+    import time as _time
+
+    _phase_started = _time.perf_counter()
+    _phase_times: dict[str, float] = {}
+
+    def _mark_phase(name: str, started: float) -> None:
+        _phase_times[name] = round(_time.perf_counter() - started, 2)
+
     _reset_usn_comprehensive_cache()
     _reset_roblox_logs_cache()
     _reset_full_pc_recent_executables_cache()
     _reset_executor_indicator_cache()
     _reset_binary_probe_result_cache()
     scan_started_at = datetime.now(timezone.utc).isoformat()
+    _collect_started = _time.perf_counter()
     memory = psutil.virtual_memory()
     disk = psutil.disk_usage(str(Path.home().anchor or Path.home()))
     dam_registry: dict = {"available": False, "items": []}
@@ -14125,6 +14282,8 @@ def build_report() -> dict:
             }
         )
 
+        _mark_phase("collectors", _collect_started)
+        _correlate_started = _time.perf_counter()
         forensic_bundle = fut_forensic.result()
         executor_indicators = executor_indicator_scan()
         bam_structured = forensic_bundle.get("bam_structured")
@@ -14315,6 +14474,9 @@ def build_report() -> dict:
             filesystem_evidence_integrity=filesystem_evidence_integrity,
         )
 
+    _mark_phase("correlation", _correlate_started)
+    _phase_times["total_seconds"] = round(_time.perf_counter() - _phase_started, 2)
+
     return {
         "scan_started_at": scan_started_at,
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -14339,6 +14501,7 @@ def build_report() -> dict:
             "installed_applications": installed_apps,
             "trash": trash,
             "prefetch": prefetch,
+            "scan_phase_seconds": _phase_times,
         },
         "application_diagnostics": {"roblox": roblox},
         "process_overview": process_overview,
