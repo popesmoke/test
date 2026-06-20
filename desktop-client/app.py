@@ -5,6 +5,7 @@ import ctypes
 import functools
 import hashlib
 import json
+import mmap
 import os
 import platform
 import re
@@ -22,6 +23,7 @@ import sqlite3
 import tempfile
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait
+from queue import Empty, PriorityQueue
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
@@ -2895,7 +2897,32 @@ FULL_PC_SKIP_DIR_FRAGMENTS = (
     "\\system volume information\\",
     "\\$recycle.bin\\",
     "\\programdata\\microsoft\\windows\\deliveryoptimization\\",
+    "\\windows\\assembly\\",
+    "\\windows\\fonts\\",
+    "\\windows\\help\\",
+    "\\windows\\inf\\",
+    "\\windows\\logs\\cbs\\",
+    "\\windows\\panther\\",
+    "\\windows\\security\\",
+    "\\windows\\assembly\\nativeimages_",
+    "\\microsoft\\windows\\inetcache\\",
+    "\\appdata\\local\\microsoft\\windows\\inetcache\\",
 )
+FULL_PC_PRUNE_DIR_NAMES = frozenset(
+    {
+        ".git",
+        "node_modules",
+        "__pycache__",
+        ".venv",
+        "venv",
+        ".npm",
+        ".yarn",
+        "packages",
+        "winsxs",
+    }
+)
+DISK_WALK_WORKERS = 2
+BINARY_PROBE_WORKERS = min(12, max(6, (os.cpu_count() or 4)))
 
 ROBLOX_PROCESS_NAMES = frozenset({"robloxplayerbeta.exe", "robloxplayer.exe", "roblox.exe"})
 ROBLOX_MODULE_TRUSTED_FRAGMENTS = (
@@ -2994,7 +3021,7 @@ USER_FOLDER_TRUSTED_APP_STEMS = frozenset(
 )
 # Disk-bound scans: too many parallel walkers thrash the volume and slow everything down.
 SCAN_WORKERS = min(16, max(6, (os.cpu_count() or 4) * 2))
-HASH_SCAN_WORKERS = min(8, max(4, (os.cpu_count() or 4)))
+HASH_SCAN_WORKERS = min(12, max(6, (os.cpu_count() or 4)))
 RECENT_EXECUTABLE_WINDOW_DAYS = 45
 
 # Populated once per build_report() pass to avoid duplicate full USN journal reads.
@@ -3004,6 +3031,12 @@ _roblox_logs_cache: list[dict] | None = None
 _roblox_logs_cache_lock = threading.Lock()
 _full_pc_recent_executables_cache: list[dict] | None = None
 _executor_indicator_cache: dict[str, object] | None = None
+_binary_probe_result_cache: dict[str, list[str]] = {}
+
+
+def _reset_binary_probe_result_cache() -> None:
+    global _binary_probe_result_cache
+    _binary_probe_result_cache = {}
 
 
 def _reset_usn_comprehensive_cache() -> None:
@@ -3079,11 +3112,15 @@ def file_sha256_full(path: Path, max_bytes: int = EXECUTOR_HASH_MAX_FILE_BYTES) 
         if size <= 0 or size > max_bytes:
             return ""
         digest = hashlib.sha256()
-        if size <= 32 * 1024 * 1024:
-            with path.open("rb") as handle:
-                digest.update(handle.read())
-        else:
-            with path.open("rb") as handle:
+        with path.open("rb") as handle:
+            if size <= 32 * 1024 * 1024:
+                try:
+                    with mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ) as mapped:
+                        digest.update(mapped)
+                except (OSError, ValueError, BufferError):
+                    handle.seek(0)
+                    digest.update(handle.read())
+            else:
                 while True:
                     chunk = handle.read(8 * 1024 * 1024)
                     if not chunk:
@@ -3107,18 +3144,48 @@ class _BlocklistHashPipeline:
         self._patterns = patterns
         self._max_hashes = max_hashes
         self._submitted = 0
+        self._sequence = 0
         self._lock = threading.Lock()
         self._hits: list[dict] = []
-        self._futures: list = []
-        self._pool = ThreadPoolExecutor(max_workers=HASH_SCAN_WORKERS)
+        self._queue: PriorityQueue = PriorityQueue()
+        self._stop = threading.Event()
+        self._workers = max(HASH_SCAN_WORKERS, 4)
+        self._threads = [
+            threading.Thread(target=self._worker, daemon=True, name=f"hash-scan-{idx}")
+            for idx in range(self._workers)
+        ]
+        for thread in self._threads:
+            thread.start()
 
     def submit(self, path: Path) -> bool:
+        path_str = str(path)
+        priority = 0 if _path_is_user_writable_execution_zone(path_str) else 1
         with self._lock:
             if self._submitted >= self._max_hashes:
                 return False
             self._submitted += 1
-        self._futures.append(self._pool.submit(self._hash_one, path))
+            seq = self._sequence
+            self._sequence += 1
+        self._queue.put((priority, seq, path))
         return True
+
+    def _worker(self) -> None:
+        while not self._stop.is_set():
+            try:
+                _priority, _seq, path = self._queue.get(timeout=0.25)
+            except Empty:
+                continue
+            except Exception:
+                continue
+            try:
+                result = self._hash_one(path)
+                if result:
+                    with self._lock:
+                        self._hits.append(result)
+            except Exception:
+                pass
+            finally:
+                self._queue.task_done()
 
     def _hash_one(self, path: Path) -> dict | None:
         sha = file_sha256_full(path)
@@ -3145,15 +3212,104 @@ class _BlocklistHashPipeline:
         }
 
     def collect(self) -> tuple[list[dict], int]:
-        for future in as_completed(self._futures):
+        self._queue.join()
+        self._stop.set()
+        for thread in self._threads:
+            thread.join(timeout=2.0)
+        return self._hits, self._submitted
+
+
+class _FullPcScanBudget:
+    """Shared walk budget so all drive workers stop once global limits are reached."""
+
+    def __init__(self, max_enumerated: int, max_hits: int) -> None:
+        self._max_enumerated = max_enumerated
+        self._max_hits = max_hits
+        self._lock = threading.Lock()
+        self.enumerated = 0
+        self.total_hits = 0
+        self.stop = threading.Event()
+
+    def should_stop(self) -> bool:
+        return self.stop.is_set()
+
+    def note_enumerated(self) -> bool:
+        if self.stop.is_set():
+            return True
+        with self._lock:
+            self.enumerated += 1
+            if self.enumerated >= self._max_enumerated:
+                self.stop.set()
+            return self.stop.is_set()
+
+    def note_hits(self, count: int) -> None:
+        with self._lock:
+            self.total_hits += count
+            if self.total_hits >= self._max_hits:
+                self.stop.set()
+
+
+class _BinaryProbePipeline:
+    """Global async binary probe pool — one budget across all drives."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._submitted = 0
+        self._sequence = 0
+        self._results: dict[str, list[str]] = {}
+        self._paths: dict[str, Path] = {}
+        self._queue: PriorityQueue = PriorityQueue()
+        self._stop = threading.Event()
+        self._workers = max(BINARY_PROBE_WORKERS, 4)
+        self._threads = [
+            threading.Thread(target=self._worker, daemon=True, name=f"binary-probe-{idx}")
+            for idx in range(self._workers)
+        ]
+        for thread in self._threads:
+            thread.start()
+
+    def submit(self, path: Path) -> None:
+        path_str = str(path)
+        if should_skip_binary_executor_probe(path_str):
+            return
+        key = path_str.lower()
+        priority = 0 if _path_is_user_writable_execution_zone(path_str) else 1
+        with self._lock:
+            if self._submitted >= FULL_PC_BINARY_PROBE_MAX_FILES:
+                return
+            if key in self._paths:
+                return
+            self._submitted += 1
+            self._paths[key] = path
+            seq = self._sequence
+            self._sequence += 1
+        self._queue.put((priority, seq, path))
+
+    def _worker(self) -> None:
+        while not self._stop.is_set():
             try:
-                result = future.result()
+                _priority, _seq, path = self._queue.get(timeout=0.25)
+            except Empty:
+                continue
             except Exception:
                 continue
-            if result:
-                self._hits.append(result)
-        self._pool.shutdown(wait=True)
-        return self._hits, self._submitted
+            try:
+                labels = _probe_executable_binary_labels(path)
+                if labels:
+                    with self._lock:
+                        self._results[str(path).lower()] = labels
+            except Exception:
+                pass
+            finally:
+                self._queue.task_done()
+
+    def collect(self) -> tuple[dict[str, list[str]], dict[str, Path]]:
+        self._queue.join()
+        self._stop.set()
+        for thread in self._threads:
+            thread.join(timeout=2.0)
+        with self._lock:
+            return dict(self._results), dict(self._paths)
 
 
 class _RecentExecutableCollector:
@@ -3215,16 +3371,11 @@ class _ExecutorIndicatorCollector:
         with self._lock:
             if self._limits_reached():
                 return
-        try:
-            if not path.is_file():
-                return
-        except OSError:
-            return
-        with self._lock:
-            self._scanned_files += 1
         name_text = str(path)
         if executor_scan_path_excluded(name_text):
             return
+        with self._lock:
+            self._scanned_files += 1
         try:
             matched = match_executor_labels(name_text, patterns, path_context=True)
             cheat_h = cheat_filename_hint_labels(path.name)
@@ -4301,7 +4452,12 @@ def full_pc_scan_roots() -> list[tuple[Path, int]]:
     return [(root, FULL_PC_SCAN_MAX_DEPTH) for root in all_logical_drive_roots(include_removable=True)]
 
 
-def walk_files_depth_limited(root: Path, max_depth: int):
+def walk_files_depth_limited(
+    root: Path,
+    max_depth: int,
+    *,
+    stop: threading.Event | None = None,
+):
     try:
         root = root.resolve()
     except Exception:
@@ -4312,9 +4468,23 @@ def walk_files_depth_limited(root: Path, max_depth: int):
     def _on_walk_error(_err: OSError) -> None:
         return
 
+    def _prioritize_dirnames(dirnames: list[str]) -> None:
+        priority_names = ("downloads", "desktop", "documents", "appdata", "temp", "tmp", "users")
+
+        def sort_key(name: str) -> tuple[int, int, str]:
+            low = name.lower()
+            for idx, token in enumerate(priority_names):
+                if low == token:
+                    return (0, idx, low)
+            return (1, 0, low)
+
+        dirnames.sort(key=sort_key)
+
     for dirpath, dirnames, filenames in os.walk(
         root, topdown=True, followlinks=False, onerror=_on_walk_error
     ):
+        if stop is not None and stop.is_set():
+            return
         current = Path(dirpath)
         current_low = str(current).lower().replace("/", "\\")
         if any(skip in current_low for skip in FULL_PC_SKIP_DIR_FRAGMENTS):
@@ -4327,6 +4497,17 @@ def walk_files_depth_limited(root: Path, max_depth: int):
             continue
         if rel_depth >= max_depth:
             dirnames.clear()
+        else:
+            dirnames[:] = [
+                name
+                for name in dirnames
+                if name.lower() in {"downloads", "desktop", "documents", "appdata"}
+                or (
+                    name.lower() not in FULL_PC_PRUNE_DIR_NAMES
+                    and not name.startswith(".")
+                )
+            ]
+            _prioritize_dirnames(dirnames)
         for fn in filenames:
             yield current / fn
 
@@ -4403,7 +4584,14 @@ def _probe_executable_binary_labels(path: Path) -> list[str]:
         size = path.stat().st_size
         if size <= 0 or size > FULL_PC_BINARY_PROBE_MAX_BYTES:
             return []
-        data = path.read_bytes()[:FULL_PC_BINARY_PROBE_MAX_BYTES]
+        read_len = min(size, FULL_PC_BINARY_PROBE_MAX_BYTES)
+        with path.open("rb") as handle:
+            try:
+                with mmap.mmap(handle.fileno(), read_len, access=mmap.ACCESS_READ) as mapped:
+                    data = mapped[:read_len]
+            except (OSError, ValueError, BufferError):
+                handle.seek(0)
+                data = handle.read(read_len)
     except OSError:
         return []
     labels = scan_binary_blob_for_executor_names(data)
@@ -4558,6 +4746,86 @@ def designated_scan_hit_is_actionable(item: dict) -> bool:
     return False
 
 
+def _filter_binary_labels_for_zone(path_str: str, executor_labels: set[str], binary_labels: list[str]) -> list[str]:
+    if not binary_labels:
+        return []
+    if _path_is_trusted_install_zone(path_str):
+        return [
+            label
+            for label in binary_labels
+            if label not in EXECUTOR_AMBIGUOUS_NAMES or label in executor_labels
+        ]
+    return binary_labels
+
+
+def _merge_binary_probe_results(
+    hits: list[dict],
+    probe_results: dict[str, list[str]],
+    probed_paths: dict[str, Path],
+    patterns: dict[str, re.Pattern[str]],
+) -> list[dict]:
+    """Apply async binary probe labels to hits and add any newly actionable paths."""
+    hits_by_path = {str(item.get("path") or "").lower(): item for item in hits if item.get("path")}
+    for path_key, raw_labels in probe_results.items():
+        path = probed_paths.get(path_key)
+        if path is None:
+            continue
+        path_str = str(path)
+        executor_labels = sorted(set(match_executor_labels(path_str, patterns, path_context=True)))
+        binary_labels = _filter_binary_labels_for_zone(path_str, set(executor_labels), list(raw_labels))
+        if binary_labels:
+            executor_labels = sorted(set(executor_labels + binary_labels))
+        existing = hits_by_path.get(path_key)
+        if existing is not None:
+            existing["binary_embedded_labels"] = binary_labels
+            existing["executor_name_hits"] = sorted(
+                set(existing.get("executor_name_hits") or []) | set(executor_labels)
+            )
+            continue
+        cheat_hints = cheat_path_hint_labels(path_str)
+        weird = list(weird_filename_reasons(path.stem, path.name))
+        if not _path_is_trusted_install_zone(path_str):
+            for part in path.parts[:-1]:
+                weird.extend(weird_filename_reasons(part, part))
+        weird = sorted(set(weird))
+        candidate = {
+            "path": path_str,
+            "executor_name_hits": executor_labels,
+            "cheat_filename_hints": cheat_hints,
+            "name_anomaly_reasons": weird,
+        }
+        if not designated_scan_hit_is_actionable(candidate):
+            continue
+        try:
+            stat = path.stat()
+            modified = datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()
+            accessed = datetime.fromtimestamp(stat.st_atime, timezone.utc).isoformat()
+            size_bytes = stat.st_size
+        except OSError:
+            modified = None
+            accessed = None
+            size_bytes = None
+        hits.append(
+            {
+                "path": path_str,
+                "name": path.name,
+                "extension": path.suffix.lower(),
+                "size_bytes": size_bytes,
+                "modified": modified,
+                "accessed": accessed,
+                "executor_name_hits": executor_labels,
+                "cheat_filename_hints": cheat_hints,
+                "name_anomaly_reasons": weird,
+                "binary_embedded_labels": binary_labels,
+                "path_allowlisted": path_is_allowlisted(path_str),
+                "scan_source": "full_pc_drive_walk",
+            }
+        )
+        hits_by_path[path_key] = hits[-1]
+    hits.sort(key=lambda row: str(row.get("modified") or ""), reverse=True)
+    return hits[:FULL_PC_SCAN_MAX_HITS]
+
+
 def _full_pc_scan_root(
     root: Path,
     max_depth: int,
@@ -4566,42 +4834,41 @@ def _full_pc_scan_root(
     hash_pipeline: _BlocklistHashPipeline | None = None,
     recent_collector: _RecentExecutableCollector | None = None,
     indicator_collector: _ExecutorIndicatorCollector | None = None,
+    binary_pipeline: _BinaryProbePipeline | None = None,
+    budget: _FullPcScanBudget | None = None,
 ) -> dict:
     hits: list[dict] = []
     enumerated = 0
-    binary_probes = 0
     skipped_permission = 0
     files_hashed = 0
     try:
-        for path in walk_files_depth_limited(root, max_depth):
-            enumerated += 1
-            if enumerated > FULL_PC_SCAN_MAX_ENUMERATED:
+        stop_event = budget.stop if budget is not None else None
+        for path in walk_files_depth_limited(root, max_depth, stop=stop_event):
+            if budget is not None and budget.note_enumerated():
                 break
-            if indicator_collector is not None:
+            enumerated += 1
+            path_str = str(path)
+            if indicator_collector is not None and not executor_scan_path_excluded(path_str):
                 indicator_collector.observe_file(path, patterns)
-            try:
-                if not path.is_file():
-                    continue
-            except OSError:
-                continue
             ext = path.suffix.lower()
             if ext not in USER_FOLDER_SCAN_EXTENSIONS and ext not in FULL_PC_EXECUTABLE_EXTENSIONS:
                 continue
-            if executor_scan_path_excluded(str(path)):
+            if executor_scan_path_excluded(path_str):
                 continue
-            if ext == ".log" and not _path_is_user_writable_execution_zone(str(path)):
+            if ext == ".log" and not _path_is_user_writable_execution_zone(path_str):
                 continue
-            path_str = str(path)
             exec_stat: os.stat_result | None = None
+            try:
+                exec_stat = path.stat()
+            except OSError:
+                continue
             if recent_collector is not None and ext in _RecentExecutableCollector._EXEC_EXT:
-                try:
-                    exec_stat = path.stat()
-                    recent_collector.maybe_add(path, exec_stat)
-                except OSError:
-                    exec_stat = None
+                recent_collector.maybe_add(path, exec_stat)
             if hash_pipeline is not None and ext in {".exe", ".dll"}:
                 if hash_pipeline.submit(path):
                     files_hashed += 1
+            if binary_pipeline is not None and ext in {".exe", ".dll"}:
+                binary_pipeline.submit(path)
             executor_labels = sorted(set(match_executor_labels(path_str, patterns, path_context=True)))
             cheat_hints = cheat_path_hint_labels(path_str)
             weird = list(weird_filename_reasons(path.stem, path.name))
@@ -4609,20 +4876,6 @@ def _full_pc_scan_root(
                 for part in path.parts[:-1]:
                     weird.extend(weird_filename_reasons(part, part))
             weird = sorted(set(weird))
-            binary_labels: list[str] = []
-            if ext in {".exe", ".dll"} and binary_probes < FULL_PC_BINARY_PROBE_MAX_FILES:
-                binary_labels = _probe_executable_binary_labels(path)
-                binary_probes += 1
-                if binary_labels:
-                    path_labels = set(executor_labels)
-                    if _path_is_trusted_install_zone(path_str):
-                        binary_labels = [
-                            label
-                            for label in binary_labels
-                            if label not in EXECUTOR_AMBIGUOUS_NAMES or label in path_labels
-                        ]
-                    if binary_labels:
-                        executor_labels = sorted(set(executor_labels + binary_labels))
             candidate = {
                 "path": path_str,
                 "executor_name_hits": executor_labels,
@@ -4631,32 +4884,28 @@ def _full_pc_scan_root(
             }
             if not designated_scan_hit_is_actionable(candidate):
                 continue
-            try:
-                stat = exec_stat if exec_stat is not None else path.stat()
-                modified = datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()
-                accessed = datetime.fromtimestamp(stat.st_atime, timezone.utc).isoformat()
-            except OSError:
-                modified = None
-                accessed = None
-                stat = None
+            modified = datetime.fromtimestamp(exec_stat.st_mtime, timezone.utc).isoformat()
+            accessed = datetime.fromtimestamp(exec_stat.st_atime, timezone.utc).isoformat()
             hits.append(
                 {
                     "path": path_str,
                     "name": path.name,
                     "extension": ext,
-                    "size_bytes": stat.st_size if stat is not None else None,
+                    "size_bytes": exec_stat.st_size,
                     "modified": modified,
                     "accessed": accessed,
                     "executor_name_hits": executor_labels,
                     "cheat_filename_hints": cheat_hints,
                     "name_anomaly_reasons": weird,
-                    "binary_embedded_labels": binary_labels,
+                    "binary_embedded_labels": [],
                     "path_allowlisted": path_is_allowlisted(path_str),
                     "scan_source": "full_pc_drive_walk",
                 }
             )
             if len(hits) >= FULL_PC_SCAN_MAX_HITS:
                 break
+        if budget is not None:
+            budget.note_hits(len(hits))
     except PermissionError:
         skipped_permission += 1
     except OSError:
@@ -4665,7 +4914,7 @@ def _full_pc_scan_root(
         "root": str(root),
         "hits": hits,
         "enumerated_files": enumerated,
-        "binary_probes": binary_probes,
+        "binary_probes": 0,
         "skipped_permission_roots": skipped_permission,
         "files_hashed": files_hashed,
     }
@@ -4677,27 +4926,28 @@ def full_pc_filesystem_executor_scan(
     max_hashes: int = 0,
 ) -> dict:
     """Walk every local/removable drive for executor names, cheat hints, embedded branding, and optional SHA256 blocklist."""
-    global _executor_indicator_cache
+    global _executor_indicator_cache, _binary_probe_result_cache
     if platform.system() != "Windows":
         return {"available": False, "reason": "Full-PC scan is Windows-only", "hits": []}
     patterns = executor_name_patterns()
     roots = full_pc_scan_roots()
-    workers = min(len(roots), SCAN_WORKERS)
+    workers = min(len(roots), DISK_WALK_WORKERS)
+    budget = _FullPcScanBudget(FULL_PC_SCAN_MAX_ENUMERATED, FULL_PC_SCAN_MAX_HITS)
     hash_pipeline: _BlocklistHashPipeline | None = None
     if blocklist and max_hashes > 0:
         hash_pipeline = _BlocklistHashPipeline(blocklist, patterns, max_hashes)
     recent_collector = _RecentExecutableCollector(
         datetime.now(timezone.utc) - timedelta(days=RECENT_EXECUTABLE_WINDOW_DAYS)
     )
-    indicator_collector = _ExecutorIndicatorCollector(text_workers=min(6, HASH_SCAN_WORKERS))
+    indicator_collector = _ExecutorIndicatorCollector(text_workers=min(8, HASH_SCAN_WORKERS))
+    binary_pipeline = _BinaryProbePipeline()
     roots_checked = [str(root) for root, _ in roots]
     prefetch_root = str(Path(os.getenv("SystemRoot", "C:\\Windows")) / "Prefetch")
     if prefetch_root not in roots_checked:
         roots_checked.append(prefetch_root)
     hits: list[dict] = []
-    enumerated = 0
-    binary_probes = 0
     files_hashed = 0
+    hash_hits: list[dict] = []
     skipped_permission = 0
     roots_scanned: list[str] = []
     with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -4710,6 +4960,8 @@ def full_pc_filesystem_executor_scan(
                 hash_pipeline=hash_pipeline,
                 recent_collector=recent_collector,
                 indicator_collector=indicator_collector,
+                binary_pipeline=binary_pipeline,
+                budget=budget,
             )
             for root, max_depth in roots
         ]
@@ -4717,17 +4969,27 @@ def full_pc_filesystem_executor_scan(
             partial = future.result()
             roots_scanned.append(str(partial.get("root") or ""))
             hits.extend(partial.get("hits") or [])
-            enumerated += int(partial.get("enumerated_files") or 0)
-            binary_probes += int(partial.get("binary_probes") or 0)
             files_hashed += int(partial.get("files_hashed") or 0)
             skipped_permission += int(partial.get("skipped_permission_roots") or 0)
-            if enumerated >= FULL_PC_SCAN_MAX_ENUMERATED or len(hits) >= FULL_PC_SCAN_MAX_HITS:
+            if budget.should_stop():
                 break
-    hash_hits: list[dict] = []
-    if hash_pipeline is not None:
-        hash_hits, files_hashed = hash_pipeline.collect()
+    with ThreadPoolExecutor(max_workers=2) as collect_pool:
+        bin_future = collect_pool.submit(binary_pipeline.collect)
+        hash_future = (
+            collect_pool.submit(hash_pipeline.collect)
+            if hash_pipeline is not None
+            else None
+        )
+        ind_future = collect_pool.submit(indicator_collector.finalize, roots_checked=roots_checked)
+        probe_results, probed_paths = bin_future.result()
+        if hash_future is not None:
+            hash_hits, files_hashed = hash_future.result()
+        else:
+            hash_hits = []
+        _executor_indicator_cache = ind_future.result()
+    _binary_probe_result_cache = probe_results
+    hits = _merge_binary_probe_results(hits, probe_results, probed_paths, patterns)
     recent_executables = recent_collector.finalize()
-    _executor_indicator_cache = indicator_collector.finalize(roots_checked=roots_checked)
     if len(hits) > FULL_PC_SCAN_MAX_HITS:
         hits = hits[:FULL_PC_SCAN_MAX_HITS]
     if max_hashes > 0 and len(hash_hits) > max_hashes:
@@ -4738,8 +5000,8 @@ def full_pc_filesystem_executor_scan(
         "available": True,
         "hit_count": len(hits),
         "hits": hits,
-        "enumerated_files": min(enumerated, FULL_PC_SCAN_MAX_ENUMERATED),
-        "binary_probes": binary_probes,
+        "enumerated_files": min(budget.enumerated, FULL_PC_SCAN_MAX_ENUMERATED),
+        "binary_probes": len(probed_paths),
         "roots_scanned": roots_scanned,
         "skipped_permission_roots": skipped_permission,
         "hash_hits": hash_hits,
@@ -12812,7 +13074,11 @@ def recent_disk_executable_scan() -> dict:
         labels = sorted(set(match_executor_labels(path, patterns)))
         binary_labels: list[str] = []
         if not labels and path.lower().endswith((".exe", ".dll")):
-            binary_labels = _probe_executable_binary_labels(Path(path))
+            cached = _binary_probe_result_cache.get(path.lower())
+            if cached is not None:
+                binary_labels = list(cached)
+            else:
+                binary_labels = _probe_executable_binary_labels(Path(path))
             labels = binary_labels
         items.append(
             {
@@ -13778,6 +14044,7 @@ def build_report() -> dict:
     _reset_roblox_logs_cache()
     _reset_full_pc_recent_executables_cache()
     _reset_executor_indicator_cache()
+    _reset_binary_probe_result_cache()
     scan_started_at = datetime.now(timezone.utc).isoformat()
     memory = psutil.virtual_memory()
     disk = psutil.disk_usage(str(Path.home().anchor or Path.home()))
