@@ -20,6 +20,16 @@ def main() -> int:
     app_dist = find_app_dist()
     if not app_dist:
         print(f"No *.dist folder under {DIST}", file=sys.stderr)
+        print(
+            "package_release.py only zips a Nuitka standalone folder.\n"
+            "For the normal single-file scanner EXE, run from desktop-client:\n"
+            "  build-secure-exe.bat\n"
+            "That produces dist-secure\\virello-scanner.exe\n"
+            "For a portable folder + zip instead, run:\n"
+            "  set DNG_STANDALONE=1\n"
+            "  build-secure-exe.bat",
+            file=sys.stderr,
+        )
         return 1
 
     zip_base = DIST / "virello-scanner-portable"

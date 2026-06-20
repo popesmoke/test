@@ -6,7 +6,23 @@ A consent-first diagnostic sharing system with:
 - `backend/` - FastAPI API for checker auth, PIN sessions, report upload, and session results.
 - `web-dashboard/` - React dashboard for reviewers to generate PINs and inspect completed reports.
 
-This is a local development scaffold. It intentionally favors transparency and narrow data collection over deep system inspection.
+This is a consent-first Roblox-focused diagnostic scanner. The desktop client runs a comprehensive exploit detection pass (3–6 minutes max) before uploading a reviewer report.
+
+## Roblox Scanner Coverage
+
+The desktop client targets **29 tracked executors/exploits** (Volt, Potassium, Wave, Synapse Z, Seliware, Madium, Cosmic, Velocity, SirHurt, Solara, Xeno, Serotonin, Severe, RbxCli, Lumen, Matcha, Matrix Hub, Photon, DX9WARE V2, MacSploit, Opiumware, Delta, Vega X, Codex, and related aliases).
+
+Detection layers include:
+
+- **Live inspection** — Roblox process module enumeration, running executor processes
+- **Filesystem** — full user-zone walk, known install/workspace paths, autoexec/script folders, SHA256 blocklist
+- **Windows forensics** — BAM/DAM, Prefetch, USN journal, Amcache, Shimcache, UserAssist, recycle bin, scheduled tasks, persistence
+- **Roblox artifacts** — client logs, protocol-handler registry hijacks, offline DLL/injection signals
+- **Browser evidence** — download history and visit history for executor download domains
+- **Account context** — Roblox accounts from client logs and browser sessions (`.ROBLOSECURITY` cookies)
+- **Anti-bypass** — prefetch/BAM tampering, log clearing, Defender exclusions, correlated deletion evidence
+
+Scans are capped at **6 minutes** (`SCAN_MAX_SECONDS = 360`).
 
 ## Quick Start
 
@@ -129,10 +145,11 @@ The client uploads to `http://localhost:8000` by default. Change `DIAGNOSTIC_API
 To build a Windows EXE:
 
 ```powershell
-.\build-desktop-exe.bat
+cd desktop-client
+.\build-secure-exe.bat
 ```
 
-The EXE is created at `desktop-client\dist-secure\virello-scanner.exe`.
+The EXE is created at `desktop-client\dist-secure\virello-scanner.exe`. First compile takes several minutes (Nuitka). Do not run `scripts\package_release.py` directly unless you built with `set DNG_STANDALONE=1` (that mode creates a `.dist` folder and portable zip).
 
 ## Privacy Model
 

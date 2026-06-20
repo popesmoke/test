@@ -75,7 +75,6 @@ call "..\.venv\Scripts\python.exe" -m nuitka ^
   "--file-description=Virello Scanner" ^
   --file-version=1.1.0.0 ^
   --product-version=1.1.0.0 ^
-  --windows-uac-admin=no ^
   --enable-plugin=tk-inter ^
   --noinclude-pytest-mode=nofollow ^
   --noinclude-setuptools-mode=nofollow ^

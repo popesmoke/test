@@ -24,9 +24,17 @@ export const EXECUTOR_SEARCH_TERMS = [
   "Volt",
   "Wave",
   "Xeno",
+  "autoexec",
+  "browser_history_domain",
+  "known_install_path",
+  "live_process",
+  "roblox_autoexec",
+  "roblox_protocol_registry",
   "executor",
   "inject",
   "script hub",
+  "sUNC",
+  "UNC",
 ];
 
 export function textMatchesSearch(text, query) {

@@ -2781,31 +2781,69 @@ EXECUTOR_NAMES = [
 
 # Extra tokens commonly seen in paths, prefetch stems, or renamed folders.
 EXECUTOR_ALIASES: dict[str, list[str]] = {
-    "Volt": ["volt", "voltexecutor", "volt.exe"],
-    "Potassium": ["potassium", "potass", "kpotassium", "potassiumware", "potassium.exe"],
-    "Wave": ["waveexecutor", "wave.exe"],
-    "Synapse Z": ["synapse", "synapsez", "synapse z"],
-    "Seliware": ["seliware", "seliware.exe"],
-    "Madium": ["madium", "madium.exe"],
-    "Cosmic": ["cosmic", "cosmicexecutor", "cosmicware"],
-    "Velocity": ["velocity", "velocityexecutor"],
-    "SirHurt": ["sirhurt", "sir_hurt", "sirhurt.exe"],
-    "Solara": ["solara", "solarav3", "solarav2"],
-    "Xeno": ["xenoexecutor", "xeno.exe"],
-    "Serotonin": ["serotonin", "serotonin.exe"],
-    "Severe": ["severe", "severe.exe"],
-    "RbxCli": ["rbxcli", "rbxcli.exe"],
-    "Lumen": ["lumen", "lumenexecutor", "lumen.exe"],
-    "Matcha": ["matcha", "matcha.exe"],
-    "Matrix Hub": ["matrixhub", "matrix hub", "matrixhub.exe"],
-    "Photon": ["photon", "photon.exe"],
-    "DX9WARE V2": ["dx9ware", "dx9warev2", "dx9ware v2"],
+    "Volt": ["volt", "voltexecutor", "volt.exe", "volt1", "volt 1"],
+    "Potassium": ["potassium", "potass", "kpotassium", "potassiumware", "potassium.exe", "potassium 2"],
+    "Wave": ["waveexecutor", "wave.exe", "wave 1", "wave-1", "wave135"],
+    "Synapse Z": ["synapse", "synapsez", "synapse z", "synapse-z", "synapse z.exe"],
+    "Seliware": ["seliware", "seliware.exe", "seliware 2"],
+    "Madium": ["madium", "madium.exe", "madium 1"],
+    "Cosmic": ["cosmic", "cosmicexecutor", "cosmicware", "cosmic 3"],
+    "Velocity": ["velocity", "velocityexecutor", "velocity 1", "velocity.exe"],
+    "SirHurt": ["sirhurt", "sir_hurt", "sirhurt.exe", "sirhurt v5"],
+    "Solara": ["solara", "solarav3", "solarav2", "solara 3"],
+    "Xeno": ["xenoexecutor", "xeno.exe", "xeno 1", "xeno135"],
+    "Serotonin": ["serotonin", "serotonin.exe", "serotonin v2", "serotoninv2"],
+    "Severe": ["severe", "severe.exe", "severe v2", "severev2"],
+    "RbxCli": ["rbxcli", "rbxcli.exe", "rbx cli", "rbxcli-beta"],
+    "Lumen": ["lumen", "lumenexecutor", "lumen.exe", "lumen 1"],
+    "Matcha": ["matcha", "matcha.exe", "matcha v2", "matchav2"],
+    "Matrix Hub": ["matrixhub", "matrix hub", "matrixhub.exe", "matrix hub v2"],
+    "Photon": ["photon", "photon.exe", "photon 6", "photon6"],
+    "DX9WARE V2": ["dx9ware", "dx9warev2", "dx9ware v2", "dx9ware v2 1"],
     "MacSploit": ["macsploit", "macsploit.exe"],
-    "Opiumware": ["opiumware", "opiumware.exe"],
-    "Delta": ["deltaexecutor", "delta.exe"],
-    "Vega X": ["vegax", "vega x", "vegax.exe"],
-    "Codex": ["codexexecutor", "codex.exe"],
+    "Opiumware": ["opiumware", "opiumware.exe", "opiumware v2"],
+    "Delta": ["deltaexecutor", "delta.exe", "delta 2", "deltaexecutor 2"],
+    "Vega X": ["vegax", "vega x", "vegax.exe", "vega x 2"],
+    "Codex": ["codexexecutor", "codex.exe", "codex 2", "codexexecutor 2"],
 }
+
+# Folder names used by installers (path segment match — survives generic renames of the .exe).
+EXECUTOR_INSTALL_DIR_NAMES = frozenset(
+    {
+        "volt",
+        "potassium",
+        "wave",
+        "synapse z",
+        "synapsez",
+        "seliware",
+        "madium",
+        "cosmic",
+        "velocity",
+        "sirhurt",
+        "solara",
+        "xeno",
+        "serotonin",
+        "severe",
+        "rbxcli",
+        "lumen",
+        "matcha",
+        "matrix hub",
+        "matrixhub",
+        "photon",
+        "dx9ware",
+        "dx9ware v2",
+        "macsploit",
+        "opiumware",
+        "delta",
+        "vegax",
+        "vega x",
+        "codex",
+        "codexexecutor",
+        "executor",
+        "scriptware",
+        "script-ware",
+    }
+)
 
 # Common English, game-asset, and dev-tool tokens — require stronger filename evidence.
 EXECUTOR_AMBIGUOUS_NAMES = frozenset(
@@ -2824,6 +2862,81 @@ EXECUTOR_AMBIGUOUS_NAMES = frozenset(
         "Velocity",
     }
 )
+
+# Known executor workspace/install folders (relative to profile). Fast targeted scan — survives renames of the .exe.
+EXECUTOR_KNOWN_RELATIVE_PATHS: dict[str, list[str]] = {
+    "Volt": ["AppData/Local/Volt", "AppData/Roaming/Volt", "Downloads/Volt"],
+    "Potassium": ["AppData/Local/Potassium", "AppData/Roaming/Potassium"],
+    "Wave": ["AppData/Local/Wave", "AppData/Local/WaveExecutor", "Downloads/Wave"],
+    "Synapse Z": ["AppData/Local/Synapse Z", "AppData/Local/SynapseZ", "AppData/Roaming/Synapse Z"],
+    "Seliware": ["AppData/Local/Seliware", "AppData/Roaming/Seliware"],
+    "Madium": ["AppData/Local/Madium", "AppData/Roaming/Madium"],
+    "Cosmic": ["AppData/Local/Cosmic", "AppData/Local/CosmicExecutor"],
+    "Velocity": ["AppData/Local/Velocity", "AppData/Roaming/Velocity"],
+    "SirHurt": ["AppData/Local/SirHurt", "AppData/Roaming/SirHurt"],
+    "Solara": ["AppData/Local/Solara", "AppData/Roaming/Solara"],
+    "Xeno": ["AppData/Local/Xeno", "AppData/Local/Xeno/workspace"],
+    "Serotonin": ["AppData/Local/Serotonin", "AppData/Roaming/Serotonin"],
+    "Severe": ["AppData/Local/Severe", "AppData/Roaming/Severe"],
+    "RbxCli": ["AppData/Local/RbxCli", "AppData/Local/RBX CLI"],
+    "Lumen": ["AppData/Local/Lumen", "AppData/Local/LumenExecutor"],
+    "Matcha": ["AppData/Local/Matcha", "AppData/Roaming/Matcha"],
+    "Matrix Hub": ["AppData/Local/Matrix Hub", "AppData/Local/MatrixHub"],
+    "Photon": ["AppData/Local/Photon", "AppData/Roaming/Photon"],
+    "DX9WARE V2": ["AppData/Local/DX9WARE", "AppData/Local/DX9WARE V2"],
+    "Delta": ["AppData/Local/Delta", "AppData/Local/DeltaExecutor"],
+    "Vega X": ["AppData/Local/Vega X", "AppData/Local/VegaX"],
+    "Codex": ["AppData/Local/Codex", "AppData/Local/CodexExecutor"],
+}
+
+# Download-site domains tied to tracked executors (browser history + download URL matching).
+EXECUTOR_DOWNLOAD_DOMAIN_HINTS: dict[str, list[str]] = {
+    "Wave": ["getwave.gg", "waveinject.dev", "wave.gg", "waveexecutor"],
+    "Volt": ["voltexecutor", "volt.gg", "volt-executor"],
+    "Potassium": ["potassiumware", "potassium-executor"],
+    "Synapse Z": ["synapsez", "synapse.to", "synapsex"],
+    "Seliware": ["seliware", "seliware.com"],
+    "SirHurt": ["sirhurt", "sirhurt.net"],
+    "Solara": ["solara", "solarexecutor", "wearedevs"],
+    "Xeno": ["xenoexecutor", "xeno.onl"],
+    "Velocity": ["velocityexecutor"],
+    "Cosmic": ["cosmicexecutor", "cosmic-executor"],
+    "Madium": ["madiumexecutor"],
+    "Serotonin": ["serotoninexecutor"],
+    "Photon": ["photon-executor", "photonexecutor"],
+    "DX9WARE V2": ["dx9ware"],
+    "Delta": ["deltaexecutor", "delta-executor"],
+    "Vega X": ["vegax", "vega-x"],
+    "Codex": ["codexexecutor", "codex-executor"],
+}
+
+ROBLOX_TRUSTED_LAUNCHER_FRAGMENTS = (
+    "\\roblox\\versions\\",
+    "robloxplayerbeta.exe",
+    "robloxplayer.exe",
+    "roblox.exe",
+    "\\bloxstrap\\bloxstrap.exe",
+    "\\fishstrap\\fishstrap.exe",
+)
+
+ROBLOX_AUTOEXEC_DIR_NAMES = frozenset(
+    {
+        "autoexec",
+        "auto execute",
+        "auto_execute",
+        "auto-execute",
+        "scripts",
+        "workspace",
+        "script hub",
+        "scripthub",
+    }
+)
+
+ROBLOX_AUTOEXEC_FILE_EXTENSIONS = frozenset({".lua", ".txt", ".json", ".luau"})
+
+# Hard ceiling for the full diagnostic pass (user requirement: never exceed 6 minutes).
+SCAN_MAX_SECONDS = 360.0
+SCAN_TARGET_MIN_SECONDS = 180.0
 
 EXECUTOR_BENIGN_PATH_FRAGMENTS = (
     "\\epic games\\",
@@ -2878,18 +2991,24 @@ SYSTEM_DLL_NAME_PREFIXES = (
 
 # Verified sample SHA256 (lowercase hex) -> label. Extend in code or assets/executor_sha256_blocklist.json.
 EXECUTOR_SHA256_BLOCKLIST: dict[str, str] = {}
-EXECUTOR_HASH_SCAN_MAX_FILES = 15_000
+# Ocean-like scan: deep user zones, shallow system/other drives; anti-bypass artifacts unchanged.
+FULL_PC_USER_ZONE_DEPTH = 16
+FULL_PC_SYSTEM_DRIVE_DEPTH = 7
+FULL_PC_SECONDARY_DRIVE_DEPTH = 5
+EXECUTOR_HASH_SCAN_MAX_FILES = 10_000
 EXECUTOR_HASH_MAX_FILE_BYTES = 120_000_000
 EXECUTOR_ACTIVITY_RECENT_HOURS = 72
 USN_JOURNAL_MAX_LINES = 12_000
 USN_DELETE_MAX_LINES = 6000
 RECYCLE_BIN_MAX_ITEMS = 500
 RECYCLE_BIN_HASH_MAX_BYTES = 80_000_000
-FULL_PC_SCAN_MAX_DEPTH = 16
-FULL_PC_SCAN_MAX_ENUMERATED = 800_000
+FULL_PC_SCAN_MAX_DEPTH = FULL_PC_USER_ZONE_DEPTH
+FULL_PC_SCAN_MAX_ENUMERATED = 500_000
 FULL_PC_SCAN_MAX_HITS = 3000
-FULL_PC_BINARY_PROBE_MAX_FILES = 12_000
+FULL_PC_BINARY_PROBE_MAX_FILES = 10_000
 FULL_PC_BINARY_PROBE_MAX_BYTES = 8_000_000
+OPTIONAL_COLLECTOR_TIMEOUT_SEC = 10.0
+SCAN_TARGET_EXECUTORS = list(EXECUTOR_NAMES)
 FULL_PC_SKIP_DIR_FRAGMENTS = (
     "\\windows\\winsxs\\",
     "\\windows\\servicing\\",
@@ -3064,6 +3183,12 @@ CHEAT_FILENAME_HINT_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("exploit", re.compile(r"(?:roblox|rbx|lua|script)[\s._-]*exploit|exploit[\s._-]*(?:roblox|rbx|lua|script)", re.IGNORECASE)),
     ("free_cheat", re.compile(r"free[\s._-]*cheat", re.IGNORECASE)),
     ("rbx_cheat", re.compile(r"rbx[\s._-]*cheat|rbx[\s._-]*hack", re.IGNORECASE)),
+    ("sunc_compat", re.compile(r"\bsunc\b|sunccheck|sunc\.percent", re.IGNORECASE)),
+    ("key_system", re.compile(r"key[\s._-]*system|getkey|checkpoint", re.IGNORECASE)),
+    ("unc_compat", re.compile(r"\bunc\b|unccheck|unc\.percent|getgenv|hookmetamethod", re.IGNORECASE)),
+    ("hyperion_bypass", re.compile(r"hyperion|byfron|anticheat[\s._-]*bypass|bypass[\s._-]*hyperion", re.IGNORECASE)),
+    ("hwid_spoof", re.compile(r"hwid[\s._-]*spoof|spoofer", re.IGNORECASE)),
+    ("auto_execute", re.compile(r"auto[\s._-]*exec(?:ute)?|autoexec", re.IGNORECASE)),
 ]
 
 USER_FOLDER_SCAN_EXTENSIONS = frozenset(
@@ -3669,6 +3794,12 @@ def path_warrants_indicator_scan(path_str: str) -> bool:
         return False
     if _path_is_user_writable_execution_zone(path_str):
         return True
+    try:
+        for part in Path(path_str.replace("/", "\\")).parts:
+            if part.lower() in EXECUTOR_INSTALL_DIR_NAMES:
+                return True
+    except Exception:
+        pass
     ext = Path(path_str).suffix.lower()
     if ext in INDICATOR_LOW_VALUE_EXTENSIONS:
         return False
@@ -4381,7 +4512,9 @@ def roblox_offline_integrity_signals(prefetch: dict) -> list[dict]:
     cutoff = datetime.now(timezone.utc) - timedelta(days=14)
     log_inject_re = re.compile(
         r"(inject(?:or|ion)?|dll\s*hook|execute\s*script|script\s*ware|memory\s*scan|"
-        r"cheat\s*engine|aimbot|wallhack|bypass\s*anticheat|external\s*cheat)",
+        r"cheat\s*engine|aimbot|wallhack|bypass\s*anticheat|external\s*cheat|"
+        r"hyperion|byfron|attached\s*already|auto[\s._-]*exec|getgenv|hookmetamethod|"
+        r"sunc|unc\s*check|key[\s._-]*system)",
         re.IGNORECASE,
     )
 
@@ -4519,6 +4652,39 @@ def roblox_offline_integrity_signals(prefetch: dict) -> list[dict]:
                     break
         except (PermissionError, OSError):
             continue
+
+    if prefetch and prefetch.get("available"):
+        for item in (prefetch.get("items") or [])[:400]:
+            pf_name = str(item.get("name") or "")
+            if not pf_name:
+                continue
+            stem = prefetch_extract_stem(pf_name)
+            labels = sorted(
+                set(
+                    loose_executor_labels_for_artifact(stem)
+                    + loose_executor_labels_for_artifact(pf_name)
+                    + executor_labels_for_artifact_text(stem)
+                )
+            )
+            if not labels:
+                continue
+            path_hint = str(item.get("source_path") or item.get("path") or stem)
+            signals.append(
+                _roblox_integrity_module_entry(
+                    scan_mode="offline",
+                    offline_source="prefetch_executor",
+                    module_path=path_hint or pf_name,
+                    reasons=["prefetch_stem_matches_executor"],
+                    executor_labels=labels,
+                    cheat_hints=[],
+                    extra={
+                        "prefetch_file": pf_name,
+                        "last_run_utc": item.get("last_run_utc") or item.get("modified"),
+                    },
+                )
+            )
+            if len([s for s in signals if s.get("offline_source") == "prefetch_executor"]) >= 35:
+                break
 
     return signals[:100]
 
@@ -4670,8 +4836,35 @@ def all_logical_drive_roots(
 
 
 def full_pc_scan_roots() -> list[tuple[Path, int]]:
-    """Every local/removable drive with a generous depth budget."""
-    return [(root, FULL_PC_SCAN_MAX_DEPTH) for root in all_logical_drive_roots(include_removable=True)]
+    """Prioritized zones: deep under the user profile, moderate on C:, shallow on other volumes."""
+    if platform.system() != "Windows":
+        return [(Path.home(), FULL_PC_USER_ZONE_DEPTH)]
+    roots: list[tuple[Path, int]] = []
+    seen: set[str] = set()
+    home = Path(os.getenv("USERPROFILE") or Path.home())
+    if home.is_dir():
+        try:
+            seen.add(str(home.resolve()).lower())
+        except OSError:
+            seen.add(str(home).lower())
+        roots.append((home, FULL_PC_USER_ZONE_DEPTH))
+    system = Path(os.getenv("SystemDrive", "C:") + "\\")
+    if system.is_dir():
+        try:
+            seen.add(str(system.resolve()).lower())
+        except OSError:
+            seen.add(str(system).lower())
+        roots.append((system, FULL_PC_SYSTEM_DRIVE_DEPTH))
+    for drive in all_logical_drive_roots(include_removable=True):
+        try:
+            key = str(drive.resolve()).lower()
+        except OSError:
+            key = str(drive).lower()
+        if key in seen:
+            continue
+        roots.append((drive, FULL_PC_SECONDARY_DRIVE_DEPTH))
+        seen.add(key)
+    return roots
 
 
 def walk_files_depth_limited(
@@ -4918,6 +5111,16 @@ def match_executor_labels(
     parent_stem = path_obj.parent.stem if path_obj.parent else ""
     executable_ext = path_obj.suffix.lower() in {".exe", ".dll", ".msi", ".bat", ".ps1", ".vbs", ".scr", ".com", ".jar"}
     name_segments = [segment for segment in (basename, stem, parent_name, parent_stem) if segment]
+    for part in path_obj.parts:
+        part_low = part.lower()
+        if part_low in EXECUTOR_INSTALL_DIR_NAMES:
+            for name in EXECUTOR_NAMES:
+                canonical = name.lower().replace(" ", "")
+                if part_low.replace(" ", "") == canonical or part_low in {
+                    a.lower() for a in EXECUTOR_ALIASES.get(name, [])
+                }:
+                    labels.append(name)
+                    break
     for name, pattern in patterns.items():
         if name in EXECUTOR_AMBIGUOUS_NAMES:
             if ambiguous_executor_stem_match(stem, name, full_name=basename) or ambiguous_executor_stem_match(
@@ -8942,6 +9145,8 @@ def roblox_diagnostics() -> dict:
         "logs": logs,
         "browser_scan": browser_scan,
         "accounts": accounts,
+        "account_count": len(accounts),
+        "multiple_accounts_detected": len(accounts) > 1,
         "aggregate_user_ids": sorted({str(acct.get("user_id")) for acct in accounts if acct.get("user_id")}),
         "aggregate_usernames": sorted(
             {
@@ -10622,6 +10827,345 @@ def scan_profile_binary_executor_sweep() -> list[dict[str, object]]:
     return hits
 
 
+def _user_profile_path_roots() -> dict[str, Path]:
+    roots: dict[str, Path] = {}
+    if platform.system() != "Windows":
+        roots["home"] = Path.home()
+        return roots
+    profile = os.getenv("USERPROFILE")
+    if profile:
+        roots["profile"] = Path(profile)
+    local = os.getenv("LOCALAPPDATA")
+    if local:
+        roots["local"] = Path(local)
+    roaming = os.getenv("APPDATA")
+    if roaming:
+        roots["roaming"] = Path(roaming)
+    return roots
+
+
+def _resolve_known_executor_path(relative: str) -> Path | None:
+    rel = relative.replace("/", "\\").strip("\\")
+    low = rel.lower()
+    if low.startswith("appdata\\local\\"):
+        base = os.getenv("LOCALAPPDATA")
+        if base:
+            return Path(base) / rel[14:]
+    if low.startswith("appdata\\roaming\\"):
+        base = os.getenv("APPDATA")
+        if base:
+            return Path(base) / rel[17:]
+    if low.startswith("downloads\\"):
+        profile = os.getenv("USERPROFILE")
+        if profile:
+            return Path(profile) / "Downloads" / rel[10:]
+    profile = os.getenv("USERPROFILE")
+    if profile:
+        return Path(profile) / rel
+    return None
+
+
+def scan_executor_known_install_paths() -> list[dict[str, object]]:
+    """Fast existence scan of documented executor install/workspace folders."""
+    if platform.system() != "Windows":
+        return []
+    hits: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for label, relatives in EXECUTOR_KNOWN_RELATIVE_PATHS.items():
+        for relative in relatives:
+            path = _resolve_known_executor_path(relative)
+            if path is None or not path.exists():
+                continue
+            path_str = str(path)
+            key = path_str.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                modified = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
+            except OSError:
+                modified = None
+            child_count = 0
+            try:
+                child_count = sum(1 for _ in path.iterdir())
+            except OSError:
+                pass
+            _append_executor_artifact_hit(
+                hits,
+                seen,
+                path=path_str,
+                labels=[label],
+                occurred_at=modified,
+                artifact_source="known_install_path",
+                file_exists=True,
+                note="Known executor install or workspace folder exists on disk.",
+                extra={"relative_hint": relative, "child_entries": child_count},
+            )
+    return hits[:80]
+
+
+def scan_roblox_protocol_handler_registry() -> list[dict[str, object]]:
+    """Detect roblox-player protocol handler hijacks (common injector/bypass technique)."""
+    if platform.system() != "Windows":
+        return []
+    hits: list[dict[str, object]] = []
+    seen: set[str] = set()
+    keys = (
+        r"HKCU\Software\Classes\roblox-player\shell\open\command",
+        r"HKLM\Software\Classes\roblox-player\shell\open\command",
+        r"HKCU\Software\Classes\roblox\shell\open\command",
+        r"HKLM\Software\Classes\roblox\shell\open\command",
+    )
+    ps_script = (
+        "$keys=@('" + "','".join(keys) + "');"
+        "$out=@();"
+        "foreach($k in $keys){"
+        "try{$v=(Get-ItemProperty -Path \"Registry::$k\" -ErrorAction Stop).'(default)';"
+        "if($v){$out+=@{key=$k;value=$v}}}"
+        "catch{}};"
+        "$out | ConvertTo-Json -Compress"
+    )
+    raw = run_command(["powershell", "-NoProfile", "-Command", ps_script], timeout=10, max_chars=8000)
+    entries: list[dict] = []
+    try:
+        if raw and not raw.startswith("Unavailable:"):
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                entries = [parsed]
+            elif isinstance(parsed, list):
+                entries = [row for row in parsed if isinstance(row, dict)]
+    except json.JSONDecodeError:
+        entries = []
+
+    for entry in entries:
+        value = str(entry.get("value") or "")
+        key = str(entry.get("key") or "")
+        if not value:
+            continue
+        value_low = value.lower()
+        if any(trusted in value_low for trusted in ROBLOX_TRUSTED_LAUNCHER_FRAGMENTS):
+            continue
+        labels = executor_labels_for_artifact_text(value)
+        reasons: list[str] = []
+        if labels:
+            reasons.append("executor_in_protocol_handler")
+        if any(
+            frag in value_low
+            for frag in ("\\temp\\", "\\downloads\\", "\\desktop\\", "inject", "loader", "bootstrap")
+        ):
+            reasons.append("untrusted_launch_path")
+        if not reasons:
+            reasons.append("non_roblox_protocol_handler")
+        display = f"{key} => {value[:240]}"
+        _append_executor_artifact_hit(
+            hits,
+            seen,
+            path=display,
+            labels=labels or ["Roblox protocol handler"],
+            occurred_at=None,
+            artifact_source="roblox_protocol_registry",
+            file_exists=None,
+            note="Roblox URL protocol handler points outside the normal Roblox/Bloxstrap launcher.",
+            extra={"registry_key": key, "handler_value": value[:500], "reasons": reasons},
+        )
+    return hits[:12]
+
+
+def scan_live_executor_processes() -> list[dict[str, object]]:
+    """Flag running processes whose image name/path matches a tracked executor."""
+    if platform.system() != "Windows":
+        return []
+    patterns = executor_name_patterns()
+    hits: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for proc in psutil.process_iter(["pid", "name", "exe", "cmdline", "create_time"]):
+        try:
+            info = proc.info
+            name = str(info.get("name") or "")
+            exe = str(info.get("exe") or "")
+            cmdline = " ".join(info.get("cmdline") or [])
+            blob = f"{name} {exe} {cmdline}"
+            if (name or "").lower() in ROBLOX_PROCESS_NAMES:
+                continue
+            labels = sorted(set(match_executor_labels(blob, patterns) + executor_labels_for_artifact_text(blob)))
+            if not labels and not cheat_path_hint_labels(exe or name):
+                continue
+            if not labels:
+                labels = ["suspicious_process"]
+            try:
+                started = datetime.fromtimestamp(float(info.get("create_time") or 0), timezone.utc).isoformat()
+            except (TypeError, ValueError, OSError):
+                started = None
+            path_display = exe or name
+            _append_executor_artifact_hit(
+                hits,
+                seen,
+                path=path_display,
+                labels=labels,
+                occurred_at=started,
+                artifact_source="live_process",
+                file_exists=bool(exe and Path(exe).is_file()),
+                note="Process running during scan matches a tracked executor or cheat indicator.",
+                extra={"pid": info.get("pid"), "process_name": name},
+            )
+        except (psutil.NoSuchProcess, psutil.AccessDenied, TypeError, ValueError):
+            continue
+    return hits[:40]
+
+
+def scan_roblox_autoexec_artifacts() -> list[dict[str, object]]:
+    """Find autoexec/script folders used by executors (Seliware, Solara, etc.)."""
+    if platform.system() != "Windows":
+        return []
+    hits: list[dict[str, object]] = []
+    seen: set[str] = set()
+    scan_roots: list[Path] = []
+    for env_name in ("LOCALAPPDATA", "APPDATA"):
+        value = os.getenv(env_name)
+        if value:
+            scan_roots.append(Path(value))
+    profile = os.getenv("USERPROFILE")
+    if profile:
+        scan_roots.append(Path(profile) / "Downloads")
+
+    for root in scan_roots:
+        if not root.is_dir():
+            continue
+        try:
+            for child in root.iterdir():
+                if not child.is_dir():
+                    continue
+                child_labels = match_executor_labels(str(child), executor_name_patterns(), path_context=True)
+                if not child_labels:
+                    continue
+                for sub in child.iterdir():
+                    if not sub.is_dir():
+                        continue
+                    if sub.name.lower() not in ROBLOX_AUTOEXEC_DIR_NAMES:
+                        continue
+                    script_files: list[str] = []
+                    try:
+                        for script in sub.rglob("*"):
+                            if not script.is_file():
+                                continue
+                            if script.suffix.lower() not in ROBLOX_AUTOEXEC_FILE_EXTENSIONS:
+                                continue
+                            script_files.append(str(script.name))
+                            if len(script_files) >= 8:
+                                break
+                    except OSError:
+                        pass
+                    try:
+                        modified = datetime.fromtimestamp(sub.stat().st_mtime, timezone.utc).isoformat()
+                    except OSError:
+                        modified = None
+                    _append_executor_artifact_hit(
+                        hits,
+                        seen,
+                        path=str(sub),
+                        labels=sorted(set(child_labels)),
+                        occurred_at=modified,
+                        artifact_source="roblox_autoexec_folder",
+                        file_exists=True,
+                        note="Executor workspace contains an autoexec/script folder with saved scripts.",
+                        extra={"script_samples": script_files[:8], "parent_executor_dir": str(child)},
+                    )
+                    if len(hits) >= 30:
+                        return hits
+        except OSError:
+            continue
+    return hits
+
+
+def scan_browser_history_executor_domains() -> list[dict[str, object]]:
+    """Match tracked executor download-site domains in browser visit history."""
+    if platform.system() != "Windows":
+        return []
+    hits: list[dict[str, object]] = []
+    seen: set[str] = set()
+    domain_patterns: list[tuple[str, str]] = []
+    for label, domains in EXECUTOR_DOWNLOAD_DOMAIN_HINTS.items():
+        for domain in domains:
+            token = domain.lower().strip(".")
+            if len(token) >= 4:
+                domain_patterns.append((label, token))
+
+    for browser, profile, history_db in _chromium_history_database_paths():
+        conn = _sqlite_open_readonly(history_db)
+        if not conn:
+            continue
+        try:
+            cur = conn.cursor()
+            for label, token in domain_patterns[:64]:
+                try:
+                    cur.execute(
+                        "SELECT url, title, last_visit_time FROM urls "
+                        "WHERE lower(url) LIKE ? ORDER BY last_visit_time DESC LIMIT 4",
+                        (f"%{token}%",),
+                    )
+                except sqlite3.Error:
+                    continue
+                for url, title, last_visit in cur.fetchall():
+                    url_str = str(url or "")[:520]
+                    if not url_str:
+                        continue
+                    visited = chrome_webkit_time_to_iso(last_visit)
+                    _append_executor_artifact_hit(
+                        hits,
+                        seen,
+                        path=url_str,
+                        labels=[label],
+                        occurred_at=visited,
+                        artifact_source="browser_history_domain",
+                        file_exists=None,
+                        note=f"Browser history visit matches a known {label} download domain.",
+                        extra={"browser": browser, "profile": profile, "title": str(title or "")[:200]},
+                    )
+                    if len(hits) >= 60:
+                        return hits
+        finally:
+            try:
+                conn.close()
+            except sqlite3.Error:
+                pass
+    return hits
+
+
+def roblox_exploit_surface_scan() -> dict[str, object]:
+    """Roblox-focused bundle: known paths, protocol handler, live processes, autoexec, browser domains."""
+    if platform.system() != "Windows":
+        return {"available": False, "reason": "Roblox exploit surface scan is Windows-focused in this build"}
+    with ThreadPoolExecutor(max_workers=min(5, SCAN_WORKERS)) as pool:
+        fut_known = pool.submit(scan_executor_known_install_paths)
+        fut_protocol = pool.submit(scan_roblox_protocol_handler_registry)
+        fut_process = pool.submit(scan_live_executor_processes)
+        fut_autoexec = pool.submit(scan_roblox_autoexec_artifacts)
+        fut_history = pool.submit(scan_browser_history_executor_domains)
+        known = fut_known.result()
+        protocol = fut_protocol.result()
+        processes = fut_process.result()
+        autoexec = fut_autoexec.result()
+        history = fut_history.result()
+    combined = known + protocol + processes + autoexec + history
+    by_executor: dict[str, int] = {}
+    for hit in combined:
+        for label in hit.get("executor_name_hits") or []:
+            by_executor[str(label)] = by_executor.get(str(label), 0) + 1
+    return {
+        "available": True,
+        "hit_count": len(combined),
+        "known_install_paths": known,
+        "protocol_handler_hits": protocol,
+        "live_process_hits": processes,
+        "autoexec_hits": autoexec,
+        "browser_history_hits": history,
+        "executor_hit_counts": by_executor,
+        "tracked_executor_total": len(SCAN_TARGET_EXECUTORS),
+        "note": "Roblox-dedicated surface scan: install folders, protocol hijacks, live processes, "
+        "autoexec workspaces, and executor download-site browser history.",
+    }
+
+
 def scan_roblox_log_executor_hits() -> list[dict[str, object]]:
     if platform.system() != "Windows":
         return []
@@ -10723,6 +11267,11 @@ def _submit_independent_artifact_scans(pool: ThreadPoolExecutor) -> dict[str, ob
         "shimcache": scan_shimcache_executor_hits,
         "scheduled_task": scan_scheduled_tasks_executor_hits,
         "prefetch_execution": scan_entire_prefetch_executor_hits,
+        "known_install_path": scan_executor_known_install_paths,
+        "roblox_protocol_registry": scan_roblox_protocol_handler_registry,
+        "live_process": scan_live_executor_processes,
+        "roblox_autoexec": scan_roblox_autoexec_artifacts,
+        "browser_history_domain": scan_browser_history_executor_domains,
     }
     return {key: pool.submit(fn) for key, fn in jobs.items()}
 
@@ -11062,29 +11611,11 @@ def build_executor_artifact_evidence(
     ingest("shimcache", parallel_artifact_results.get("shimcache") or [])
     ingest("recycle_bin_content", parallel_artifact_results.get("recycle_bin_content") or [])
     ingest("scheduled_task", parallel_artifact_results.get("scheduled_task") or [])
-
-    deletion_blob = "\n".join(
-        [
-            str(deletion.get("raw_sample") or ""),
-            str(deletion.get("usn_delete_sample") or ""),
-            json.dumps(deletion.get("deleted_file_evidence") or {}, default=str)[:120000],
-        ]
-    )
-    for name in EXECUTOR_NAMES:
-        if len(name) < 4:
-            continue
-        if re.search(re.escape(name), deletion_blob, re.IGNORECASE):
-            _append_executor_artifact_hit(
-                hits,
-                seen,
-                path=f"(deletion log mention) {name}",
-                labels=[name],
-                occurred_at=None,
-                artifact_source="deletion_log_mention",
-                file_exists=False,
-                note="Executor name appears in deletion/USN/event-log samples collected during scan.",
-            )
-            sources_used.add("deletion_log_mention")
+    ingest("known_install_path", parallel_artifact_results.get("known_install_path") or [])
+    ingest("roblox_protocol_registry", parallel_artifact_results.get("roblox_protocol_registry") or [])
+    ingest("live_process", parallel_artifact_results.get("live_process") or [])
+    ingest("roblox_autoexec", parallel_artifact_results.get("roblox_autoexec") or [])
+    ingest("browser_history_domain", parallel_artifact_results.get("browser_history_domain") or [])
 
     by_executor: dict[str, int] = {}
     for hit in hits:
@@ -11594,6 +12125,11 @@ def _firefox_profile_download_databases() -> list[tuple[str, Path]]:
 def _download_row_matches(path: str, url: str, patterns: dict[str, re.Pattern[str]]) -> tuple[bool, list[str]]:
     labels = sorted(set(match_executor_labels(f"{path} {url}", patterns)))
     labels.extend(cheat_path_hint_labels(path))
+    url_low = (url or "").lower()
+    for label, domains in EXECUTOR_DOWNLOAD_DOMAIN_HINTS.items():
+        if any(domain in url_low for domain in domains):
+            labels.append(label)
+    labels = sorted(set(labels))
     if not labels and url:
         lower = url.lower()
         if any(ext in lower for ext in (".exe", ".dll", ".bat", ".ps1", ".msi", ".zip", ".rar", ".7z")):
@@ -14408,6 +14944,26 @@ def _process_overview_sample() -> dict:
 def build_report() -> dict:
     import time as _time
 
+    def _run_collector_with_timeout(
+        fn,
+        *,
+        timeout: float = OPTIONAL_COLLECTOR_TIMEOUT_SEC,
+        label: str = "",
+    ) -> dict:
+        with ThreadPoolExecutor(max_workers=1) as timeout_pool:
+            future = timeout_pool.submit(fn)
+            try:
+                result = future.result(timeout=timeout)
+                if isinstance(result, dict):
+                    return result
+                return {"available": True, "sample": result}
+            except Exception as exc:
+                return {
+                    "available": False,
+                    "reason": f"{label or getattr(fn, '__name__', 'collector')} skipped: {exc}",
+                    "skipped_fast_scan": True,
+                }
+
     _phase_started = _time.perf_counter()
     _phase_times: dict[str, float] = {}
 
@@ -14433,17 +14989,30 @@ def build_report() -> dict:
         fut_folders = pool.submit(combined_user_folder_security_scans)
         fut_forensic_core = pool.submit(_collect_forensic_core_signals)
         fut_hardware = pool.submit(hardware_identifiers)
-        fut_apps = pool.submit(installed_apps_summary)
+        fut_apps = pool.submit(
+            lambda: _run_collector_with_timeout(installed_apps_summary, label="installed_apps")
+        )
         fut_trash = pool.submit(recycle_bin_metadata)
         fut_roblox = pool.submit(roblox_diagnostics)
+        fut_roblox_surface = pool.submit(roblox_exploit_surface_scan)
         fut_amcache = pool.submit(amcache_metadata)
         fut_userassist = pool.submit(userassist_registry_entries)
         fut_defender = pool.submit(windows_defender_signals)
-        fut_events = pool.submit(windows_event_log_summary)
-        fut_security_events = pool.submit(windows_security_event_summary)
-        fut_powershell_events = pool.submit(powershell_operational_events)
-        fut_service_changes = pool.submit(windows_service_change_events)
-        fut_xml = pool.submit(xml_event_log_files)
+        fut_events = pool.submit(
+            lambda: _run_collector_with_timeout(windows_event_log_summary, label="windows_event_logs")
+        )
+        fut_security_events = pool.submit(
+            lambda: _run_collector_with_timeout(windows_security_event_summary, label="windows_security_events")
+        )
+        fut_powershell_events = pool.submit(
+            lambda: _run_collector_with_timeout(powershell_operational_events, label="powershell_events")
+        )
+        fut_service_changes = pool.submit(
+            lambda: _run_collector_with_timeout(windows_service_change_events, label="service_change_events")
+        )
+        fut_xml = pool.submit(
+            lambda: _run_collector_with_timeout(xml_event_log_files, label="xml_event_logs")
+        )
         fut_recent = pool.submit(recent_items_metadata)
         fut_cmdhist = pool.submit(command_history_keyword_hits)
         fut_services = pool.submit(windows_service_signals)
@@ -14497,6 +15066,7 @@ def build_report() -> dict:
                 fut_browser_downloads,
                 fut_dam,
                 fut_processes,
+                fut_roblox_surface,
             }
         )
 
@@ -14548,6 +15118,7 @@ def build_report() -> dict:
 
         prefetch_health = fut_pref_health.result()
         roblox_integrity = fut_roblox_int.result()
+        roblox_surface = fut_roblox_surface.result()
         persistence = fut_persist.result()
         recent_items = fut_recent.result()
         generated_at = datetime.now(timezone.utc).isoformat()
@@ -14730,8 +15301,33 @@ def build_report() -> dict:
             "trash": trash,
             "prefetch": prefetch,
             "scan_phase_seconds": _phase_times,
+            "scan_max_seconds": SCAN_MAX_SECONDS,
+            "scan_profile": {
+                "mode": "roblox_standard",
+                "target_executor_count": len(SCAN_TARGET_EXECUTORS),
+                "target_executors": SCAN_TARGET_EXECUTORS,
+                "user_zone_depth": FULL_PC_USER_ZONE_DEPTH,
+                "system_drive_depth": FULL_PC_SYSTEM_DRIVE_DEPTH,
+                "secondary_drive_depth": FULL_PC_SECONDARY_DRIVE_DEPTH,
+                "anti_bypass_sources": [
+                    "bam",
+                    "prefetch",
+                    "usn_journal",
+                    "sha256_blocklist",
+                    "binary_probe",
+                    "recycle_bin",
+                    "persistence",
+                    "browser_downloads",
+                    "browser_history_domains",
+                    "roblox_integrity",
+                    "known_install_paths",
+                    "roblox_protocol_registry",
+                    "live_processes",
+                    "roblox_autoexec",
+                ],
+            },
         },
-        "application_diagnostics": {"roblox": roblox},
+        "application_diagnostics": {"roblox": roblox, "roblox_exploit_surface": roblox_surface},
         "process_overview": process_overview,
         "security_integrity_signals": {
             "amcache": amcache,
@@ -15401,7 +15997,7 @@ class DiagnosticApp:
 
                 stop_anim.set()
                 anim_thread.join(timeout=2.0)
-                report = report_future.result(timeout=900)
+                report = report_future.result(timeout=SCAN_MAX_SECONDS)
                 self.root.after(0, self.set_stage, collect_stage, "complete")
 
                 finalize_stage = "Finalizing Report"
