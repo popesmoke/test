@@ -2982,7 +2982,8 @@ INDICATOR_LOW_VALUE_EXTENSIONS = frozenset(
     }
 )
 BINARY_PROBE_QUICK_BYTES = 1_048_576
-DISK_WALK_WORKERS = 1
+# Parallel drive roots; 2–3 walkers overlap I/O without thrashing a single volume.
+DISK_WALK_WORKERS = min(3, max(2, (os.cpu_count() or 4) // 2))
 BINARY_PROBE_WORKERS = min(12, max(6, (os.cpu_count() or 4)))
 
 ROBLOX_PROCESS_NAMES = frozenset({"robloxplayerbeta.exe", "robloxplayer.exe", "roblox.exe"})
@@ -3092,6 +3093,7 @@ _roblox_logs_cache: list[dict] | None = None
 _roblox_logs_cache_lock = threading.Lock()
 _full_pc_recent_executables_cache: list[dict] | None = None
 _executor_indicator_cache: dict[str, object] | None = None
+_profile_binary_sweep_cache: list[dict[str, object]] | None = None
 _binary_probe_result_cache: dict[str, list[str]] = {}
 
 
@@ -3109,6 +3111,11 @@ def _reset_usn_comprehensive_cache() -> None:
 def _reset_executor_indicator_cache() -> None:
     global _executor_indicator_cache
     _executor_indicator_cache = None
+
+
+def _reset_profile_binary_sweep_cache() -> None:
+    global _profile_binary_sweep_cache
+    _profile_binary_sweep_cache = None
 
 
 def _reset_roblox_logs_cache() -> None:
@@ -3336,11 +3343,13 @@ class _FullPcScanBudget:
         hash_pipeline: _BlocklistHashPipeline | None,
         binary_pipeline: _BinaryProbePipeline | None,
         indicator_collector: _ExecutorIndicatorCollector | None,
+        profile_collector: _ProfileBinarySweepCollector | None = None,
     ) -> None:
         hash_full = hash_pipeline is None or hash_pipeline.is_full()
         binary_full = binary_pipeline is None or binary_pipeline.is_full()
         indicator_full = indicator_collector is None or indicator_collector.is_saturated()
-        if hash_full and binary_full and indicator_full:
+        profile_full = profile_collector is None or profile_collector.is_saturated()
+        if hash_full and binary_full and indicator_full and profile_full:
             self.stop.set()
 
 
@@ -3557,6 +3566,84 @@ class _ExecutorIndicatorCollector:
             "scanned_text_files": self._scanned_files,
             "roots_checked": roots_checked,
         }
+
+
+class _ProfileBinarySweepCollector:
+    """Collect profile binary/text sweep hits during the full-PC walk (avoids a second drive sweep)."""
+
+    _MAX_BYTES = 2_500_000
+
+    def __init__(self, *, workers: int = 6) -> None:
+        self._hits: list[dict[str, object]] = []
+        self._seen: set[str] = set()
+        self._enumerated = 0
+        self._lock = threading.Lock()
+        self._pool = ThreadPoolExecutor(max_workers=workers)
+        self._futures: list = []
+
+    def is_saturated(self) -> bool:
+        with self._lock:
+            return (
+                self._enumerated >= PROFILE_BINARY_SWEEP_MAX_FILES
+                or len(self._hits) >= PROFILE_BINARY_SWEEP_MAX_HITS
+            )
+
+    def note_walked_file(self, path: Path) -> bool:
+        """Mirror standalone sweep enumeration budget (every walked file counts)."""
+        with self._lock:
+            self._enumerated += 1
+            return self._enumerated >= PROFILE_BINARY_SWEEP_MAX_FILES
+
+    def observe_file(self, path: Path) -> None:
+        if self.is_saturated():
+            return
+        ext = path.suffix.lower()
+        if ext not in PROFILE_BINARY_SWEEP_EXTENSIONS and ext not in {".exe", ".dll"}:
+            return
+        if executor_scan_path_excluded(str(path)):
+            return
+        self._futures.append(self._pool.submit(self._scan_file, path))
+
+    def _scan_file(self, path: Path) -> None:
+        if self.is_saturated():
+            return
+        try:
+            stat = path.stat()
+            if stat.st_size <= 0 or stat.st_size > self._MAX_BYTES:
+                return
+            data = path.read_bytes()[: self._MAX_BYTES]
+            modified = datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()
+        except OSError:
+            return
+        labels = executor_labels_for_artifact_text(path.name)
+        if not labels:
+            labels = scan_binary_blob_for_executor_names(data)
+        if not labels:
+            return
+        extracted = extract_dos_paths_from_binary(data, limit=2)
+        display = extracted[0] if extracted else str(path)
+        with self._lock:
+            if len(self._hits) >= PROFILE_BINARY_SWEEP_MAX_HITS:
+                return
+            _append_executor_artifact_hit(
+                self._hits,
+                self._seen,
+                path=display,
+                labels=labels,
+                occurred_at=modified,
+                artifact_source="profile_binary_sweep",
+                file_exists=path_exists_on_disk(display),
+                note="User-profile binary/text sweep found a checked executor name or path residue.",
+            )
+
+    def finalize(self) -> list[dict[str, object]]:
+        for future in as_completed(self._futures):
+            try:
+                future.result()
+            except Exception:
+                continue
+        self._pool.shutdown(wait=True)
+        return self._hits[:PROFILE_BINARY_SWEEP_MAX_HITS]
 
 
 def executor_user_hash_scan_roots() -> list[tuple[Path, int]]:
@@ -4993,6 +5080,7 @@ def _full_pc_scan_root(
     hash_pipeline: _BlocklistHashPipeline | None = None,
     recent_collector: _RecentExecutableCollector | None = None,
     indicator_collector: _ExecutorIndicatorCollector | None = None,
+    profile_collector: _ProfileBinarySweepCollector | None = None,
     binary_pipeline: _BinaryProbePipeline | None = None,
     budget: _FullPcScanBudget | None = None,
 ) -> dict:
@@ -5009,10 +5097,24 @@ def _full_pc_scan_root(
                 break
             enumerated += 1
             if budget is not None and enumerated % 256 == 0:
-                budget.check_early_stop(hash_pipeline, binary_pipeline, indicator_collector)
+                budget.check_early_stop(
+                    hash_pipeline,
+                    binary_pipeline,
+                    indicator_collector,
+                    profile_collector,
+                )
                 if budget.should_stop():
                     break
             path_str = str(path)
+            if profile_collector is not None:
+                if profile_collector.note_walked_file(path) and budget is not None:
+                    budget.check_early_stop(
+                        hash_pipeline,
+                        binary_pipeline,
+                        indicator_collector,
+                        profile_collector,
+                    )
+                profile_collector.observe_file(path)
             if indicator_collector is not None and path_warrants_indicator_scan(path_str):
                 indicator_collector.observe_file(path, patterns)
             ext = path.suffix.lower()
@@ -5072,7 +5174,12 @@ def _full_pc_scan_root(
         if budget is not None:
             budget.note_hits(len(hits))
         if budget is not None:
-            budget.check_early_stop(hash_pipeline, binary_pipeline, indicator_collector)
+            budget.check_early_stop(
+                hash_pipeline,
+                binary_pipeline,
+                indicator_collector,
+                profile_collector,
+            )
     except PermissionError:
         skipped_permission += 1
     except OSError:
@@ -5093,7 +5200,7 @@ def full_pc_filesystem_executor_scan(
     max_hashes: int = 0,
 ) -> dict:
     """Walk every local/removable drive for executor names, cheat hints, embedded branding, and optional SHA256 blocklist."""
-    global _executor_indicator_cache, _binary_probe_result_cache
+    global _executor_indicator_cache, _binary_probe_result_cache, _profile_binary_sweep_cache
     if platform.system() != "Windows":
         return {"available": False, "reason": "Full-PC scan is Windows-only", "hits": []}
     patterns = executor_name_patterns()
@@ -5106,7 +5213,8 @@ def full_pc_filesystem_executor_scan(
     recent_collector = _RecentExecutableCollector(
         datetime.now(timezone.utc) - timedelta(days=RECENT_EXECUTABLE_WINDOW_DAYS)
     )
-    indicator_collector = _ExecutorIndicatorCollector(text_workers=min(8, HASH_SCAN_WORKERS))
+    indicator_collector = _ExecutorIndicatorCollector(text_workers=min(12, HASH_SCAN_WORKERS))
+    profile_collector = _ProfileBinarySweepCollector(workers=min(8, HASH_SCAN_WORKERS))
     binary_pipeline = _BinaryProbePipeline()
     roots_checked = [str(root) for root, _ in roots]
     prefetch_root = str(Path(os.getenv("SystemRoot", "C:\\Windows")) / "Prefetch")
@@ -5127,6 +5235,7 @@ def full_pc_filesystem_executor_scan(
                 hash_pipeline=hash_pipeline,
                 recent_collector=recent_collector,
                 indicator_collector=indicator_collector,
+                profile_collector=profile_collector,
                 binary_pipeline=binary_pipeline,
                 budget=budget,
             )
@@ -5140,7 +5249,7 @@ def full_pc_filesystem_executor_scan(
             skipped_permission += int(partial.get("skipped_permission_roots") or 0)
             if budget.should_stop():
                 break
-    with ThreadPoolExecutor(max_workers=2) as collect_pool:
+    with ThreadPoolExecutor(max_workers=3) as collect_pool:
         bin_future = collect_pool.submit(binary_pipeline.collect)
         hash_future = (
             collect_pool.submit(hash_pipeline.collect)
@@ -5148,12 +5257,14 @@ def full_pc_filesystem_executor_scan(
             else None
         )
         ind_future = collect_pool.submit(indicator_collector.finalize, roots_checked=roots_checked)
+        prof_future = collect_pool.submit(profile_collector.finalize)
         probe_results, probed_paths = bin_future.result()
         if hash_future is not None:
             hash_hits, files_hashed = hash_future.result()
         else:
             hash_hits = []
         _executor_indicator_cache = ind_future.result()
+        _profile_binary_sweep_cache = prof_future.result()
     _binary_probe_result_cache = probe_results
     hits = _merge_binary_probe_results(hits, probe_results, probed_paths, patterns)
     recent_executables = recent_collector.finalize()
@@ -6369,23 +6480,6 @@ def windows_service_signals() -> dict:
         "services_checked": services,
         "items": items,
         "raw": raw,
-    }
-
-
-def usb_event_summary() -> dict:
-    if platform.system() != "Windows":
-        return {"available": False, "reason": "USB event summary is Windows-only"}
-
-    script = (
-        "$start=(Get-Date).AddDays(-30);"
-        "Get-WinEvent -FilterHashtable @{LogName='System'; StartTime=$start; Id=@(20001,20003,2100,2101,2102,2105,2106)} "
-        "-ErrorAction SilentlyContinue | "
-        "Select-Object -First 80 TimeCreated,ProviderName,Id,Message | ConvertTo-Json -Depth 3"
-    )
-    return {
-        "available": True,
-        "window": "last 30 days",
-        "raw_sample": run_command(["powershell", "-NoProfile", "-Command", script])[:20000],
     }
 
 
@@ -10502,8 +10596,11 @@ def _profile_binary_sweep_root(root: Path) -> tuple[list[dict[str, object]], int
 
 def scan_profile_binary_executor_sweep() -> list[dict[str, object]]:
     """Search all drives for leftover strings/paths after delete."""
+    global _profile_binary_sweep_cache
     if platform.system() != "Windows":
         return []
+    if _profile_binary_sweep_cache is not None:
+        return list(_profile_binary_sweep_cache)
     roots = [root for root, _depth in full_pc_scan_roots()]
     hits: list[dict[str, object]] = []
     seen: set[str] = set()
@@ -10609,6 +10706,38 @@ def scan_prefetch_executor_artifact_hits(prefetch: dict) -> list[dict[str, objec
     return scan_entire_prefetch_executor_hits()
 
 
+def _submit_independent_artifact_scans(pool: ThreadPoolExecutor) -> dict[str, object]:
+    """Start artifact scans that do not depend on the full-PC walk or forensic bundle."""
+    if platform.system() != "Windows":
+        return {}
+    jobs = {
+        "recent_lnk": scan_recent_lnk_executor_hits,
+        "registry_uninstall": scan_registry_uninstall_executor_hits,
+        "mui_cache": scan_mui_cache_executor_hits,
+        "amcache_hive": scan_amcache_executor_hits,
+        "registry_shell": scan_registry_shell_executor_hits,
+        "wer_crash_dump": scan_wer_executor_hits,
+        "defender_history": scan_defender_artifact_executor_hits,
+        "application_event_log": scan_application_event_log_executor_hits,
+        "roblox_log": scan_roblox_log_executor_hits,
+        "shimcache": scan_shimcache_executor_hits,
+        "scheduled_task": scan_scheduled_tasks_executor_hits,
+        "prefetch_execution": scan_entire_prefetch_executor_hits,
+    }
+    return {key: pool.submit(fn) for key, fn in jobs.items()}
+
+
+def _resolve_prefetched_artifact_scans(futures: dict[str, object]) -> dict[str, list[dict[str, object]]]:
+    resolved: dict[str, list[dict[str, object]]] = {}
+    for key, future in futures.items():
+        try:
+            rows = future.result()  # type: ignore[union-attr]
+            resolved[key] = list(rows) if rows else []
+        except Exception:
+            resolved[key] = []
+    return resolved
+
+
 def build_executor_artifact_evidence(
     *,
     bam: dict,
@@ -10626,6 +10755,7 @@ def build_executor_artifact_evidence(
     sha_blocklist: dict,
     executor_indicators: dict,
     recent_items: dict,
+    prefetched_artifact_scans: dict[str, list[dict[str, object]]] | None = None,
 ) -> dict[str, object]:
     """Aggregate every executor trace source into one scored evidence list."""
     if platform.system() != "Windows":
@@ -10641,9 +10771,59 @@ def build_executor_artifact_evidence(
         hits.extend(rows)
 
     blocklist = load_executor_sha256_blocklist()
+    prefetched = prefetched_artifact_scans or {}
+
+    def _artifact_rows(source: str, fallback) -> list[dict[str, object]]:
+        cached = prefetched.get(source)
+        if cached is not None:
+            return list(cached)
+        return list(fallback() or [])
+
+    parallel_artifact_jobs = {
+        "bam_execution_binary": lambda: scan_execution_artifact_binaries(
+            bam=bam, dam=dam, blocklist=blocklist
+        ),
+        "prefetch_execution": lambda: _artifact_rows(
+            "prefetch_execution",
+            lambda: scan_prefetch_executor_artifact_hits(prefetch),
+        ),
+        "usn_journal": lambda: scan_all_usn_executor_path_hits(forensic_bundle, deletion),
+        "recent_lnk": lambda: _artifact_rows("recent_lnk", scan_recent_lnk_executor_hits),
+        "registry_uninstall": lambda: _artifact_rows(
+            "registry_uninstall", scan_registry_uninstall_executor_hits
+        ),
+        "mui_cache": lambda: _artifact_rows("mui_cache", scan_mui_cache_executor_hits),
+        "amcache_hive": lambda: _artifact_rows("amcache_hive", scan_amcache_executor_hits),
+        "registry_shell": lambda: _artifact_rows("registry_shell", scan_registry_shell_executor_hits),
+        "wer_crash_dump": lambda: _artifact_rows("wer_crash_dump", scan_wer_executor_hits),
+        "defender_history": lambda: _artifact_rows(
+            "defender_history", scan_defender_artifact_executor_hits
+        ),
+        "application_event_log": lambda: _artifact_rows(
+            "application_event_log", scan_application_event_log_executor_hits
+        ),
+        "profile_binary_sweep": scan_profile_binary_executor_sweep,
+        "roblox_log": lambda: _artifact_rows("roblox_log", scan_roblox_log_executor_hits),
+        "shimcache": lambda: _artifact_rows("shimcache", scan_shimcache_executor_hits),
+        "recycle_bin_content": lambda: scan_recycle_bin_content_hits(trash, blocklist),
+        "scheduled_task": lambda: _artifact_rows("scheduled_task", scan_scheduled_tasks_executor_hits),
+    }
+    parallel_artifact_results: dict[str, list[dict[str, object]]] = {}
+    if parallel_artifact_jobs:
+        workers = min(SCAN_WORKERS, len(parallel_artifact_jobs))
+        with ThreadPoolExecutor(max_workers=workers) as artifact_pool:
+            artifact_futures = {
+                key: artifact_pool.submit(fn) for key, fn in parallel_artifact_jobs.items()
+            }
+            for key, future in artifact_futures.items():
+                try:
+                    parallel_artifact_results[key] = list(future.result() or [])
+                except Exception:
+                    parallel_artifact_results[key] = []
+
     ingest(
         "bam_execution_binary",
-        scan_execution_artifact_binaries(bam=bam, dam=dam, blocklist=blocklist),
+        parallel_artifact_results.get("bam_execution_binary") or [],
     )
     for item in bam.get("items") or []:
         path = str(item.get("normalized_path") or "")
@@ -10708,8 +10888,8 @@ def build_executor_artifact_evidence(
     if any(h.get("artifact_source") == "full_pc_filesystem" for h in hits):
         sources_used.add("full_pc_filesystem")
 
-    ingest("prefetch_execution", scan_prefetch_executor_artifact_hits(prefetch))
-    ingest("usn_journal", scan_all_usn_executor_path_hits(forensic_bundle, deletion))
+    ingest("prefetch_execution", parallel_artifact_results.get("prefetch_execution") or [])
+    ingest("usn_journal", parallel_artifact_results.get("usn_journal") or [])
 
     pca = forensic_bundle.get("pca_executed") or {}
     for item in pca.get("items") or []:
@@ -10869,19 +11049,19 @@ def build_executor_artifact_evidence(
             note="Startup/persistence entry references a checked executor.",
         )
 
-    ingest("recent_lnk", scan_recent_lnk_executor_hits())
-    ingest("registry_uninstall", scan_registry_uninstall_executor_hits())
-    ingest("mui_cache", scan_mui_cache_executor_hits())
-    ingest("amcache_hive", scan_amcache_executor_hits())
-    ingest("registry_shell", scan_registry_shell_executor_hits())
-    ingest("wer_crash_dump", scan_wer_executor_hits())
-    ingest("defender_history", scan_defender_artifact_executor_hits())
-    ingest("application_event_log", scan_application_event_log_executor_hits())
-    ingest("profile_binary_sweep", scan_profile_binary_executor_sweep())
-    ingest("roblox_log", scan_roblox_log_executor_hits())
-    ingest("shimcache", scan_shimcache_executor_hits())
-    ingest("recycle_bin_content", scan_recycle_bin_content_hits(trash, load_executor_sha256_blocklist()))
-    ingest("scheduled_task", scan_scheduled_tasks_executor_hits())
+    ingest("recent_lnk", parallel_artifact_results.get("recent_lnk") or [])
+    ingest("registry_uninstall", parallel_artifact_results.get("registry_uninstall") or [])
+    ingest("mui_cache", parallel_artifact_results.get("mui_cache") or [])
+    ingest("amcache_hive", parallel_artifact_results.get("amcache_hive") or [])
+    ingest("registry_shell", parallel_artifact_results.get("registry_shell") or [])
+    ingest("wer_crash_dump", parallel_artifact_results.get("wer_crash_dump") or [])
+    ingest("defender_history", parallel_artifact_results.get("defender_history") or [])
+    ingest("application_event_log", parallel_artifact_results.get("application_event_log") or [])
+    ingest("profile_binary_sweep", parallel_artifact_results.get("profile_binary_sweep") or [])
+    ingest("roblox_log", parallel_artifact_results.get("roblox_log") or [])
+    ingest("shimcache", parallel_artifact_results.get("shimcache") or [])
+    ingest("recycle_bin_content", parallel_artifact_results.get("recycle_bin_content") or [])
+    ingest("scheduled_task", parallel_artifact_results.get("scheduled_task") or [])
 
     deletion_blob = "\n".join(
         [
@@ -14238,6 +14418,7 @@ def build_report() -> dict:
     _reset_roblox_logs_cache()
     _reset_full_pc_recent_executables_cache()
     _reset_executor_indicator_cache()
+    _reset_profile_binary_sweep_cache()
     _reset_binary_probe_result_cache()
     scan_started_at = datetime.now(timezone.utc).isoformat()
     _collect_started = _time.perf_counter()
@@ -14266,12 +14447,12 @@ def build_report() -> dict:
         fut_recent = pool.submit(recent_items_metadata)
         fut_cmdhist = pool.submit(command_history_keyword_hits)
         fut_services = pool.submit(windows_service_signals)
-        fut_usb = pool.submit(usb_event_summary)
         fut_shellbag = pool.submit(shellbag_clear_signal)
         fut_persist = pool.submit(persistence_signals)
         fut_browser_downloads = pool.submit(browser_download_history_scan)
         fut_dam = pool.submit(dam_execution_records)
         fut_processes = pool.submit(_process_overview_sample)
+        artifact_scan_futures = _submit_independent_artifact_scans(pool)
 
         wait({fut_prefetch, fut_deletion, fut_folders, fut_forensic_core})
         prefetch = fut_prefetch.result()
@@ -14310,7 +14491,6 @@ def build_report() -> dict:
                 fut_recent,
                 fut_cmdhist,
                 fut_services,
-                fut_usb,
                 fut_shellbag,
                 fut_persist,
                 fut_disk_exe,
@@ -14322,12 +14502,32 @@ def build_report() -> dict:
 
         _mark_phase("collectors", _collect_started)
         _correlate_started = _time.perf_counter()
+        prefetched_artifact_scans = _resolve_prefetched_artifact_scans(artifact_scan_futures)
         forensic_bundle = fut_forensic.result()
-        executor_indicators = executor_indicator_scan()
-        bam_structured = forensic_bundle.get("bam_structured")
-        bam_registry = bam_registry_entries(
-            bam_structured if isinstance(bam_structured, dict) else None
-        )
+        with ThreadPoolExecutor(max_workers=min(6, SCAN_WORKERS)) as correlate_pool:
+            fut_exec_indicators = correlate_pool.submit(executor_indicator_scan)
+            fut_bam_registry = correlate_pool.submit(
+                bam_registry_entries,
+                forensic_bundle.get("bam_structured")
+                if isinstance(forensic_bundle.get("bam_structured"), dict)
+                else None,
+            )
+            fut_del_cleanup = correlate_pool.submit(
+                build_deletion_cleanup_analysis,
+                trash=fut_trash.result(),
+                deletion=deletion_signals,
+                forensic_bundle=forensic_bundle,
+            )
+            fut_fs_integrity = correlate_pool.submit(
+                build_filesystem_evidence_integrity,
+                deletion=deletion_signals,
+                command_history=fut_cmdhist.result(),
+                services=fut_services.result(),
+            )
+            executor_indicators = fut_exec_indicators.result()
+            bam_registry = fut_bam_registry.result()
+            deletion_cleanup_analysis = fut_del_cleanup.result()
+            filesystem_evidence_integrity = fut_fs_integrity.result()
         blocklist = load_executor_sha256_blocklist()
         if blocklist:
             bam_paths = [
@@ -14366,21 +14566,10 @@ def build_report() -> dict:
         powershell_events_summary = fut_powershell_events.result()
         service_change_events_summary = fut_service_changes.result()
         xml_event_log_summary = fut_xml.result()
-        usb_events = fut_usb.result()
         shellbag = fut_shellbag.result()
         disk_executables = fut_disk_exe.result()
         process_overview = fut_processes.result()
         dam_registry = fut_dam.result()
-        deletion_cleanup_analysis = build_deletion_cleanup_analysis(
-            trash=trash,
-            deletion=deletion_signals,
-            forensic_bundle=forensic_bundle,
-        )
-        filesystem_evidence_integrity = build_filesystem_evidence_integrity(
-            deletion=deletion_signals,
-            command_history=command_history,
-            services=services_snapshot,
-        )
         usn_rows = forensic_bundle.get("usn_file_lifecycle_rows") or []
         merge_removed_executor_artifact_hits(
             designated,
@@ -14438,6 +14627,7 @@ def build_report() -> dict:
             sha_blocklist=sha_blocklist,
             executor_indicators=executor_indicators,
             recent_items=recent_items,
+            prefetched_artifact_scans=prefetched_artifact_scans,
         )
         executor_activity = build_executor_activity_summary(
             generated_at=generated_at,
@@ -14557,7 +14747,6 @@ def build_report() -> dict:
             "recent_items": recent_items,
             "command_history_keyword_hits": command_history,
             "services": services_snapshot,
-            "usb_events": usb_events,
             "shellbag_clear_signal": shellbag,
             "deletion_and_log_clearing_signals": deletion_signals,
             "deletion_cleanup_analysis": deletion_cleanup_analysis,
