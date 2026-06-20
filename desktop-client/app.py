@@ -22,7 +22,7 @@ import shutil
 import sqlite3
 import tempfile
 from collections import Counter, defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed, wait
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from queue import Empty, PriorityQueue
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -2937,6 +2937,45 @@ ROBLOX_AUTOEXEC_FILE_EXTENSIONS = frozenset({".lua", ".txt", ".json", ".luau"})
 # Hard ceiling for the full diagnostic pass (user requirement: never exceed 6 minutes).
 SCAN_MAX_SECONDS = 360.0
 SCAN_TARGET_MIN_SECONDS = 180.0
+# Reserve time for correlation/report assembly so the filesystem walk cannot consume the whole budget.
+SCAN_CORRELATION_RESERVE_SECONDS = 70.0
+FULL_PC_WALK_MAX_SECONDS = 150.0
+PREFETCH_ARTIFACT_MAX_FILES = 180
+
+# Global scan deadline (monotonic). Set once per build_report().
+_scan_deadline_monotonic: float | None = None
+_scan_deadline_lock = threading.Lock()
+
+
+def _reset_scan_deadline() -> None:
+    global _scan_deadline_monotonic
+    with _scan_deadline_lock:
+        import time as _time
+
+        _scan_deadline_monotonic = _time.perf_counter() + SCAN_MAX_SECONDS
+
+
+def scan_deadline_exceeded() -> bool:
+    with _scan_deadline_lock:
+        if _scan_deadline_monotonic is None:
+            return False
+        import time as _time
+
+        return _time.perf_counter() >= _scan_deadline_monotonic
+
+
+def scan_seconds_remaining() -> float:
+    with _scan_deadline_lock:
+        if _scan_deadline_monotonic is None:
+            return SCAN_MAX_SECONDS
+        import time as _time
+
+        return max(0.0, _scan_deadline_monotonic - _time.perf_counter())
+
+
+def scan_collect_phase_exhausted() -> bool:
+    """True when the long collector phase should stop to leave room for correlation."""
+    return scan_deadline_exceeded() or scan_seconds_remaining() <= SCAN_CORRELATION_RESERVE_SECONDS
 
 EXECUTOR_BENIGN_PATH_FRAGMENTS = (
     "\\epic games\\",
@@ -2992,10 +3031,10 @@ SYSTEM_DLL_NAME_PREFIXES = (
 # Verified sample SHA256 (lowercase hex) -> label. Extend in code or assets/executor_sha256_blocklist.json.
 EXECUTOR_SHA256_BLOCKLIST: dict[str, str] = {}
 # Ocean-like scan: deep user zones, shallow system/other drives; anti-bypass artifacts unchanged.
-FULL_PC_USER_ZONE_DEPTH = 16
-FULL_PC_SYSTEM_DRIVE_DEPTH = 7
-FULL_PC_SECONDARY_DRIVE_DEPTH = 5
-EXECUTOR_HASH_SCAN_MAX_FILES = 10_000
+FULL_PC_USER_ZONE_DEPTH = 11
+FULL_PC_SYSTEM_DRIVE_DEPTH = 4
+FULL_PC_SECONDARY_DRIVE_DEPTH = 2
+EXECUTOR_HASH_SCAN_MAX_FILES = 4_000
 EXECUTOR_HASH_MAX_FILE_BYTES = 120_000_000
 EXECUTOR_ACTIVITY_RECENT_HOURS = 72
 USN_JOURNAL_MAX_LINES = 12_000
@@ -3003,9 +3042,9 @@ USN_DELETE_MAX_LINES = 6000
 RECYCLE_BIN_MAX_ITEMS = 500
 RECYCLE_BIN_HASH_MAX_BYTES = 80_000_000
 FULL_PC_SCAN_MAX_DEPTH = FULL_PC_USER_ZONE_DEPTH
-FULL_PC_SCAN_MAX_ENUMERATED = 500_000
+FULL_PC_SCAN_MAX_ENUMERATED = 100_000
 FULL_PC_SCAN_MAX_HITS = 3000
-FULL_PC_BINARY_PROBE_MAX_FILES = 10_000
+FULL_PC_BINARY_PROBE_MAX_FILES = 3_500
 FULL_PC_BINARY_PROBE_MAX_BYTES = 8_000_000
 OPTIONAL_COLLECTOR_TIMEOUT_SEC = 10.0
 SCAN_TARGET_EXECUTORS = list(EXECUTOR_NAMES)
@@ -3207,8 +3246,8 @@ USER_FOLDER_TRUSTED_APP_STEMS = frozenset(
     }
 )
 # Disk-bound scans: too many parallel walkers thrash the volume and slow everything down.
-SCAN_WORKERS = min(16, max(6, (os.cpu_count() or 4) * 2))
-HASH_SCAN_WORKERS = min(12, max(6, (os.cpu_count() or 4)))
+SCAN_WORKERS = min(10, max(6, (os.cpu_count() or 4) + 2))
+HASH_SCAN_WORKERS = min(8, max(4, (os.cpu_count() or 4)))
 RECENT_EXECUTABLE_WINDOW_DAYS = 45
 
 # Populated once per build_report() pass to avoid duplicate full USN journal reads.
@@ -3446,10 +3485,11 @@ class _FullPcScanBudget:
         self.stop = threading.Event()
 
     def should_stop(self) -> bool:
-        return self.stop.is_set()
+        return self.stop.is_set() or scan_collect_phase_exhausted()
 
     def note_enumerated(self) -> bool:
-        if self.stop.is_set():
+        if self.stop.is_set() or scan_collect_phase_exhausted():
+            self.stop.set()
             return True
         with self._lock:
             self.enumerated += 1
@@ -4836,34 +4876,56 @@ def all_logical_drive_roots(
 
 
 def full_pc_scan_roots() -> list[tuple[Path, int]]:
-    """Prioritized zones: deep under the user profile, moderate on C:, shallow on other volumes."""
+    """Prioritized zones: deep user profile, shallow temp/downloads — skip whole-drive walks."""
     if platform.system() != "Windows":
         return [(Path.home(), FULL_PC_USER_ZONE_DEPTH)]
     roots: list[tuple[Path, int]] = []
     seen: set[str] = set()
-    home = Path(os.getenv("USERPROFILE") or Path.home())
-    if home.is_dir():
+
+    def _add(root: Path, depth: int) -> None:
+        if not root.is_dir():
+            return
         try:
-            seen.add(str(home.resolve()).lower())
+            key = str(root.resolve()).lower()
         except OSError:
-            seen.add(str(home).lower())
-        roots.append((home, FULL_PC_USER_ZONE_DEPTH))
-    system = Path(os.getenv("SystemDrive", "C:") + "\\")
-    if system.is_dir():
-        try:
-            seen.add(str(system.resolve()).lower())
-        except OSError:
-            seen.add(str(system).lower())
-        roots.append((system, FULL_PC_SYSTEM_DRIVE_DEPTH))
-    for drive in all_logical_drive_roots(include_removable=True):
-        try:
-            key = str(drive.resolve()).lower()
-        except OSError:
-            key = str(drive).lower()
+            key = str(root).lower()
         if key in seen:
-            continue
-        roots.append((drive, FULL_PC_SECONDARY_DRIVE_DEPTH))
+            return
         seen.add(key)
+        roots.append((root, depth))
+
+    home = Path(os.getenv("USERPROFILE") or Path.home())
+    _add(home, FULL_PC_USER_ZONE_DEPTH)
+
+    for env_name in ("LOCALAPPDATA", "APPDATA"):
+        value = os.getenv(env_name)
+        if value:
+            _add(Path(value), min(FULL_PC_USER_ZONE_DEPTH, 10))
+
+    profile = os.getenv("USERPROFILE")
+    if profile:
+        _add(Path(profile) / "Downloads", 8)
+        _add(Path(profile) / "Desktop", 6)
+        _add(Path(profile) / "Documents", 6)
+
+    for env_name in ("TEMP", "TMP"):
+        value = os.getenv(env_name)
+        if value:
+            _add(Path(value), 4)
+
+    if scan_seconds_remaining() > SCAN_CORRELATION_RESERVE_SECONDS + 45:
+        for drive in all_logical_drive_roots(include_removable=True):
+            try:
+                key = str(drive.resolve()).lower()
+            except OSError:
+                key = str(drive).lower()
+            if key in seen:
+                continue
+            system = str(Path(os.getenv("SystemDrive", "C:") + "\\").resolve()).lower()
+            if key.startswith(system):
+                continue
+            _add(drive, FULL_PC_SECONDARY_DRIVE_DEPTH)
+
     return roots
 
 
@@ -10386,6 +10448,10 @@ def scan_entire_prefetch_executor_hits() -> list[dict[str, object]]:
     except OSError:
         return []
     for pf_file in pf_files:
+        if scan_collect_phase_exhausted():
+            break
+        if len(hits) >= PREFETCH_ARTIFACT_MAX_FILES:
+            break
         name = pf_file.name
         stem = prefetch_extract_stem(name)
         labels = executor_labels_for_artifact_text(name)
@@ -10749,7 +10815,7 @@ def scan_application_event_log_executor_hits() -> list[dict[str, object]]:
 PROFILE_BINARY_SWEEP_EXTENSIONS = frozenset(
     {".log", ".txt", ".json", ".cfg", ".xml", ".lua", ".dat", ".ini", ".bat", ".ps1", ".ldb", ".sqlite", ".db"}
 )
-PROFILE_BINARY_SWEEP_MAX_FILES = 40_000
+PROFILE_BINARY_SWEEP_MAX_FILES = 10_000
 PROFILE_BINARY_SWEEP_MAX_HITS = 300
 
 
@@ -10979,6 +11045,8 @@ def scan_live_executor_processes() -> list[dict[str, object]]:
     hits: list[dict[str, object]] = []
     seen: set[str] = set()
     for proc in psutil.process_iter(["pid", "name", "exe", "cmdline", "create_time"]):
+        if scan_collect_phase_exhausted():
+            break
         try:
             info = proc.info
             name = str(info.get("name") or "")
@@ -11029,6 +11097,8 @@ def scan_roblox_autoexec_artifacts() -> list[dict[str, object]]:
         scan_roots.append(Path(profile) / "Downloads")
 
     for root in scan_roots:
+        if scan_collect_phase_exhausted():
+            break
         if not root.is_dir():
             continue
         try:
@@ -11091,6 +11161,8 @@ def scan_browser_history_executor_domains() -> list[dict[str, object]]:
                 domain_patterns.append((label, token))
 
     for browser, profile, history_db in _chromium_history_database_paths():
+        if scan_collect_phase_exhausted():
+            break
         conn = _sqlite_open_readonly(history_db)
         if not conn:
             continue
@@ -11131,21 +11203,18 @@ def scan_browser_history_executor_domains() -> list[dict[str, object]]:
     return hits
 
 
-def roblox_exploit_surface_scan() -> dict[str, object]:
-    """Roblox-focused bundle: known paths, protocol handler, live processes, autoexec, browser domains."""
+def build_roblox_exploit_surface_report(
+    prefetched_artifact_scans: dict[str, list[dict[str, object]]] | None,
+) -> dict[str, object]:
+    """Summarize Roblox-dedicated artifact hits (no duplicate rescans)."""
     if platform.system() != "Windows":
         return {"available": False, "reason": "Roblox exploit surface scan is Windows-focused in this build"}
-    with ThreadPoolExecutor(max_workers=min(5, SCAN_WORKERS)) as pool:
-        fut_known = pool.submit(scan_executor_known_install_paths)
-        fut_protocol = pool.submit(scan_roblox_protocol_handler_registry)
-        fut_process = pool.submit(scan_live_executor_processes)
-        fut_autoexec = pool.submit(scan_roblox_autoexec_artifacts)
-        fut_history = pool.submit(scan_browser_history_executor_domains)
-        known = fut_known.result()
-        protocol = fut_protocol.result()
-        processes = fut_process.result()
-        autoexec = fut_autoexec.result()
-        history = fut_history.result()
+    prefetched = prefetched_artifact_scans or {}
+    known = list(prefetched.get("known_install_path") or [])
+    protocol = list(prefetched.get("roblox_protocol_registry") or [])
+    processes = list(prefetched.get("live_process") or [])
+    autoexec = list(prefetched.get("roblox_autoexec") or [])
+    history = list(prefetched.get("browser_history_domain") or [])
     combined = known + protocol + processes + autoexec + history
     by_executor: dict[str, int] = {}
     for hit in combined:
@@ -11164,6 +11233,22 @@ def roblox_exploit_surface_scan() -> dict[str, object]:
         "note": "Roblox-dedicated surface scan: install folders, protocol hijacks, live processes, "
         "autoexec workspaces, and executor download-site browser history.",
     }
+
+
+def roblox_exploit_surface_scan() -> dict[str, object]:
+    """Standalone runner when artifact prefetch is unavailable."""
+    if platform.system() != "Windows":
+        return {"available": False, "reason": "Roblox exploit surface scan is Windows-focused in this build"}
+    with ThreadPoolExecutor(max_workers=min(5, SCAN_WORKERS)) as pool:
+        futures = {
+            "known_install_path": pool.submit(scan_executor_known_install_paths),
+            "roblox_protocol_registry": pool.submit(scan_roblox_protocol_handler_registry),
+            "live_process": pool.submit(scan_live_executor_processes),
+            "roblox_autoexec": pool.submit(scan_roblox_autoexec_artifacts),
+            "browser_history_domain": pool.submit(scan_browser_history_executor_domains),
+        }
+        prefetched = _resolve_prefetched_artifact_scans(futures)
+    return build_roblox_exploit_surface_report(prefetched)
 
 
 def scan_roblox_log_executor_hits() -> list[dict[str, object]]:
@@ -11279,8 +11364,12 @@ def _submit_independent_artifact_scans(pool: ThreadPoolExecutor) -> dict[str, ob
 def _resolve_prefetched_artifact_scans(futures: dict[str, object]) -> dict[str, list[dict[str, object]]]:
     resolved: dict[str, list[dict[str, object]]] = {}
     for key, future in futures.items():
+        remaining = scan_seconds_remaining()
+        if remaining <= 0:
+            resolved[key] = []
+            continue
         try:
-            rows = future.result()  # type: ignore[union-attr]
+            rows = future.result(timeout=min(remaining, 30.0))  # type: ignore[union-attr]
             resolved[key] = list(rows) if rows else []
         except Exception:
             resolved[key] = []
@@ -14976,6 +15065,7 @@ def build_report() -> dict:
     _reset_executor_indicator_cache()
     _reset_profile_binary_sweep_cache()
     _reset_binary_probe_result_cache()
+    _reset_scan_deadline()
     scan_started_at = datetime.now(timezone.utc).isoformat()
     _collect_started = _time.perf_counter()
     memory = psutil.virtual_memory()
@@ -14994,7 +15084,6 @@ def build_report() -> dict:
         )
         fut_trash = pool.submit(recycle_bin_metadata)
         fut_roblox = pool.submit(roblox_diagnostics)
-        fut_roblox_surface = pool.submit(roblox_exploit_surface_scan)
         fut_amcache = pool.submit(amcache_metadata)
         fut_userassist = pool.submit(userassist_registry_entries)
         fut_defender = pool.submit(windows_defender_signals)
@@ -15023,7 +15112,11 @@ def build_report() -> dict:
         fut_processes = pool.submit(_process_overview_sample)
         artifact_scan_futures = _submit_independent_artifact_scans(pool)
 
-        wait({fut_prefetch, fut_deletion, fut_folders, fut_forensic_core})
+        _barrier_one = {fut_prefetch, fut_deletion, fut_folders, fut_forensic_core}
+        while _barrier_one and not scan_deadline_exceeded():
+            _done, _barrier_one = wait(_barrier_one, timeout=0.5, return_when=FIRST_COMPLETED)
+        if _barrier_one:
+            wait(_barrier_one, timeout=max(0.0, scan_seconds_remaining()))
         prefetch = fut_prefetch.result()
         deletion_signals = fut_deletion.result()
         designated, sha_blocklist = fut_folders.result()
@@ -15040,8 +15133,7 @@ def build_report() -> dict:
         fut_pref_health = pool.submit(prefetch_health_signals, prefetch)
         fut_roblox_int = pool.submit(roblox_integrity_scan, prefetch)
 
-        wait(
-            {
+        _barrier_two = {
                 fut_forensic,
                 fut_pref_health,
                 fut_roblox_int,
@@ -15066,13 +15158,16 @@ def build_report() -> dict:
                 fut_browser_downloads,
                 fut_dam,
                 fut_processes,
-                fut_roblox_surface,
             }
-        )
+        while _barrier_two and not scan_deadline_exceeded():
+            _done, _barrier_two = wait(_barrier_two, timeout=0.5, return_when=FIRST_COMPLETED)
+        if _barrier_two:
+            wait(_barrier_two, timeout=max(0.0, scan_seconds_remaining()))
 
         _mark_phase("collectors", _collect_started)
         _correlate_started = _time.perf_counter()
         prefetched_artifact_scans = _resolve_prefetched_artifact_scans(artifact_scan_futures)
+        roblox_surface = build_roblox_exploit_surface_report(prefetched_artifact_scans)
         forensic_bundle = fut_forensic.result()
         with ThreadPoolExecutor(max_workers=min(6, SCAN_WORKERS)) as correlate_pool:
             fut_exec_indicators = correlate_pool.submit(executor_indicator_scan)
@@ -15118,7 +15213,6 @@ def build_report() -> dict:
 
         prefetch_health = fut_pref_health.result()
         roblox_integrity = fut_roblox_int.result()
-        roblox_surface = fut_roblox_surface.result()
         persistence = fut_persist.result()
         recent_items = fut_recent.result()
         generated_at = datetime.now(timezone.utc).isoformat()
@@ -15275,6 +15369,12 @@ def build_report() -> dict:
 
     _mark_phase("correlation", _correlate_started)
     _phase_times["total_seconds"] = round(_time.perf_counter() - _phase_started, 2)
+    _scan_budget = {
+        "max_seconds": SCAN_MAX_SECONDS,
+        "elapsed_seconds": _phase_times["total_seconds"],
+        "deadline_exceeded": scan_deadline_exceeded(),
+        "correlation_reserve_seconds": SCAN_CORRELATION_RESERVE_SECONDS,
+    }
 
     return {
         "scan_started_at": scan_started_at,
@@ -15302,6 +15402,7 @@ def build_report() -> dict:
             "prefetch": prefetch,
             "scan_phase_seconds": _phase_times,
             "scan_max_seconds": SCAN_MAX_SECONDS,
+            "scan_budget": _scan_budget,
             "scan_profile": {
                 "mode": "roblox_standard",
                 "target_executor_count": len(SCAN_TARGET_EXECUTORS),
@@ -15992,12 +16093,18 @@ class DiagnosticApp:
                 self.root.after(0, self.set_stage, collect_stage, "running")
                 anim_thread.start()
 
+                scan_deadline = time.monotonic() + SCAN_MAX_SECONDS
                 while not report_future.done():
+                    if time.monotonic() >= scan_deadline:
+                        raise RuntimeError(
+                            f"Scan exceeded the {int(SCAN_MAX_SECONDS // 60)}-minute limit. "
+                            "Please rebuild the scanner from the latest source and try again."
+                        )
                     time.sleep(0.25)
 
                 stop_anim.set()
                 anim_thread.join(timeout=2.0)
-                report = report_future.result(timeout=SCAN_MAX_SECONDS)
+                report = report_future.result(timeout=10)
                 self.root.after(0, self.set_stage, collect_stage, "complete")
 
                 finalize_stage = "Finalizing Report"
