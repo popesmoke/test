@@ -2999,14 +2999,22 @@ RECENT_EXECUTABLE_WINDOW_DAYS = 45
 
 # Populated once per build_report() pass to avoid duplicate full USN journal reads.
 _usn_comprehensive_cache: dict[str, object] | None = None
+_usn_comprehensive_lock = threading.Lock()
 _roblox_logs_cache: list[dict] | None = None
 _roblox_logs_cache_lock = threading.Lock()
 _full_pc_recent_executables_cache: list[dict] | None = None
+_executor_indicator_cache: dict[str, object] | None = None
 
 
 def _reset_usn_comprehensive_cache() -> None:
     global _usn_comprehensive_cache
-    _usn_comprehensive_cache = None
+    with _usn_comprehensive_lock:
+        _usn_comprehensive_cache = None
+
+
+def _reset_executor_indicator_cache() -> None:
+    global _executor_indicator_cache
+    _executor_indicator_cache = None
 
 
 def _reset_roblox_logs_cache() -> None:
@@ -3077,7 +3085,7 @@ def file_sha256_full(path: Path, max_bytes: int = EXECUTOR_HASH_MAX_FILE_BYTES) 
         else:
             with path.open("rb") as handle:
                 while True:
-                    chunk = handle.read(4 * 1024 * 1024)
+                    chunk = handle.read(8 * 1024 * 1024)
                     if not chunk:
                         break
                     digest.update(chunk)
@@ -3179,6 +3187,119 @@ class _RecentExecutableCollector:
     def finalize(self) -> list[dict]:
         self._rows.sort(key=lambda row: str(row.get("modified") or ""), reverse=True)
         return self._rows[:300]
+
+
+class _ExecutorIndicatorCollector:
+    """Collect executor indicator hits during the full-PC walk (avoids a second drive sweep)."""
+
+    _TEXT_EXT = frozenset({".log", ".txt", ".traceback", ".json", ".xml"})
+    _MAX_FILE_HITS = 800
+    _MAX_TRACEBACK_HITS = 200
+    _MAX_TEXT_BYTES = 2_000_000
+
+    def __init__(self, *, text_workers: int = 6) -> None:
+        self._file_hits: list[dict] = []
+        self._traceback_hits: list[dict] = []
+        self._scanned_files = 0
+        self._lock = threading.Lock()
+        self._text_pool = ThreadPoolExecutor(max_workers=text_workers)
+        self._text_futures: list = []
+
+    def _limits_reached(self) -> bool:
+        return (
+            len(self._file_hits) >= self._MAX_FILE_HITS
+            and len(self._traceback_hits) >= self._MAX_TRACEBACK_HITS
+        )
+
+    def observe_file(self, path: Path, patterns: dict[str, re.Pattern[str]]) -> None:
+        with self._lock:
+            if self._limits_reached():
+                return
+        try:
+            if not path.is_file():
+                return
+        except OSError:
+            return
+        with self._lock:
+            self._scanned_files += 1
+        name_text = str(path)
+        if executor_scan_path_excluded(name_text):
+            return
+        try:
+            matched = match_executor_labels(name_text, patterns, path_context=True)
+            cheat_h = cheat_filename_hint_labels(path.name)
+            if matched and path_is_allowlisted(name_text) and not cheat_h:
+                matched = []
+            if matched or cheat_h:
+                stat = path.stat()
+                hit = {
+                    "matched_names": matched,
+                    "cheat_filename_hints": cheat_h,
+                    "path": name_text,
+                    "modified": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+                    "accessed": datetime.fromtimestamp(stat.st_atime, timezone.utc).isoformat(),
+                    "is_file": True,
+                    "size_bytes": stat.st_size,
+                    "path_allowlisted": path_is_allowlisted(name_text),
+                }
+                with self._lock:
+                    if len(self._file_hits) < self._MAX_FILE_HITS:
+                        self._file_hits.append(hit)
+            if path.suffix.lower() not in self._TEXT_EXT:
+                return
+            with self._lock:
+                if len(self._traceback_hits) >= self._MAX_TRACEBACK_HITS:
+                    return
+            self._text_futures.append(self._text_pool.submit(self._scan_text_file, path, patterns))
+        except Exception:
+            return
+
+    def _scan_text_file(self, path: Path, patterns: dict[str, re.Pattern[str]]) -> None:
+        try:
+            with self._lock:
+                if len(self._traceback_hits) >= self._MAX_TRACEBACK_HITS:
+                    return
+            if path.stat().st_size > self._MAX_TEXT_BYTES:
+                return
+            text = path.read_text(errors="replace")
+            cheat_in_text = any(p.search(text) for _, p in CHEAT_FILENAME_HINT_PATTERNS)
+            if (
+                "traceback" not in text.lower()
+                and not any(pattern.search(text) for pattern in patterns.values())
+                and not cheat_in_text
+            ):
+                return
+            lines: list[str] = []
+            for line in text.splitlines():
+                if (
+                    "traceback" in line.lower()
+                    or any(pattern.search(line) for pattern in patterns.values())
+                    or any(p.search(line) for _, p in CHEAT_FILENAME_HINT_PATTERNS)
+                ):
+                    lines.append(line.strip()[:500])
+                if len(lines) >= 12:
+                    break
+            if not lines:
+                return
+            with self._lock:
+                if len(self._traceback_hits) < self._MAX_TRACEBACK_HITS:
+                    self._traceback_hits.append({"path": str(path), "matched_lines": lines})
+        except Exception:
+            return
+
+    def finalize(self, *, roots_checked: list[str]) -> dict[str, object]:
+        for future in as_completed(self._text_futures):
+            try:
+                future.result()
+            except Exception:
+                continue
+        self._text_pool.shutdown(wait=True)
+        return {
+            "file_hits": self._file_hits[: self._MAX_FILE_HITS],
+            "traceback_hits": self._traceback_hits[: self._MAX_TRACEBACK_HITS],
+            "scanned_text_files": self._scanned_files,
+            "roots_checked": roots_checked,
+        }
 
 
 def executor_user_hash_scan_roots() -> list[tuple[Path, int]]:
@@ -4187,7 +4308,13 @@ def walk_files_depth_limited(root: Path, max_depth: int):
         root = root
     if not root.is_dir():
         return
-    for dirpath, dirnames, filenames in os.walk(root, topdown=True, followlinks=False):
+
+    def _on_walk_error(_err: OSError) -> None:
+        return
+
+    for dirpath, dirnames, filenames in os.walk(
+        root, topdown=True, followlinks=False, onerror=_on_walk_error
+    ):
         current = Path(dirpath)
         current_low = str(current).lower().replace("/", "\\")
         if any(skip in current_low for skip in FULL_PC_SKIP_DIR_FRAGMENTS):
@@ -4438,6 +4565,7 @@ def _full_pc_scan_root(
     *,
     hash_pipeline: _BlocklistHashPipeline | None = None,
     recent_collector: _RecentExecutableCollector | None = None,
+    indicator_collector: _ExecutorIndicatorCollector | None = None,
 ) -> dict:
     hits: list[dict] = []
     enumerated = 0
@@ -4449,6 +4577,8 @@ def _full_pc_scan_root(
             enumerated += 1
             if enumerated > FULL_PC_SCAN_MAX_ENUMERATED:
                 break
+            if indicator_collector is not None:
+                indicator_collector.observe_file(path, patterns)
             try:
                 if not path.is_file():
                     continue
@@ -4547,6 +4677,7 @@ def full_pc_filesystem_executor_scan(
     max_hashes: int = 0,
 ) -> dict:
     """Walk every local/removable drive for executor names, cheat hints, embedded branding, and optional SHA256 blocklist."""
+    global _executor_indicator_cache
     if platform.system() != "Windows":
         return {"available": False, "reason": "Full-PC scan is Windows-only", "hits": []}
     patterns = executor_name_patterns()
@@ -4558,6 +4689,11 @@ def full_pc_filesystem_executor_scan(
     recent_collector = _RecentExecutableCollector(
         datetime.now(timezone.utc) - timedelta(days=RECENT_EXECUTABLE_WINDOW_DAYS)
     )
+    indicator_collector = _ExecutorIndicatorCollector(text_workers=min(6, HASH_SCAN_WORKERS))
+    roots_checked = [str(root) for root, _ in roots]
+    prefetch_root = str(Path(os.getenv("SystemRoot", "C:\\Windows")) / "Prefetch")
+    if prefetch_root not in roots_checked:
+        roots_checked.append(prefetch_root)
     hits: list[dict] = []
     enumerated = 0
     binary_probes = 0
@@ -4573,6 +4709,7 @@ def full_pc_filesystem_executor_scan(
                 patterns,
                 hash_pipeline=hash_pipeline,
                 recent_collector=recent_collector,
+                indicator_collector=indicator_collector,
             )
             for root, max_depth in roots
         ]
@@ -4590,6 +4727,7 @@ def full_pc_filesystem_executor_scan(
     if hash_pipeline is not None:
         hash_hits, files_hashed = hash_pipeline.collect()
     recent_executables = recent_collector.finalize()
+    _executor_indicator_cache = indicator_collector.finalize(roots_checked=roots_checked)
     if len(hits) > FULL_PC_SCAN_MAX_HITS:
         hits = hits[:FULL_PC_SCAN_MAX_HITS]
     if max_hashes > 0 and len(hash_hits) > max_hashes:
@@ -7109,7 +7247,52 @@ def prefetch_health_signals(prefetch: dict) -> dict:
     }
 
 
-def executor_indicator_scan() -> dict:
+def _supplement_prefetch_indicator_hits(
+    file_hits: list[dict],
+    patterns: dict[str, re.Pattern[str]],
+) -> None:
+    """Fast Prefetch-only pass when the full-PC walk stopped before covering every .pf file."""
+    if platform.system() != "Windows":
+        return
+    prefetch = Path(os.getenv("SystemRoot", "C:\\Windows")) / "Prefetch"
+    if not prefetch.is_dir():
+        return
+    seen_paths = {str(h.get("path") or "").lower() for h in file_hits}
+    try:
+        for path in prefetch.glob("*.pf"):
+            if len(file_hits) >= 800:
+                break
+            name_text = str(path)
+            if name_text.lower() in seen_paths:
+                continue
+            if executor_scan_path_excluded(name_text):
+                continue
+            matched = match_executor_labels(name_text, patterns, path_context=True)
+            cheat_h = cheat_filename_hint_labels(path.name)
+            if matched and path_is_allowlisted(name_text) and not cheat_h:
+                matched = []
+            if not matched and not cheat_h:
+                continue
+            stat = path.stat()
+            file_hits.append(
+                {
+                    "matched_names": matched,
+                    "cheat_filename_hints": cheat_h,
+                    "path": name_text,
+                    "modified": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+                    "accessed": datetime.fromtimestamp(stat.st_atime, timezone.utc).isoformat(),
+                    "is_file": True,
+                    "size_bytes": stat.st_size,
+                    "path_allowlisted": path_is_allowlisted(name_text),
+                }
+            )
+            seen_paths.add(name_text.lower())
+    except Exception:
+        return
+
+
+def _executor_indicator_scan_full() -> dict:
+    """Standalone drive walk for executor indicators (macOS/Linux or cache miss fallback)."""
     patterns = executor_name_patterns()
     file_hits: list[dict] = []
     traceback_hits: list[dict] = []
@@ -7214,6 +7397,24 @@ def executor_indicator_scan() -> dict:
         "file_hits": file_hits[:800],
         "traceback_or_log_hits": traceback_hits[:200],
     }
+
+
+def executor_indicator_scan() -> dict:
+    global _executor_indicator_cache
+    if platform.system() == "Windows" and _executor_indicator_cache is not None:
+        patterns = executor_name_patterns()
+        cached = _executor_indicator_cache
+        file_hits = list(cached.get("file_hits") or [])
+        _supplement_prefetch_indicator_hits(file_hits, patterns)
+        return {
+            "executor_names_checked": EXECUTOR_NAMES,
+            "cheat_filename_patterns": [label for label, _ in CHEAT_FILENAME_HINT_PATTERNS],
+            "roots_checked": list(cached.get("roots_checked") or []),
+            "scanned_text_files": int(cached.get("scanned_text_files") or 0),
+            "file_hits": file_hits[:800],
+            "traceback_or_log_hits": list(cached.get("traceback_hits") or [])[:200],
+        }
+    return _executor_indicator_scan_full()
 
 
 _ROBLOX_URL_USER_ID = re.compile(
@@ -10556,11 +10757,14 @@ def usn_journal_comprehensive_read(*, force_refresh: bool = False) -> dict[str, 
     global _usn_comprehensive_cache
     if _usn_comprehensive_cache is not None and not force_refresh:
         return _usn_comprehensive_cache
-    if platform.system() != "Windows":
-        result = {"available": False, "lines": [], "delete_lines": [], "reason": "Windows-only"}
-        _usn_comprehensive_cache = result
-        return result
-    script = r"""
+    with _usn_comprehensive_lock:
+        if _usn_comprehensive_cache is not None and not force_refresh:
+            return _usn_comprehensive_cache
+        if platform.system() != "Windows":
+            result = {"available": False, "lines": [], "delete_lines": [], "reason": "Windows-only"}
+            _usn_comprehensive_cache = result
+            return result
+        script = r"""
 $ErrorActionPreference='SilentlyContinue'
 $profile = ($env:USERPROFILE + '\').ToLower()
 $maxLifecycle = 6000
@@ -10603,26 +10807,26 @@ foreach ($d in (Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3 OR DriveT
   delete_lines = @($deleteList)
 } | ConvertTo-Json -Compress -Depth 3
 """.strip()
-    data = forensic_powershell_json(script, timeout=48.0, max_chars=520000)
-    lines: list[str] = []
-    delete_lines: list[str] = []
-    if isinstance(data, dict):
-        raw_lifecycle = data.get("lifecycle_lines")
-        raw_delete = data.get("delete_lines")
-        if isinstance(raw_lifecycle, list):
-            lines = [str(x) for x in raw_lifecycle]
-        if isinstance(raw_delete, list):
-            delete_lines = [str(x) for x in raw_delete]
-    result = {
-        "available": True,
-        "lines": lines[:USN_JOURNAL_MAX_LINES],
-        "delete_lines": delete_lines[:USN_DELETE_MAX_LINES],
-        "lifecycle_line_count": len(lines),
-        "delete_line_count": len(delete_lines),
-        "source": "fsutil usn readjournal (recent journal tail, user-profile focused)",
-    }
-    _usn_comprehensive_cache = result
-    return result
+        data = forensic_powershell_json(script, timeout=48.0, max_chars=520000)
+        lines: list[str] = []
+        delete_lines: list[str] = []
+        if isinstance(data, dict):
+            raw_lifecycle = data.get("lifecycle_lines")
+            raw_delete = data.get("delete_lines")
+            if isinstance(raw_lifecycle, list):
+                lines = [str(x) for x in raw_lifecycle]
+            if isinstance(raw_delete, list):
+                delete_lines = [str(x) for x in raw_delete]
+        result = {
+            "available": True,
+            "lines": lines[:USN_JOURNAL_MAX_LINES],
+            "delete_lines": delete_lines[:USN_DELETE_MAX_LINES],
+            "lifecycle_line_count": len(lines),
+            "delete_line_count": len(delete_lines),
+            "source": "fsutil usn readjournal (recent journal tail, user-profile focused)",
+        }
+        _usn_comprehensive_cache = result
+        return result
 
 
 def usn_journal_enriched_sample() -> dict[str, object]:
@@ -11655,11 +11859,31 @@ def assemble_forensic_detections(
     }
 
 
+def _collect_forensic_core_signals() -> dict[str, object]:
+    """Collect BAM/PCA/SQLite/USN in parallel — does not need filesystem scan results."""
+    if platform.system() != "Windows":
+        return {"available": False}
+    with ThreadPoolExecutor(max_workers=min(4, SCAN_WORKERS)) as pool:
+        bam_future = pool.submit(bam_execution_records)
+        pca_future = pool.submit(pca_executed_records)
+        sqlite_future = pool.submit(sqlite_forensic_probe)
+        usn_future = pool.submit(usn_journal_enriched_sample)
+        return {
+            "available": True,
+            "bam_structured": bam_future.result(),
+            "pca_executed": pca_future.result(),
+            "sqlite": sqlite_future.result(),
+            "usn_extra": usn_future.result(),
+        }
+
+
 def build_forensic_analysis_bundle(
     designated: dict[str, object],
     prefetch: dict[str, object],
     deletion: dict[str, object],
     trash: dict[str, object] | None = None,
+    *,
+    forensic_core: dict[str, object] | None = None,
 ) -> dict[str, object]:
     if platform.system() != "Windows":
         return {
@@ -11667,15 +11891,18 @@ def build_forensic_analysis_bundle(
             "reason": "Forensic correlation bundle is Windows-focused in this build",
             "engine_version": _FORENSIC_ENGINE_VERSION,
         }
-    with ThreadPoolExecutor(max_workers=min(8, SCAN_WORKERS)) as pool:
-        bam_future = pool.submit(bam_execution_records)
-        pca_future = pool.submit(pca_executed_records)
-        sqlite_future = pool.submit(sqlite_forensic_probe)
-        usn_future = pool.submit(usn_journal_enriched_sample)
-        bam_struct = bam_future.result()
-        pca = pca_future.result()
-        sqlite_pack = sqlite_future.result()
-        usn_extra = usn_future.result()
+    if forensic_core is None or not forensic_core.get("available"):
+        forensic_core = _collect_forensic_core_signals()
+    if not forensic_core.get("available"):
+        return {
+            "available": False,
+            "reason": "Forensic correlation bundle is Windows-focused in this build",
+            "engine_version": _FORENSIC_ENGINE_VERSION,
+        }
+    bam_struct = forensic_core.get("bam_structured") or {}
+    pca = forensic_core.get("pca_executed") or {}
+    sqlite_pack = forensic_core.get("sqlite") or {}
+    usn_extra = forensic_core.get("usn_extra") or {}
     usn_lines = list(usn_extra.get("lines") or []) + list(usn_extra.get("delete_lines") or [])
     usn_text = str(deletion.get("usn_delete_sample") or "")
     if usn_text:
@@ -13550,6 +13777,7 @@ def build_report() -> dict:
     _reset_usn_comprehensive_cache()
     _reset_roblox_logs_cache()
     _reset_full_pc_recent_executables_cache()
+    _reset_executor_indicator_cache()
     scan_started_at = datetime.now(timezone.utc).isoformat()
     memory = psutil.virtual_memory()
     disk = psutil.disk_usage(str(Path.home().anchor or Path.home()))
@@ -13560,6 +13788,7 @@ def build_report() -> dict:
         fut_prefetch = pool.submit(prefetch_metadata)
         fut_deletion = pool.submit(deletion_and_log_clearing_signals)
         fut_folders = pool.submit(combined_user_folder_security_scans)
+        fut_forensic_core = pool.submit(_collect_forensic_core_signals)
         fut_hardware = pool.submit(hardware_identifiers)
         fut_apps = pool.submit(installed_apps_summary)
         fut_trash = pool.submit(recycle_bin_metadata)
@@ -13577,19 +13806,25 @@ def build_report() -> dict:
         fut_services = pool.submit(windows_service_signals)
         fut_usb = pool.submit(usb_event_summary)
         fut_shellbag = pool.submit(shellbag_clear_signal)
-        fut_exec_ind = pool.submit(executor_indicator_scan)
         fut_persist = pool.submit(persistence_signals)
         fut_browser_downloads = pool.submit(browser_download_history_scan)
         fut_dam = pool.submit(dam_execution_records)
         fut_processes = pool.submit(_process_overview_sample)
 
-        wait({fut_prefetch, fut_deletion, fut_folders})
+        wait({fut_prefetch, fut_deletion, fut_folders, fut_forensic_core})
         prefetch = fut_prefetch.result()
         deletion_signals = fut_deletion.result()
         designated, sha_blocklist = fut_folders.result()
+        forensic_core = fut_forensic_core.result()
         fut_disk_exe = pool.submit(recent_disk_executable_scan)
 
-        fut_forensic = pool.submit(build_forensic_analysis_bundle, designated, prefetch, deletion_signals)
+        fut_forensic = pool.submit(
+            build_forensic_analysis_bundle,
+            designated,
+            prefetch,
+            deletion_signals,
+            forensic_core=forensic_core,
+        )
         fut_pref_health = pool.submit(prefetch_health_signals, prefetch)
         fut_roblox_int = pool.submit(roblox_integrity_scan, prefetch)
 
@@ -13615,7 +13850,6 @@ def build_report() -> dict:
                 fut_services,
                 fut_usb,
                 fut_shellbag,
-                fut_exec_ind,
                 fut_persist,
                 fut_disk_exe,
                 fut_browser_downloads,
@@ -13625,6 +13859,7 @@ def build_report() -> dict:
         )
 
         forensic_bundle = fut_forensic.result()
+        executor_indicators = executor_indicator_scan()
         bam_structured = forensic_bundle.get("bam_structured")
         bam_registry = bam_registry_entries(
             bam_structured if isinstance(bam_structured, dict) else None
@@ -13649,7 +13884,6 @@ def build_report() -> dict:
 
         prefetch_health = fut_pref_health.result()
         roblox_integrity = fut_roblox_int.result()
-        executor_indicators = fut_exec_ind.result()
         persistence = fut_persist.result()
         recent_items = fut_recent.result()
         generated_at = datetime.now(timezone.utc).isoformat()
