@@ -2923,6 +2923,7 @@ FULL_PC_SKIP_DIR_FRAGMENTS = (
     "\\nuget\\packages\\",
     "\\steam\\steamapps\\common\\",
     "\\steamapps\\common\\",
+    "\\windows\\appcompat\\",
 )
 FULL_PC_PRUNE_DIR_NAMES = frozenset(
     {
@@ -3125,6 +3126,24 @@ def _windows_user_profile_prefix() -> str:
     if platform.system() != "Windows":
         return str(Path.home()).lower() + "\\"
     return str(Path(os.getenv("USERPROFILE") or Path.home()).resolve()).lower() + "\\"
+
+
+def _path_stat_safe(path: Path) -> os.stat_result | None:
+    try:
+        return path.stat()
+    except OSError:
+        return None
+
+
+def _path_is_file_safe(path: Path) -> bool:
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
+def _path_exists_safe(path: Path) -> bool:
+    return _path_stat_safe(path) is not None
 
 
 def load_executor_sha256_blocklist() -> dict[str, str]:
@@ -5711,16 +5730,21 @@ def amcache_metadata() -> dict:
         return {"available": False, "reason": "Amcache is a Windows artifact"}
 
     hive_path = Path(os.getenv("SystemRoot", "C:\\Windows")) / "AppCompat" / "Programs" / "Amcache.hve"
-    if not hive_path.exists():
-        return {"available": False, "path": str(hive_path), "reason": "Amcache hive not found"}
+    stat = _path_stat_safe(hive_path)
+    if stat is None:
+        return {
+            "available": False,
+            "path": str(hive_path),
+            "reason": "Amcache hive not accessible (missing or access denied — run as Administrator for full Amcache parse)",
+        }
 
     try:
-        stat = hive_path.stat()
         hive_mtime = datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()
     except OSError as exc:
         return {"available": False, "path": str(hive_path), "reason": str(exc)}
 
-    script = (
+    try:
+        script = (
         "$ErrorActionPreference='SilentlyContinue';"
         f"$src='{str(hive_path).replace(chr(39), chr(39)+chr(39))}';"
         "$tmp=Join-Path $env:TEMP ('amcache_'+[guid]::NewGuid().ToString('N')+'.hve');"
@@ -5762,45 +5786,49 @@ def amcache_metadata() -> dict:
         "reg.exe unload $regKey 2>&1 | Out-Null;"
         "Remove-Item $tmp -Force -ErrorAction SilentlyContinue;"
         "[pscustomobject]@{Available=$true;Count=$items.Count;Items=$items} | ConvertTo-Json -Depth 4 -Compress"
-    )
-    parsed = forensic_powershell_json(script, timeout=28.0, max_chars=32000)
-    items: list[dict] = []
-    if isinstance(parsed, dict):
-        raw_items = parsed.get("Items") or parsed.get("items") or []
-        if isinstance(raw_items, list):
-            patterns = executor_name_patterns()
-            for entry in raw_items[:500]:
-                if not isinstance(entry, dict):
-                    continue
-                path = str(entry.get("Path") or entry.get("path") or "")
-                if not path:
-                    continue
-                profile = suspicious_path_profile(path, patterns)
-                items.append(
-                    {
-                        "path": path,
-                        "name": entry.get("Name") or entry.get("name"),
-                        "publisher": entry.get("Publisher") or entry.get("publisher"),
-                        "last_write": normalize_event_time(entry.get("LastWrite") or entry.get("last_write")),
-                        "sha1": entry.get("Sha1") or entry.get("sha1"),
-                        "source": entry.get("Source") or entry.get("source") or "InventoryApplicationFile",
-                        "executor_name_hits": profile["executor_name_hits"],
-                        "cheat_filename_hints": profile["cheat_filename_hints"],
-                    }
-                )
+        )
+        parsed = forensic_powershell_json(script, timeout=28.0, max_chars=32000)
+        items: list[dict] = []
+        if isinstance(parsed, dict):
+            raw_items = parsed.get("Items") or parsed.get("items") or []
+            if isinstance(raw_items, list):
+                patterns = executor_name_patterns()
+                for entry in raw_items[:500]:
+                    if not isinstance(entry, dict):
+                        continue
+                    path = str(entry.get("Path") or entry.get("path") or "")
+                    if not path:
+                        continue
+                    profile = suspicious_path_profile(path, patterns)
+                    items.append(
+                        {
+                            "path": path,
+                            "name": entry.get("Name") or entry.get("name"),
+                            "publisher": entry.get("Publisher") or entry.get("publisher"),
+                            "last_write": normalize_event_time(entry.get("LastWrite") or entry.get("last_write")),
+                            "sha1": entry.get("Sha1") or entry.get("sha1"),
+                            "source": entry.get("Source") or entry.get("source") or "InventoryApplicationFile",
+                            "executor_name_hits": profile["executor_name_hits"],
+                            "cheat_filename_hints": profile["cheat_filename_hints"],
+                        }
+                    )
 
-    suspicious = [item for item in items if item.get("executor_name_hits") or item.get("cheat_filename_hints")]
-    return {
-        "available": True,
-        "path": str(hive_path),
-        "modified": hive_mtime,
-        "size_bytes": stat.st_size,
-        "entry_count": len(items),
-        "suspicious_count": len(suspicious),
-        "items": items[:300],
-        "suspicious_items": suspicious[:80],
-        "note": "Parsed offline Amcache.hve inventory (executables and installers).",
-    }
+        suspicious = [item for item in items if item.get("executor_name_hits") or item.get("cheat_filename_hints")]
+        return {
+            "available": True,
+            "path": str(hive_path),
+            "modified": hive_mtime,
+            "size_bytes": stat.st_size,
+            "entry_count": len(items),
+            "suspicious_count": len(suspicious),
+            "items": items[:300],
+            "suspicious_items": suspicious[:80],
+            "note": "Parsed offline Amcache.hve inventory (executables and installers).",
+        }
+    except OSError as exc:
+        return {"available": False, "path": str(hive_path), "reason": str(exc)}
+    except Exception as exc:
+        return {"available": False, "path": str(hive_path), "reason": f"Amcache parse failed: {exc}"}
 
 
 def bam_registry_entries(bam_structured: dict | None = None) -> dict:
@@ -10002,11 +10030,16 @@ def scan_amcache_executor_hits() -> list[dict[str, object]]:
     if platform.system() != "Windows":
         return []
     path = Path(os.getenv("SystemRoot", "C:\\Windows")) / "AppCompat" / "Programs" / "Amcache.hve"
-    if not path.is_file():
+    if not _path_is_file_safe(path):
         return []
     try:
         data = path.read_bytes()[:50_000_000]
-        modified = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
+        stat = _path_stat_safe(path)
+        modified = (
+            datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()
+            if stat is not None
+            else None
+        )
     except OSError:
         return []
     hits: list[dict[str, object]] = []
@@ -10539,11 +10572,16 @@ def scan_shimcache_executor_hits() -> list[dict[str, object]]:
     if platform.system() != "Windows":
         return []
     path = Path(os.getenv("SystemRoot", "C:\\Windows")) / "AppCompat" / "Programs" / "RecentFileCache.bcf"
-    if not path.is_file():
+    if not _path_is_file_safe(path):
         return []
     try:
         data = path.read_bytes()[:4_000_000]
-        modified = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
+        stat = _path_stat_safe(path)
+        modified = (
+            datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()
+            if stat is not None
+            else None
+        )
     except OSError:
         return []
     hits: list[dict[str, object]] = []
