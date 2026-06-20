@@ -14600,7 +14600,7 @@ def build_execution_activity_feed(
             continue
         add(
             path=path,
-            occurred_at=item.get("display_at") or item.get("last_execution_utc") or item.get("file_modified_utc"),
+            occurred_at=item.get("display_at") or item.get("last_execution_utc"),
             source="compatibility_trace",
             summary=(
                 f"Removed executor trace: {', '.join(labels)}."
@@ -14906,9 +14906,9 @@ def build_last_computer_activity(
             }
         )
     for event in user_activity.get("events") or []:
-        if not event.get("occurred_at"):
-            continue
         cat = str(event.get("category") or "")
+        if not event.get("occurred_at") and cat != "execution":
+            continue
         if cat == "deletions":
             continue
         if not _user_activity_event_is_review_worthy(event):

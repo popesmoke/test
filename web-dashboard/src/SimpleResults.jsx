@@ -297,13 +297,15 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
   let events = block.events ?? [];
   if (!events.length && (activity?.events ?? []).length) {
     events = (activity.events ?? [])
-      .filter((e) => e.occurred_at)
+      .filter((e) => e.occurred_at || e.category === "execution" || e.time_unknown)
       .map((e) => ({
         occurred_at: e.occurred_at,
         summary: activityEventSummary(e),
         path: e.path,
         category: e.category,
         filter: classifyActivityFilter(e),
+        time_unknown: e.time_unknown,
+        timestamp_source: e.timestamp_source,
       }));
   }
   events = events.filter((event) => classifyActivityFilter(event) !== "other");
@@ -371,6 +373,11 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
                 <span className={`simple-event-badge simple-event-badge--${badge.tone}`}>{badge.label}</span>
               </div>
               <p>{event.summary || "Activity recorded"}</p>
+              {event.timestamp_source && event.occurred_at ? (
+                <p className="muted small-note">
+                  Time from {event.timestamp_source.replace(/_/g, " ")}
+                </p>
+              ) : null}
               {event.gap_human ? (
                 <p className="muted">
                   Recycle Bin was emptied <strong>{event.gap_human}</strong> after this delete
