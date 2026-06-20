@@ -306,7 +306,7 @@ function buildClientScanReview(report) {
       ...(hit.executor_name_hits ?? []),
       ...(hit.cheat_filename_hints ?? []).map((label) => `cheat:${label}`),
     ];
-    addInv(hit.path, hit.artifact_source ?? "executor_artifact", hit.display_at || hit.modified, true, labels, {
+    addInv(hit.path, hit.artifact_source ?? "executor_artifact", hit.display_at || hit.file_modified || hit.modified, true, labels, {
       file_exists: hit.file_exists,
     });
   }
@@ -316,7 +316,7 @@ function buildClientScanReview(report) {
       ...(hit.executor_name_hits ?? []),
       ...(hit.cheat_filename_hints ?? []).map((label) => `cheat:${label}`),
     ];
-    addInv(hit.path, source, hit.display_at || hit.modified, true, labels, { file_exists: hit.file_exists });
+    addInv(hit.path, source, hit.display_at || hit.file_modified || hit.modified, true, labels, { file_exists: hit.file_exists });
   }
   for (const item of sec.bam?.items ?? []) {
     if (!item.normalized_path || item.path_allowlisted || isReviewNoisePath(item.normalized_path)) continue;

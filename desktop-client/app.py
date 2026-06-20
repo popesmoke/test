@@ -5426,6 +5426,7 @@ def _full_pc_scan_root(
                     "size_bytes": exec_stat.st_size,
                     "modified": modified,
                     "accessed": accessed,
+                    "file_modified": modified,
                     "executor_name_hits": executor_labels,
                     "cheat_filename_hints": cheat_hints,
                     "name_anomaly_reasons": weird,
@@ -5781,16 +5782,125 @@ def resolve_display_timestamp(
     fallbacks: list[tuple[str, str | None]] | None = None,
 ) -> tuple[str | None, str | None]:
     if primary:
-        return primary, "recorded"
+        normalized = plausibility_filter_event_time(normalize_event_time(primary))
+        if normalized:
+            return normalized, "recorded"
     for source, candidate in fallbacks or []:
-        if candidate:
-            return candidate, source
+        normalized = plausibility_filter_event_time(normalize_event_time(candidate))
+        if normalized:
+            return normalized, normalize_timestamp_source(source)
     return None, None
+
+
+EXECUTION_TIMESTAMP_SOURCES = frozenset(
+    {
+        "bam_execution",
+        "dam_execution",
+        "userassist",
+        "prefetch_last_run",
+        "amcache_last_run",
+    }
+)
+
+FILE_METADATA_TIMESTAMP_SOURCES = frozenset(
+    {
+        "file_mtime",
+        "file_atime",
+        "prefetch_mtime",
+        "prefetch_file_mtime",
+        "prefetch_trace",
+        "designated_mtime",
+        "recent_mtime",
+        "shortcut_mtime",
+        "pca_store_key_mtime",
+        "recorded",
+    }
+)
+
+_TIMESTAMP_SOURCE_ALIASES = {
+    "bam_registry": "bam_execution",
+    "bam_execution_path": "bam_execution",
+    "bam_execution_binary": "bam_execution",
+    "dam_execution": "dam_execution",
+    "prefetch_mtime": "prefetch_last_run",
+    "prefetch_execution": "prefetch_last_run",
+    "prefetch_indicator": "prefetch_last_run",
+}
+
+
+def normalize_timestamp_source(source: str | None) -> str | None:
+    if not source:
+        return None
+    key = str(source).strip().lower()
+    return _TIMESTAMP_SOURCE_ALIASES.get(key, key)
+
+
+def plausibility_filter_event_time(value: str | None) -> str | None:
+    normalized = normalize_event_time(value)
+    if not normalized:
+        return None
+    event_ms = _iso_to_epoch_ms(normalized)
+    if event_ms is None:
+        return None
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    if event_ms > now_ms + 3_600_000:
+        return None
+    if event_ms < _iso_to_epoch_ms("2010-01-01T00:00:00+00:00"):
+        return None
+    return normalized
+
+
+def bam_bytes_to_execution_iso(raw: bytes | None) -> str | None:
+    if not raw:
+        return None
+    candidates: list[str] = []
+    for offset in (0, 8):
+        if len(raw) >= offset + 8:
+            ft = int.from_bytes(raw[offset : offset + 8], "little")
+            iso = windows_filetime_to_iso(ft)
+            if iso:
+                candidates.append(iso)
+    if not candidates:
+        return None
+    return max(candidates)
+
+
+def parse_prefetch_last_run_utc(pf_path: Path) -> str | None:
+    """Read the embedded last-run FILETIME from a Prefetch (.pf) file — not the .pf mtime on disk."""
+    try:
+        header = pf_path.read_bytes()[:0x100]
+    except OSError:
+        return None
+    if len(header) < 0x88:
+        return None
+    if header[:3] == b"MAM":
+        return None
+    if header[4:8] != b"SCCA":
+        return None
+    candidates: list[str] = []
+    version = int.from_bytes(header[0:4], "little")
+    offsets = [0x80, 0x78, 0x88]
+    if version >= 30:
+        offsets.extend(0x80 + i * 8 for i in range(8))
+    seen_offsets: set[int] = set()
+    for offset in offsets:
+        if offset in seen_offsets or len(header) < offset + 8:
+            continue
+        seen_offsets.add(offset)
+        ft = int.from_bytes(header[offset : offset + 8], "little")
+        iso = windows_filetime_to_iso(ft)
+        if iso:
+            candidates.append(iso)
+    if not candidates:
+        return None
+    return max(candidates)
 
 
 HIGH_CONFIDENCE_ACTIVITY_SOURCES = frozenset(
     {
         "bam_execution",
+        "dam_execution",
+        "prefetch_last_run",
         "usn_delete",
         "recycle_bin",
         "recycle_metadata",
@@ -5802,6 +5912,88 @@ HIGH_CONFIDENCE_ACTIVITY_SOURCES = frozenset(
         "browser_download_end",
     }
 )
+
+
+def sanitize_execution_timestamp(
+    ts: str | None,
+    source: str | None,
+    scan_started_at: str | None,
+    generated_at: str | None,
+) -> str | None:
+    """Only accept timestamps from true execution artifacts; reject scan-window noise."""
+    normalized = plausibility_filter_event_time(ts)
+    if not normalized:
+        return None
+    src = normalize_timestamp_source(source)
+    if src not in EXECUTION_TIMESTAMP_SOURCES:
+        return None
+    if timestamp_in_scan_window(normalized, scan_started_at, generated_at):
+        return None
+    return normalized
+
+
+def sanitize_file_metadata_timestamp(
+    ts: str | None,
+    scan_started_at: str | None,
+    generated_at: str | None,
+) -> str | None:
+    """File modified/access times — never treated as program execution time."""
+    normalized = plausibility_filter_event_time(ts)
+    if not normalized:
+        return None
+    if timestamp_in_scan_window(normalized, scan_started_at, generated_at):
+        return None
+    return normalized
+
+
+def resolve_path_execution_timestamp(
+    path: str,
+    *,
+    bam: dict[str, object] | None = None,
+    prefetch: dict[str, object] | None = None,
+    userassist: dict[str, object] | None = None,
+    dam: dict[str, object] | None = None,
+) -> tuple[str | None, str | None, dict[str, str]]:
+    """Best-effort last *execution* time for a path (never file mtime fallbacks)."""
+    norm = str(path or "")
+    if not norm:
+        return None, None, {}
+    stem = Path(norm).stem.upper() if norm else ""
+    correlated: dict[str, str] = {}
+
+    bam_by_path, bam_by_base = _build_timestamp_index(
+        list((bam or {}).get("items") or []),
+        path_field="normalized_path",
+        time_field="last_execution_utc",
+    )
+    dam_by_path, dam_by_base = _build_timestamp_index(
+        list((dam or {}).get("items") or []),
+        path_field="normalized_path",
+        time_field="last_execution_utc",
+    )
+    prefetch_by_stem = _build_prefetch_execution_index(prefetch or {})
+    userassist_by_path = _build_simple_path_timestamp_index(
+        list((userassist or {}).get("items") or []),
+        path_field="path",
+        time_field="last_run_utc",
+    )
+
+    bam_ts = _lookup_indexed_timestamp(norm, bam_by_path, bam_by_base)
+    if bam_ts:
+        correlated["bam_execution"] = bam_ts
+    dam_ts = _lookup_indexed_timestamp(norm, dam_by_path, dam_by_base)
+    if dam_ts:
+        correlated["dam_execution"] = dam_ts
+    if stem in prefetch_by_stem:
+        correlated["prefetch_last_run"] = prefetch_by_stem[stem]
+    userassist_ts = _lookup_indexed_timestamp(norm, userassist_by_path, {})
+    if userassist_ts:
+        correlated["userassist"] = userassist_ts
+
+    fallback_order = ("bam_execution", "dam_execution", "prefetch_last_run", "userassist")
+    fallbacks = [(name, correlated[name]) for name in fallback_order if name in correlated]
+    display_at, timestamp_source = resolve_display_timestamp(fallbacks=fallbacks)
+    return display_at, timestamp_source, correlated
 
 
 def timestamp_in_scan_window(
@@ -5827,10 +6019,17 @@ def sanitize_activity_timestamp(
     scan_started_at: str | None,
     generated_at: str | None,
 ) -> str | None:
-    normalized = normalize_event_time(ts)
+    normalized = plausibility_filter_event_time(ts)
     if not normalized:
         return None
-    if source in HIGH_CONFIDENCE_ACTIVITY_SOURCES:
+    src = normalize_timestamp_source(source)
+    if src in EXECUTION_TIMESTAMP_SOURCES:
+        return sanitize_execution_timestamp(normalized, src, scan_started_at, generated_at)
+    if src in FILE_METADATA_TIMESTAMP_SOURCES:
+        return sanitize_file_metadata_timestamp(normalized, scan_started_at, generated_at)
+    if src in HIGH_CONFIDENCE_ACTIVITY_SOURCES:
+        if timestamp_in_scan_window(normalized, scan_started_at, generated_at):
+            return None
         return normalized
     if timestamp_in_scan_window(normalized, scan_started_at, generated_at):
         return None
@@ -6074,6 +6273,7 @@ def prefetch_metadata() -> dict:
     for path in files:
         try:
             stat = path.stat()
+            last_run = parse_prefetch_last_run_utc(path)
             pf_labels = executor_labels_for_artifact_text(path.name)
             if not pf_labels:
                 pf_labels = executor_labels_for_artifact_text(prefetch_extract_stem(path.name))
@@ -6084,6 +6284,7 @@ def prefetch_metadata() -> dict:
                     "name": path.name,
                     "modified": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
                     "accessed": datetime.fromtimestamp(stat.st_atime, timezone.utc).isoformat(),
+                    "last_run_utc": last_run,
                     "size_bytes": stat.st_size,
                     "executor_name_hits": pf_labels,
                 }
@@ -9644,11 +9845,14 @@ foreach($sid in Get-ChildItem $base){
     $n=$prop.Name
     if($n -match '^PS'){ continue }
     if($n -in @('SDL','Status')){ continue }
-    $ft=$null
+    $ft0=$null; $ft8=$null
     if($prop.Value -is [byte[]] -and $prop.Value.Length -ge 8){
-      $ft=[BitConverter]::ToUInt64($prop.Value,0)
+      $ft0=[BitConverter]::ToUInt64($prop.Value,0)
     }
-    $rows.Add([pscustomobject]@{ Sid=$sid.PSChildName; RegValueName=$n; FileTimeUtc=$ft })
+    if($prop.Value -is [byte[]] -and $prop.Value.Length -ge 16){
+      $ft8=[BitConverter]::ToUInt64($prop.Value,8)
+    }
+    $rows.Add([pscustomobject]@{ Sid=$sid.PSChildName; RegValueName=$n; FileTimeUtc0=$ft0; FileTimeUtc8=$ft8 })
   }
 }
 $rows | Select-Object -First 2500 | ConvertTo-Json -Compress -Depth 3
@@ -9669,12 +9873,19 @@ $rows | Select-Object -First 2500 | ConvertTo-Json -Compress -Depth 3
             check_path = device_path_to_dos_path(raw_path) or device_path_to_dos_path(check_path or "")
         if check_path and re.match(r"^[A-Za-z]:\\", check_path):
             norm = check_path
-        ft = it.get("FileTimeUtc")
-        try:
-            ft_int = int(ft) if ft is not None else 0
-        except (TypeError, ValueError):
-            ft_int = 0
-        iso = windows_filetime_to_iso(ft_int) if ft_int else None
+        ft0 = it.get("FileTimeUtc0")
+        ft8 = it.get("FileTimeUtc8")
+        legacy_ft = it.get("FileTimeUtc")
+        candidates: list[str] = []
+        for val in (ft0, ft8, legacy_ft):
+            try:
+                if val is not None and int(val) > 0:
+                    iso = windows_filetime_to_iso(int(val))
+                    if iso:
+                        candidates.append(iso)
+            except (TypeError, ValueError):
+                continue
+        iso = max(candidates) if candidates else None
         exists = False
         if norm and re.match(r"^[A-Za-z]:\\", norm):
             try:
@@ -9719,11 +9930,14 @@ foreach($sid in Get-ChildItem $base){
     $n=$prop.Name
     if($n -match '^PS'){ continue }
     if($n -in @('SDL','Status')){ continue }
-    $ft=$null
+    $ft0=$null; $ft8=$null
     if($prop.Value -is [byte[]] -and $prop.Value.Length -ge 8){
-      $ft=[BitConverter]::ToUInt64($prop.Value,0)
+      $ft0=[BitConverter]::ToUInt64($prop.Value,0)
     }
-    $rows.Add([pscustomobject]@{ Sid=$sid.PSChildName; RegValueName=$n; FileTimeUtc=$ft })
+    if($prop.Value -is [byte[]] -and $prop.Value.Length -ge 16){
+      $ft8=[BitConverter]::ToUInt64($prop.Value,8)
+    }
+    $rows.Add([pscustomobject]@{ Sid=$sid.PSChildName; RegValueName=$n; FileTimeUtc0=$ft0; FileTimeUtc8=$ft8 })
   }
 }
 $rows | Select-Object -First 2500 | ConvertTo-Json -Compress -Depth 3
@@ -9744,12 +9958,19 @@ $rows | Select-Object -First 2500 | ConvertTo-Json -Compress -Depth 3
             check_path = device_path_to_dos_path(raw_path) or device_path_to_dos_path(check_path or "")
         if check_path and re.match(r"^[A-Za-z]:\\", check_path):
             norm = check_path
-        ft = it.get("FileTimeUtc")
-        try:
-            ft_int = int(ft) if ft is not None else 0
-        except (TypeError, ValueError):
-            ft_int = 0
-        iso = windows_filetime_to_iso(ft_int) if ft_int else None
+        ft0 = it.get("FileTimeUtc0")
+        ft8 = it.get("FileTimeUtc8")
+        legacy_ft = it.get("FileTimeUtc")
+        candidates: list[str] = []
+        for val in (ft0, ft8, legacy_ft):
+            try:
+                if val is not None and int(val) > 0:
+                    iso = windows_filetime_to_iso(int(val))
+                    if iso:
+                        candidates.append(iso)
+            except (TypeError, ValueError):
+                continue
+        iso = max(candidates) if candidates else None
         exists = False
         if norm and re.match(r"^[A-Za-z]:\\", norm):
             try:
@@ -9956,7 +10177,23 @@ def _build_simple_path_timestamp_index(
 def _build_prefetch_timestamp_index(prefetch: dict) -> dict[str, str]:
     by_stem: dict[str, str] = {}
     for item in prefetch.get("items") or []:
-        ts = normalize_event_time(item.get("modified"))
+        ts = normalize_event_time(item.get("last_run_utc") or item.get("modified"))
+        if not ts:
+            continue
+        stem = prefetch_extract_stem(str(item.get("name") or ""))
+        if not stem:
+            continue
+        existing = by_stem.get(stem)
+        if not existing or ts > existing:
+            by_stem[stem] = ts
+    return by_stem
+
+
+def _build_prefetch_execution_index(prefetch: dict) -> dict[str, str]:
+    """Map prefetch stem -> last program run time (embedded in .pf), never the .pf file mtime."""
+    by_stem: dict[str, str] = {}
+    for item in prefetch.get("items") or []:
+        ts = plausibility_filter_event_time(normalize_event_time(item.get("last_run_utc")))
         if not ts:
             continue
         stem = prefetch_extract_stem(str(item.get("name") or ""))
@@ -10218,14 +10455,25 @@ def _append_executor_artifact_hit(
         "cheat_filename_hints": profile["cheat_filename_hints"],
         "name_anomaly_reasons": profile["name_anomaly_reasons"],
         "display_at": occurred_at,
-        "modified": occurred_at,
-        "timestamp_source": timestamp_source or artifact_source,
+        "modified": None,
+        "file_modified": None,
+        "timestamp_source": normalize_timestamp_source(timestamp_source or artifact_source),
         "artifact_source": artifact_source,
         "file_exists": file_exists,
         "removed_artifact": file_exists is False,
         "path_allowlisted": bam_path_is_benign_system(norm),
         "note": note or f"Executor evidence from {artifact_source}.",
     }
+    src = str(payload.get("timestamp_source") or "")
+    if extra and extra.get("file_modified"):
+        payload["file_modified"] = extra.get("file_modified")
+        payload["modified"] = extra.get("file_modified")
+    elif src in FILE_METADATA_TIMESTAMP_SOURCES and occurred_at:
+        payload["file_modified"] = occurred_at
+        payload["modified"] = occurred_at
+        payload["display_at"] = None
+    elif occurred_at:
+        payload["modified"] = occurred_at
     if extra:
         payload.update(extra)
     hits.append(payload)
@@ -11782,7 +12030,7 @@ def resolve_path_activity_timestamp(
         time_field="last_execution_utc",
     )
     usn_by_path, usn_by_delete, usn_by_base = _build_usn_timestamp_index(list(usn_records or []))
-    prefetch_by_stem = _build_prefetch_timestamp_index(prefetch or {})
+    prefetch_by_stem = _build_prefetch_execution_index(prefetch or {})
     recycle_by_path = _build_recycle_timestamp_index(trash or {})
     designated_by_path = _build_simple_path_timestamp_index(
         list((designated or {}).get("hits") or []),
@@ -11816,7 +12064,7 @@ def resolve_path_activity_timestamp(
     if usn_ts:
         correlated["usn_journal"] = usn_ts
     if stem in prefetch_by_stem:
-        correlated["prefetch_mtime"] = prefetch_by_stem[stem]
+        correlated["prefetch_last_run"] = prefetch_by_stem[stem]
     recycle_ts = _lookup_indexed_timestamp(norm, recycle_by_path, {})
     if recycle_ts:
         correlated["recycle_bin"] = recycle_ts
@@ -11833,19 +12081,20 @@ def resolve_path_activity_timestamp(
     if shell_ts:
         correlated["powershell_history"] = shell_ts
 
-    fallback_order = (
-        "bam_execution",
-        "prefetch_mtime",
-        "usn_delete",
-        "powershell_history",
-        "recycle_bin",
-        "designated_mtime",
-        "recent_mtime",
-        "userassist",
-        "usn_journal",
-    )
-    fallbacks = [(name, correlated[name]) for name in fallback_order if name in correlated]
-    display_at, timestamp_source = resolve_display_timestamp(primary=None, fallbacks=fallbacks)
+    execution_order = ("bam_execution", "dam_execution", "prefetch_last_run", "userassist")
+    execution_fallbacks = [(name, correlated[name]) for name in execution_order if name in correlated]
+    display_at, timestamp_source = resolve_display_timestamp(fallbacks=execution_fallbacks)
+    if not display_at:
+        fallback_order = (
+            "usn_delete",
+            "powershell_history",
+            "recycle_bin",
+            "designated_mtime",
+            "recent_mtime",
+            "usn_journal",
+        )
+        fallbacks = [(name, correlated[name]) for name in fallback_order if name in correlated]
+        display_at, timestamp_source = resolve_display_timestamp(fallbacks=fallbacks)
     if not display_at and pca_store_key_modified:
         display_at, timestamp_source = pca_store_key_modified, "pca_store_key_mtime"
     return display_at, timestamp_source, correlated
@@ -11865,8 +12114,10 @@ def _apply_resolved_timestamp_to_pca_item(
     item["timestamp_source"] = timestamp_source
     if timestamp_source == "bam_execution":
         item["last_execution_utc"] = display_at
-    elif timestamp_source == "prefetch_mtime":
-        item["prefetch_modified_utc"] = display_at
+    elif timestamp_source == "prefetch_last_run":
+        item["prefetch_last_run_utc"] = display_at
+    elif timestamp_source in {"prefetch_mtime", "prefetch_last_run"}:
+        item["prefetch_last_run_utc"] = display_at
     elif timestamp_source in {"usn_delete", "usn_journal"}:
         item["usn_timestamp_utc"] = display_at
     elif timestamp_source == "recycle_bin":
@@ -13204,8 +13455,10 @@ def _user_activity_event_is_review_worthy(event: dict) -> bool:
         return True
     if event.get("suspicious"):
         return True
-    if kind in {"sha256_blocklist", "removed_executor_artifact", "prefetch_indicator"}:
+    if kind in {"sha256_blocklist", "removed_executor_artifact", "prefetch_execution"}:
         return True
+    if kind == "prefetch_trace":
+        return bool(label)
     if kind in {"profile_folder", "filesystem_scan", "recent_download"}:
         return bool(label)
     if kind == "bam_execution":
@@ -13243,8 +13496,13 @@ def _append_activity_event(
     scan_started_at: str | None = None,
     extra: dict | None = None,
 ) -> None:
-    resolved_source = timestamp_source or ("recorded" if occurred_at else None)
-    display_at = sanitize_activity_timestamp(occurred_at, resolved_source, scan_started_at, generated_at)
+    resolved_source = normalize_timestamp_source(timestamp_source or ("recorded" if occurred_at else None))
+    if category == "execution" or kind in {"bam_execution", "prefetch_execution", "userassist"}:
+        display_at = sanitize_execution_timestamp(occurred_at, resolved_source, scan_started_at, generated_at)
+    elif resolved_source in FILE_METADATA_TIMESTAMP_SOURCES:
+        display_at = sanitize_file_metadata_timestamp(occurred_at, scan_started_at, generated_at)
+    else:
+        display_at = sanitize_activity_timestamp(occurred_at, resolved_source, scan_started_at, generated_at)
     if not display_at:
         resolved_source = None
     payload = {
@@ -13433,7 +13691,7 @@ def build_user_activity_timeline(
             label=", ".join(labels) if labels else "Program executed",
             path=path,
             occurred_at=item.get("last_execution_utc"),
-            timestamp_source="bam_registry",
+            timestamp_source="bam_execution",
             detail="Background Activity Moderator last execution timestamp.",
             generated_at=generated_at,
             scan_started_at=scan_started_at,
@@ -13459,10 +13717,9 @@ def build_user_activity_timeline(
             occurred_at=(
                 item.get("display_at")
                 or item.get("last_execution_utc")
-                or item.get("prefetch_modified_utc")
+                or item.get("prefetch_last_run_utc")
                 or item.get("usn_timestamp_utc")
                 or item.get("recycle_deleted_at")
-                or item.get("file_modified_utc")
             ),
             timestamp_source=item.get("timestamp_source"),
             detail="PCA store references this executable path.",
@@ -13476,15 +13733,22 @@ def build_user_activity_timeline(
         )
 
     for item in prefetch_health.get("indicator_hits") or []:
+        last_run = item.get("last_run_utc")
+        pf_labels = list(item.get("executor_name_hits") or [])
+        label = ", ".join(pf_labels) if pf_labels else str(item.get("name") or "matched prefetch")
         _append_activity_event(
             events,
-            category="execution",
-            kind="prefetch_indicator",
-            label=str(item.get("name") or "matched prefetch"),
+            category="execution" if last_run else "files",
+            kind="prefetch_execution" if last_run else "prefetch_trace",
+            label=label,
             path=str(item.get("name") or ""),
-            occurred_at=item.get("modified"),
-            timestamp_source="prefetch_mtime",
-            detail="Prefetch file matched an executor indicator name.",
+            occurred_at=last_run,
+            timestamp_source="prefetch_last_run" if last_run else "prefetch_file_mtime",
+            detail=(
+                "Windows Prefetch shows this executable ran recently."
+                if last_run
+                else "Prefetch file name matched an executor (last run time not embedded)."
+            ),
             generated_at=generated_at,
             scan_started_at=scan_started_at,
         )
@@ -13526,7 +13790,7 @@ def build_user_activity_timeline(
             detail="User profile folder file matched executor or cheat filename rules.",
             generated_at=generated_at,
             scan_started_at=scan_started_at,
-            extra={"suspicious": True},
+            extra={"suspicious": True, "file_modified": item.get("modified")},
         )
 
     for item in executor_indicators.get("file_hits") or []:
@@ -13807,8 +14071,9 @@ def build_executor_activity_summary(
             kind="prefetch_execution",
             label=", ".join(matched),
             path=str(item.get("name") or ""),
-            occurred_at=item.get("modified"),
+            occurred_at=item.get("last_run_utc"),
             detail="Windows Prefetch shows this executable ran recently.",
+            extra={"timestamp_source": "prefetch_last_run"},
         )
 
     for item in (designated.get("hits") or [])[:60]:
@@ -13823,8 +14088,9 @@ def build_executor_activity_summary(
             kind="profile_folder",
             label=label,
             path=str(item.get("path") or ""),
-            occurred_at=item.get("modified"),
+            occurred_at=item.get("file_modified") or item.get("modified"),
             detail="File in Downloads/Desktop/Documents matched executor or cheat filename rules.",
+            extra={"timestamp_source": "file_mtime"},
         )
 
     for item in (executor_indicators.get("file_hits") or [])[:40]:
@@ -14313,10 +14579,13 @@ def build_execution_activity_feed(
         labels = sorted(set(labels))
         if not labels:
             continue
+        last_run = item.get("last_run_utc")
+        if not last_run:
+            continue
         add(
             path=path,
-            occurred_at=item.get("modified"),
-            source="runtime_cache",
+            occurred_at=last_run,
+            source="prefetch_last_run",
             summary=f"Prefetch shows executor activity: {', '.join(labels)}.",
             suspicious=True,
         )
@@ -14342,9 +14611,15 @@ def build_execution_activity_feed(
         )
 
     for event in executor_activity.get("events") or []:
+        kind = str(event.get("kind") or "")
+        if kind in {"profile_folder", "filesystem_indicator", "recent_file", "sha256_blocklist"}:
+            continue
+        occurred = event.get("occurred_at")
+        if kind not in {"bam_execution", "prefetch_execution"} and not occurred:
+            continue
         add(
             path=str(event.get("path") or ""),
-            occurred_at=event.get("occurred_at"),
+            occurred_at=occurred,
             source="matched_signal",
             summary=str(event.get("detail") or "Matched a reviewed executor or cheat signal."),
             suspicious=True,
@@ -14640,7 +14915,10 @@ def build_last_computer_activity(
             continue
         label = str(event.get("label") or "").strip()
         if cat == "execution" and label:
-            summary = f"Executor or suspicious program activity: {label}."
+            if event.get("occurred_at"):
+                summary = f"Executor or suspicious program activity: {label}."
+            else:
+                summary = f"Executor trace detected (run time unknown): {label}."
         elif cat == "files" and label:
             summary = f"Suspicious file matched: {label}."
         elif cat == "commands":
@@ -14659,6 +14937,8 @@ def build_last_computer_activity(
             event_filter = "other"
         payload = {
             "occurred_at": event.get("occurred_at"),
+            "timestamp_source": event.get("timestamp_source"),
+            "time_unknown": not bool(event.get("occurred_at")),
             "category": cat,
             "summary": summary,
             "path": event.get("path"),

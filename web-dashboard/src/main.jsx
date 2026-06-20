@@ -867,7 +867,9 @@ function enrichPcaItemFromReport(report, item) {
   for (const row of perf.prefetch?.items ?? []) {
     const name = String(row.name || "");
     const pfStem = name.replace(/-[0-9A-F]{8}\.pf$/i, "").replace(/\.pf$/i, "").toUpperCase();
-    if (pfStem === stem && row.modified) add("prefetch_mtime", row.modified);
+    if (pfStem === stem && (row.last_run_utc || row.modified)) {
+      add("prefetch_last_run", row.last_run_utc || row.modified);
+    }
   }
 
   for (const row of fa.usn_file_lifecycle_rows ?? []) {
@@ -908,6 +910,7 @@ function enrichPcaItemFromReport(report, item) {
 
   const order = [
     "bam_execution",
+    "prefetch_last_run",
     "prefetch_mtime",
     "usn_delete",
     "powershell_history",
