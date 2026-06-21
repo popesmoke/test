@@ -33,6 +33,11 @@ import psutil
 import requests
 
 from runtime_config import get_api_url
+from evidence_engine import (
+    build_evidence_verdict,
+    enrich_executor_artifact_evidence,
+)
+from roblox_runtime import roblox_runtime_provenance_scan
 
 API_URL = get_api_url()
 CONSENT_VERSION = "2026-06-02.virello-scanner"
@@ -2777,6 +2782,15 @@ EXECUTOR_NAMES = [
     "Delta",
     "Vega X",
     "Codex",
+    # Additional tracked brands (intel expansion)
+    "Arceus X",
+    "Fluxus",
+    "JJSploit",
+    "Hydrogen",
+    "Cryptic",
+    "Nucleus",
+    "Electron",
+    "Trigon",
 ]
 
 # Extra tokens commonly seen in paths, prefetch stems, or renamed folders.
@@ -4640,6 +4654,7 @@ def _roblox_integrity_module_entry(
     executor_labels: list[str],
     cheat_hints: list[str],
     sha_label: str = "",
+    authenticode_status: str = "",
     offline_source: str = "",
     pid: int | None = None,
     process_name: str | None = None,
@@ -4654,6 +4669,7 @@ def _roblox_integrity_module_entry(
         "executor_name_hits": executor_labels,
         "cheat_filename_hints": cheat_hints,
         "sha256_blocklist_label": sha_label or None,
+        "authenticode_status": authenticode_status or None,
     }
     if offline_source:
         entry["offline_source"] = offline_source
@@ -4662,7 +4678,7 @@ def _roblox_integrity_module_entry(
     return entry
 
 
-def _roblox_module_reasons(path_norm: str, patterns: dict[str, re.Pattern[str]]) -> tuple[list[str], list[str], list[str], str]:
+def _roblox_module_reasons(path_norm: str, patterns: dict[str, re.Pattern[str]]) -> tuple[list[str], list[str], list[str], str, str]:
     path_lower = path_norm.lower().replace("/", "\\")
     reasons: list[str] = []
     trusted = any(frag in path_lower for frag in ROBLOX_MODULE_TRUSTED_FRAGMENTS)
@@ -4678,12 +4694,16 @@ def _roblox_module_reasons(path_norm: str, patterns: dict[str, re.Pattern[str]])
     if cheat_hints:
         reasons.append("cheat_hint_in_module")
     sha_label = ""
+    authenticode_status = ""
     if path_lower.endswith((".exe", ".dll")) and Path(path_norm).is_file():
+        authenticode_status = _win_authenticode_status(path_norm)
         sha, _, _ = forensic_file_peek(Path(path_norm))
         sha_label = resolve_executor_hash_label(sha, load_executor_sha256_blocklist()) or ""
         if sha_label:
             reasons.append(f"sha256_blocklist:{sha_label}")
-    return reasons, executor_labels, cheat_hints, sha_label
+        if not trusted and authenticode_status in {"NotSigned", "NotTrusted", "HashMismatch"}:
+            reasons.append("unsigned_module_in_roblox" if "\\roblox\\" in path_lower else "unsigned_executable_module")
+    return reasons, executor_labels, cheat_hints, sha_label, authenticode_status
 
 
 def roblox_offline_integrity_signals(prefetch: dict) -> list[dict]:
@@ -4742,7 +4762,7 @@ def roblox_offline_integrity_signals(prefetch: dict) -> list[dict]:
                         continue
                 except ValueError:
                     pass
-            reasons, executor_labels, cheat_hints, sha_label = _roblox_module_reasons(path, patterns)
+            reasons, executor_labels, cheat_hints, sha_label, auth_status = _roblox_module_reasons(path, patterns)
             path_lower = path.lower()
             if not reasons and not any(
                 frag in path_lower for frag in ("\\temp\\", "\\downloads\\", "\\desktop\\", "\\appdata\\")
@@ -4759,6 +4779,7 @@ def roblox_offline_integrity_signals(prefetch: dict) -> list[dict]:
                     executor_labels=executor_labels,
                     cheat_hints=cheat_hints,
                     sha_label=sha_label,
+                    authenticode_status=auth_status,
                     extra={"last_execution_utc": iso, "file_exists": item.get("file_exists")},
                 )
             )
@@ -4771,7 +4792,7 @@ def roblox_offline_integrity_signals(prefetch: dict) -> list[dict]:
                 path_str = str(dll)
                 if "\\versions\\" in path_str.lower():
                     continue
-                reasons, executor_labels, cheat_hints, sha_label = _roblox_module_reasons(path_str, patterns)
+                reasons, executor_labels, cheat_hints, sha_label, auth_status = _roblox_module_reasons(path_str, patterns)
                 if not reasons:
                     continue
                 try:
@@ -4787,6 +4808,7 @@ def roblox_offline_integrity_signals(prefetch: dict) -> list[dict]:
                         executor_labels=executor_labels,
                         cheat_hints=cheat_hints,
                         sha_label=sha_label,
+                        authenticode_status=auth_status,
                         extra={"modified": modified},
                     )
                 )
@@ -4814,7 +4836,7 @@ def roblox_offline_integrity_signals(prefetch: dict) -> list[dict]:
                 path_str = str(dll)
                 if path_is_allowlisted(path_str):
                     continue
-                reasons, executor_labels, cheat_hints, sha_label = _roblox_module_reasons(path_str, patterns)
+                reasons, executor_labels, cheat_hints, sha_label, auth_status = _roblox_module_reasons(path_str, patterns)
                 if not reasons:
                     continue
                 signals.append(
@@ -4826,6 +4848,7 @@ def roblox_offline_integrity_signals(prefetch: dict) -> list[dict]:
                         executor_labels=executor_labels,
                         cheat_hints=cheat_hints,
                         sha_label=sha_label,
+                        authenticode_status=auth_status,
                         extra={"modified": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()},
                     )
                 )
@@ -4917,7 +4940,7 @@ def roblox_integrity_scan(prefetch: dict | None = None) -> dict:
                     continue
                 modules_sampled += 1
                 path_norm = path.replace("/", "\\")
-                reasons, executor_labels, cheat_hints, sha_label = _roblox_module_reasons(path_norm, patterns)
+                reasons, executor_labels, cheat_hints, sha_label, auth_status = _roblox_module_reasons(path_norm, patterns)
                 if not reasons:
                     continue
                 live_modules.append(
@@ -4930,6 +4953,7 @@ def roblox_integrity_scan(prefetch: dict | None = None) -> dict:
                         executor_labels=executor_labels,
                         cheat_hints=cheat_hints,
                         sha_label=sha_label,
+                        authenticode_status=auth_status,
                     )
                 )
         except (psutil.NoSuchProcess, psutil.AccessDenied, TypeError, ValueError):
@@ -15839,6 +15863,8 @@ def build_report() -> dict:
     disk = psutil.disk_usage(str(Path.home().anchor or Path.home()))
     dam_registry: dict = {"available": False, "items": []}
     executor_artifact_evidence: dict = {"available": False, "hits": []}
+    roblox_runtime: dict = {"available": False}
+    evidence_verdict: dict = {"available": False}
 
     with ThreadPoolExecutor(max_workers=SCAN_WORKERS) as pool:
         fut_prefetch = pool.submit(prefetch_metadata)
@@ -16069,6 +16095,16 @@ def build_report() -> dict:
             executor_artifact_evidence=executor_artifact_evidence,
             forensic_bundle=forensic_bundle,
         )
+        roblox_runtime = roblox_runtime_provenance_scan(
+            win_authenticode_status=_win_authenticode_status,
+            executor_label_matcher=lambda text: sorted(
+                set(match_executor_labels(text, executor_name_patterns(), path_context=True))
+            ),
+        )
+        for hit in executor_artifact_evidence.get("hits") or []:
+            path = str(hit.get("path") or "")
+            if path.lower().endswith((".exe", ".dll")) and path_exists_on_disk(path):
+                hit["authenticode_status"] = _win_authenticode_status(path)
         executor_activity = build_executor_activity_summary(
             generated_at=generated_at,
             recent_items=recent_items,
@@ -16112,6 +16148,13 @@ def build_report() -> dict:
             trash=trash,
             executor_artifact_evidence=executor_artifact_evidence,
         )
+        tamper_risk = 0.0
+        if bypass_resilience.get("available") and (bypass_resilience.get("findings") or []):
+            tamper_risk = min(0.35, (float(bypass_resilience.get("risk_score") or 0) / 100.0) * 0.35)
+        executor_artifact_evidence = enrich_executor_artifact_evidence(
+            executor_artifact_evidence,
+            tamper_risk=tamper_risk,
+        )
         in_scan_changes = in_scan_binary_change_signals(
             usn_rows=usn_rows if isinstance(usn_rows, list) else [],
             bam_items=bam_registry.get("items") or [],
@@ -16153,6 +16196,24 @@ def build_report() -> dict:
         "artifact_scan_max_timeout_seconds": ARTIFACT_SCAN_MAX_TIMEOUT_SEC,
         "seconds_remaining_at_finish": round(scan_seconds_remaining(), 2),
     }
+    evidence_verdict = build_evidence_verdict(
+        executor_artifact_evidence=executor_artifact_evidence,
+        roblox_runtime=roblox_runtime,
+        bypass_resilience=bypass_resilience,
+        cross_artifact=cross_artifact_executor,
+        scan_budget=_scan_budget,
+        filesystem_integrity=filesystem_evidence_integrity,
+    )
+    if scan_review.get("available"):
+        scan_review["provenance_chains"] = evidence_verdict.get("provenance_chains") or []
+        scan_review["evidence_verdict_summary"] = {
+            "score": evidence_verdict.get("score"),
+            "verdict": evidence_verdict.get("verdict"),
+            "scan_complete": evidence_verdict.get("scan_complete"),
+            "high_confidence_hit_count": evidence_verdict.get("high_confidence_hit_count"),
+            "runtime_signal_count": evidence_verdict.get("runtime_signal_count"),
+            "runtime_reasons": evidence_verdict.get("runtime_reasons"),
+        }
 
     return {
         "scan_started_at": scan_started_at,
@@ -16199,6 +16260,8 @@ def build_report() -> dict:
                     "browser_downloads",
                     "browser_history_domains",
                     "roblox_integrity",
+                    "roblox_runtime_provenance",
+                    "evidence_confidence_engine",
                     "known_install_paths",
                     "roblox_protocol_registry",
                     "live_processes",
@@ -16236,6 +16299,8 @@ def build_report() -> dict:
             "user_activity_timeline": user_activity,
             "persistence_signals": persistence,
             "roblox_runtime_integrity": roblox_integrity,
+            "roblox_runtime_provenance": roblox_runtime,
+            "evidence_verdict": evidence_verdict,
             "forensic_analysis": forensic_bundle,
             "bypass_resilience": bypass_resilience,
             "scan_review": scan_review,

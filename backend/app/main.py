@@ -10,9 +10,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+
+import rate_limit
 
 APP_DIR = Path(__file__).resolve().parent
 DB_PATH = APP_DIR.parent / "diagnostics.db"
@@ -181,8 +183,17 @@ def login(payload: LoginRequest) -> TokenResponse:
     return TokenResponse(token=make_token(payload.email))
 
 
+def client_key(request: Request) -> str:
+    forwarded = request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+    if forwarded:
+        return forwarded
+    return str(request.client.host if request.client else "unknown")
+
+
 @app.post("/sessions", response_model=SessionCreateResponse)
-def create_session(_: str = Depends(require_checker)) -> SessionCreateResponse:
+def create_session(request: Request, _: str = Depends(require_checker)) -> SessionCreateResponse:
+    if not rate_limit.allow_pin_creation(client_key(request)):
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="PIN creation rate limit exceeded")
     pin = f"{secrets.randbelow(1_000_000):06d}"
     now = utc_now()
     expires_at = now + timedelta(minutes=PIN_TTL_MINUTES)
@@ -242,7 +253,9 @@ def get_session(session_id: int, _: str = Depends(require_checker)) -> dict[str,
 
 
 @app.post("/reports")
-def upload_report(payload: ReportUpload) -> dict[str, str]:
+def upload_report(payload: ReportUpload, request: Request) -> dict[str, str]:
+    if not rate_limit.allow_report_upload(client_key(request)):
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Report upload rate limit exceeded")
     now = utc_now()
     with connect() as conn:
         row = conn.execute("SELECT * FROM sessions WHERE pin = ?", (payload.pin,)).fetchone()

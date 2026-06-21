@@ -387,10 +387,18 @@ function buildSuspicionSummary(report) {
     const weighted = artifactEvidence.reduce((sum, item) => {
       const deleted = item.file_exists === false || item.removed_artifact;
       const source = String(item.artifact_source ?? "");
+      if (source === "browser_history_domain") {
+        return sum + 2 * recencyFactor(item.display_at ?? item.modified, report);
+      }
+      if (source === "browser_download") {
+        return sum + 5 * recencyFactor(item.display_at ?? item.modified, report);
+      }
+      const clientConfidence = Number(item.confidence);
+      const confidenceBoost = Number.isFinite(clientConfidence) ? 0.65 + clientConfidence * 0.55 : 1;
       const sourceBoost =
         source === "prefetch_execution" || source === "bam_execution" || source === "dam_execution" ? 1.25 : 1;
       const base = deleted ? 18 : 14;
-      return sum + base * sourceBoost * recencyFactor(item.display_at ?? item.modified, report);
+      return sum + base * sourceBoost * confidenceBoost * recencyFactor(item.display_at ?? item.modified, report);
     }, 0);
     let points = Math.min(65, Math.round(weighted));
     const detectedExecutors = Object.keys(sec.executor_artifact_evidence?.by_executor ?? {});
@@ -657,11 +665,35 @@ function buildSuspicionSummary(report) {
     .sort((a, b) => (dateMs(b.displayAt) ?? 0) - (dateMs(a.displayAt) ?? 0));
   const scanAccessFiltered = openedCandidates.filter((item) => item.filteredScanAccess).length;
 
+  const evidenceVerdict = sec.evidence_verdict;
+  if (evidenceVerdict?.available) {
+    const clientScore = Number(evidenceVerdict.score) || 0;
+    score = clientScore;
+    reasons.unshift({
+      label: "Unified evidence verdict",
+      points: clientScore,
+      detail: [
+        `Verdict: ${evidenceVerdict.verdict ?? "unknown"}.`,
+        evidenceVerdict.high_confidence_hit_count != null
+          ? `${evidenceVerdict.high_confidence_hit_count} high-confidence artifact hit(s).`
+          : null,
+        evidenceVerdict.runtime_signal_count
+          ? `${evidenceVerdict.runtime_signal_count} Roblox runtime provenance signal(s).`
+          : null,
+        evidenceVerdict.scan_complete === false ? "Scan ended incomplete — treat as inconclusive." : null,
+        ...(evidenceVerdict.runtime_reasons ?? []),
+      ]
+        .filter(Boolean)
+        .join(" "),
+    });
+  }
+
   return {
     score: Math.min(100, score),
     reasons,
     openedFiles,
     scanAccessFiltered,
+    evidenceVerdict: evidenceVerdict?.available ? evidenceVerdict : null,
     counts: {
       fileHits: countItems(fileHits),
       recentMatched: countItems(recentMatched),
@@ -2553,7 +2585,16 @@ function Results({ detail, token, onSessionReviewSaved }) {
         <div className="header-badges">
           {detail.status === "completed" && (
             <span className="score-badge">
-              {expertMode ? `Suspicion ${summary.score}/100` : `Concern ${Math.min(100, Math.round(summary.score * 0.75 + ((report.security_integrity_signals?.bypass_resilience?.risk_score ?? 0) * 0.35)))}/100`}
+              {expertMode
+                ? `Suspicion ${summary.score}/100`
+                : `Concern ${Math.min(
+                    100,
+                    summary.evidenceVerdict?.score ??
+                      Math.round(
+                        summary.score * 0.75 +
+                          ((report.security_integrity_signals?.bypass_resilience?.risk_score ?? 0) * 0.35),
+                      ),
+                  )}/100`}
             </span>
           )}
           <span className={`status large ${formatSessionStatus(detail.status)}`}>

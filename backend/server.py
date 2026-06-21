@@ -19,6 +19,7 @@ from urllib import request as urlrequest
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 import backup
+import rate_limit
 
 DB_PATH = Path(__file__).resolve().parent / "diagnostics.db"
 DATABASE_URL = os.getenv("DATABASE_URL", "")
@@ -800,6 +801,12 @@ def row_to_summary(row: sqlite3.Row) -> dict:
 class Handler(BaseHTTPRequestHandler):
     server_version = "VirelloScannerBackend/0.1"
 
+    def client_key(self) -> str:
+        forwarded = self.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+        if forwarded:
+            return forwarded
+        return str(self.client_address[0] if self.client_address else "unknown")
+
     def end_headers(self) -> None:
         request_origin = self.headers.get("Origin", "").rstrip("/")
         allowed_origin = request_origin if request_origin in CORS_ORIGINS else CORS_ORIGINS[0]
@@ -1122,6 +1129,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/sessions":
             if not self.require_checker():
                 return
+            if not rate_limit.allow_pin_creation(self.client_key()):
+                self.send_json(HTTPStatus.TOO_MANY_REQUESTS, {"detail": "PIN creation rate limit exceeded"})
+                return
             pin = f"{secrets.randbelow(1_000_000):06d}"
             now = utc_now()
             expires_at = now + timedelta(minutes=PIN_TTL_MINUTES)
@@ -1139,6 +1149,9 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/reports":
+            if not rate_limit.allow_report_upload(self.client_key()):
+                self.send_json(HTTPStatus.TOO_MANY_REQUESTS, {"detail": "Report upload rate limit exceeded"})
+                return
             pin = str(payload.get("pin", ""))
             report = payload.get("report")
             if not pin or not isinstance(report, dict):
