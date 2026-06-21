@@ -1,5 +1,5 @@
 {
-  "version": 2,
-  "description": "SHA256 (lowercase hex) of verified executor binaries. Renamed copies match by hash. Add hashes after confirming samples. Tracked brands: Volt, Potassium, Wave, Synapse Z, Seliware, Madium, Cosmic, Velocity, SirHurt, Solara, Xeno, Serotonin, Severe, RbxCli, Lumen, Matcha, Matrix Hub, Photon, DX9WARE V2, MacSploit, Opiumware, Delta, Vega X, Codex.",
+  "version": 1,
+  "description": "Verified SHA256 hashes for known Roblox executor builds. Populate via threat-intel samples; matches survive renames.",
   "entries": []
 }

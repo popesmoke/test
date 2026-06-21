@@ -26,7 +26,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed
 from queue import Empty, PriorityQueue
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 from tkinter import BOTH, BooleanVar, Canvas, Frame, PhotoImage, StringVar, Tk, ttk, messagebox
 
 import psutil
@@ -37,7 +37,7 @@ from evidence_engine import (
     build_evidence_verdict,
     enrich_executor_artifact_evidence,
 )
-from roblox_runtime import roblox_runtime_provenance_scan
+from roblox_runtime import SUSPICIOUS_PROCESS_NAME_STEMS, roblox_runtime_provenance_scan
 
 API_URL = get_api_url()
 CONSENT_VERSION = "2026-06-02.virello-scanner"
@@ -2791,6 +2791,23 @@ EXECUTOR_NAMES = [
     "Nucleus",
     "Electron",
     "Trigon",
+    # 2025–2026 landscape
+    "Ronix",
+    "Swift",
+    "Bunni",
+    "Evon",
+    "AWP",
+    "ChocoSploit",
+    "Nihon",
+    "Nezur",
+    "Volcano",
+    "Zenith",
+    "Comet",
+    "Furk Ultra",
+    "Cryptonite",
+    "Krnl",
+    "Oxygen U",
+    "Script-Ware",
 ]
 
 # Extra tokens commonly seen in paths, prefetch stems, or renamed folders.
@@ -2827,6 +2844,22 @@ EXECUTOR_ALIASES: dict[str, list[str]] = {
     "Nucleus": ["nucleusexecutor", "nucleus executor", "nucleus.exe"],
     "Electron": ["electronexecutor", "electron executor", "electron-executor", "electron.exe"],
     "Trigon": ["trigonexecutor", "trigon executor", "trigon.exe"],
+    "Ronix": ["ronix", "ronix.exe", "ronix executor", "ronixexecutor"],
+    "Swift": ["swiftexecutor", "swift executor", "swift.exe", "swift executor v3"],
+    "Bunni": ["bunni", "bunni.exe", "bunni executor", "bunniware"],
+    "Evon": ["evon", "evon.exe", "evon executor", "evonexecutor"],
+    "AWP": ["awp.gg", "awpgg", "awp.exe", "awp executor", "awpexecutor"],
+    "ChocoSploit": ["chocosploit", "choco sploit", "chocosploit.exe"],
+    "Nihon": ["nihon", "nihon.exe", "nihon executor", "nihonexecutor"],
+    "Nezur": ["nezur", "nezur.exe", "nezur executor"],
+    "Volcano": ["volcano", "volcano.exe", "volcano executor", "volcanoexecutor"],
+    "Zenith": ["zenithexecutor", "zenith executor", "zenith.exe"],
+    "Comet": ["cometexecutor", "comet executor", "comet.exe"],
+    "Furk Ultra": ["furku", "furk ultra", "furkultra", "furku.exe"],
+    "Cryptonite": ["cryptoniteexecutor", "cryptonite executor", "cryptonite.exe"],
+    "Krnl": ["krnl", "krnl.exe", "krnl.place", "krnlapi"],
+    "Oxygen U": ["oxygen", "oxygen u", "oxygen-u", "oxygen.exe", "oxygenus"],
+    "Script-Ware": ["scriptware", "script-ware", "script ware", "scriptware.exe"],
 }
 
 # Folder names used by installers (path segment match — survives generic renames of the .exe).
@@ -2861,6 +2894,23 @@ EXECUTOR_INSTALL_DIR_NAMES = frozenset(
         "vega x",
         "codex",
         "codexexecutor",
+        "ronix",
+        "swift",
+        "bunni",
+        "evon",
+        "awp",
+        "chocosploit",
+        "nihon",
+        "nezur",
+        "volcano",
+        "zenith",
+        "comet",
+        "furku",
+        "cryptonite",
+        "krnl",
+        "oxygen",
+        "scriptware",
+        "script-ware",
     }
 )
 
@@ -2964,6 +3014,14 @@ EXECUTOR_KNOWN_RELATIVE_PATHS: dict[str, list[str]] = {
     "Delta": ["AppData/Local/Delta", "AppData/Local/DeltaExecutor"],
     "Vega X": ["AppData/Local/Vega X", "AppData/Local/VegaX"],
     "Codex": ["AppData/Local/Codex", "AppData/Local/CodexExecutor"],
+    "Ronix": ["AppData/Local/Ronix", "AppData/Roaming/Ronix"],
+    "Swift": ["AppData/Local/Swift", "AppData/Local/SwiftExecutor"],
+    "Bunni": ["AppData/Local/Bunni", "AppData/Roaming/Bunni"],
+    "Evon": ["AppData/Local/Evon", "AppData/Local/EvonExecutor"],
+    "AWP": ["AppData/Local/AWP", "AppData/Local/AWP.GG"],
+    "Krnl": ["AppData/Local/krnl", "AppData/Local/Krnl"],
+    "Oxygen U": ["AppData/Local/Oxygen", "AppData/Local/Oxygen U"],
+    "Script-Ware": ["AppData/Local/Script-Ware", "AppData/Local/ScriptWare"],
 }
 
 # Download-site domains tied to tracked executors (browser history + download URL matching).
@@ -2982,9 +3040,13 @@ EXECUTOR_DOWNLOAD_DOMAIN_HINTS: dict[str, list[str]] = {
     "Serotonin": ["serotoninexecutor"],
     "Photon": ["photon-executor", "photonexecutor"],
     "DX9WARE V2": ["dx9ware"],
+    "Codex": ["codexexecutor", "codex-executor"],
+    "Ronix": ["ronix", "ronix-executor"],
+    "Swift": ["swiftexecutor", "swift-executor"],
+    "Evon": ["evonexecutor", "evon-executor"],
+    "Krnl": ["krnl", "krnl.place"],
     "Delta": ["deltaexecutor", "delta-executor"],
     "Vega X": ["vegax", "vega-x"],
-    "Codex": ["codexexecutor", "codex-executor"],
 }
 
 ROBLOX_TRUSTED_LAUNCHER_FRAGMENTS = (
@@ -3338,9 +3400,11 @@ CHEAT_FILENAME_HINT_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
             re.IGNORECASE,
         ),
     ),
-    ("hyperion_bypass", re.compile(r"hyperion|byfron|anticheat[\s._-]*bypass|bypass[\s._-]*hyperion", re.IGNORECASE)),
+    ("hyperion_bypass", re.compile(r"hyperion|byfron|knightmare|anticheat[\s._-]*bypass|bypass[\s._-]*hyperion|manual[\s._-]*map", re.IGNORECASE)),
+    ("threadless_inject", re.compile(r"threadless|manual[\s._-]*map(?:ping)?|pe[\s._-]*header[\s._-]*remov", re.IGNORECASE)),
     ("hwid_spoof", re.compile(r"hwid[\s._-]*spoof|spoofer", re.IGNORECASE)),
     ("auto_execute", re.compile(r"auto[\s._-]*exec(?:ute)?|autoexec", re.IGNORECASE)),
+    ("exploit_api_surface", re.compile(r"getgc|getrenv|hookfunction|hookmetamethod|getrawmetatable|loadstring|getconnections|saveinstance|cloneref|checkcaller", re.IGNORECASE)),
 ]
 
 # Only these cheat hints are strong enough to flag on their own (without executor branding).
@@ -3364,6 +3428,8 @@ STRONG_CHEAT_HINT_LABELS = frozenset(
         "unc_compat",
         "script_hub",
         "auto_execute",
+        "exploit_api_surface",
+        "threadless_inject",
     }
 )
 
@@ -3473,11 +3539,13 @@ _full_pc_recent_executables_cache: list[dict] | None = None
 _executor_indicator_cache: dict[str, object] | None = None
 _profile_binary_sweep_cache: list[dict[str, object]] | None = None
 _binary_probe_result_cache: dict[str, list[str]] = {}
+_binary_exploit_api_cache: dict[str, int] = {}
 
 
 def _reset_binary_probe_result_cache() -> None:
-    global _binary_probe_result_cache
+    global _binary_probe_result_cache, _binary_exploit_api_cache
     _binary_probe_result_cache = {}
+    _binary_exploit_api_cache = {}
 
 
 def _reset_usn_comprehensive_cache() -> None:
@@ -4540,6 +4608,49 @@ def scan_binary_blob_for_executor_names(data: bytes, *, limit: int = 12) -> list
     return sorted(set(hits))
 
 
+EXPLOIT_API_BINARY_TOKENS: tuple[bytes, ...] = (
+    b"getgc",
+    b"getrenv",
+    b"hookfunction",
+    b"hookmetamethod",
+    b"getrawmetatable",
+    b"setrawmetatable",
+    b"loadstring",
+    b"getconnections",
+    b"firetouchinterest",
+    b"gethui",
+    b"getscripts",
+    b"getloadedmodules",
+    b"saveinstance",
+    b"cloneref",
+    b"checkcaller",
+    b"getcallingscript",
+    b"gethiddenproperty",
+    b"sethiddenproperty",
+    b"Drawing.new",
+    b"getnamecallmethod",
+    b"islclosure",
+    b"newcclosure",
+    b"getcustomasset",
+    b"request",
+    b"syn.request",
+    b"http.request",
+)
+
+
+def count_exploit_api_tokens(data: bytes) -> int:
+    """Count embedded Roblox exploit API strings — strong signal when clustered in one binary."""
+    if not data:
+        return 0
+    sample = data[:6_000_000]
+    lower = sample.lower()
+    hits = 0
+    for token in EXPLOIT_API_BINARY_TOKENS:
+        if token in lower or token.decode("ascii", errors="ignore").encode("utf-16le") in sample:
+            hits += 1
+    return hits
+
+
 def path_stem_key(path_str: str) -> str:
     try:
         return Path(path_str).stem.lower()
@@ -5112,6 +5223,75 @@ def roblox_runtime_module_scan(prefetch: dict | None = None) -> dict:
     return roblox_integrity_scan(prefetch=prefetch)
 
 
+def merge_runtime_provenance_into_artifact_evidence(
+    bundle: dict[str, Any],
+    runtime: dict[str, Any],
+) -> dict[str, Any]:
+    """Promote live Roblox runtime signals into reviewer-facing artifact hits."""
+    if not bundle.get("available") or not runtime.get("available"):
+        return bundle
+    hits = list(bundle.get("hits") or [])
+    before_count = len(hits)
+    seen: set[str] = set(str(row.get("path") or "").lower() for row in hits if row.get("path"))
+
+    def append_hit(**fields: Any) -> None:
+        path = str(fields.get("path") or "")
+        key = path.lower()
+        if key and key in seen:
+            return
+        if key:
+            seen.add(key)
+        hits.append(fields)
+
+    for row in runtime.get("module_trust_failures") or []:
+        module_path = str(row.get("module_path") or "")
+        labels = list(row.get("executor_labels") or [])
+        append_hit(
+            path=module_path or f"roblox_pid_{row.get('pid')}_module",
+            executor_name_hits=labels,
+            artifact_source="live_injected_module",
+            file_exists=bool(module_path and module_path != "(anonymous/private image regions)" and Path(module_path).is_file()),
+            note=f"Live Roblox module trust failure: {row.get('reason')}",
+            reasons=[str(row.get("reason") or "")],
+            display_at=runtime.get("scanned_at"),
+            extra={"pid": row.get("pid"), "authenticode_status": row.get("authenticode_status")},
+        )
+
+    for row in runtime.get("verified_external_handles") or runtime.get("external_process_handles") or []:
+        exe = str(row.get("exe") or row.get("name") or "")
+        append_hit(
+            path=exe or f"pid_{row.get('pid')}",
+            executor_name_hits=sorted(set(match_executor_labels(exe, executor_name_patterns(), path_context=True))),
+            artifact_source="live_external_handle",
+            file_exists=bool(exe and Path(exe).is_file()) if exe else None,
+            note=str(row.get("reason") or "External process with risky Roblox access."),
+            reasons=[str(row.get("reason") or "")],
+            display_at=runtime.get("scanned_at"),
+            extra={
+                "pid": row.get("pid"),
+                "target_roblox_pid": row.get("target_roblox_pid"),
+                "detection_method": row.get("detection_method"),
+                "confidence": row.get("confidence"),
+            },
+        )
+
+    for row in runtime.get("high_confidence_memory_regions") or []:
+        append_hit(
+            path=f"roblox_pid_{row.get('pid')}_memory_{row.get('base_address')}",
+            executor_name_hits=[],
+            cheat_filename_hints=["hyperion_bypass"] if row.get("has_pe_header") else [],
+            artifact_source="live_memory_region",
+            file_exists=None,
+            note="High-confidence private RWX region inside live Roblox process.",
+            reasons=[str(row.get("reason") or "")],
+            display_at=runtime.get("scanned_at"),
+            extra={"pid": row.get("pid"), "size_bytes": row.get("size_bytes"), "confidence": row.get("confidence")},
+        )
+
+    bundle["hits"] = hits
+    bundle["runtime_promoted_hit_count"] = len(hits) - before_count
+    return bundle
+
 def designated_user_folder_roots() -> list[Path]:
     """Return scan roots: all accessible local/removable drive letters plus user home."""
     roots: list[Path] = []
@@ -5381,6 +5561,9 @@ def _probe_executable_binary_labels(path: Path) -> list[str]:
         labels = scan_binary_blob_for_executor_names(data)
         labels.extend(loose_executor_labels_for_artifact(data.decode("utf-16le", errors="ignore")[:500000]))
         labels = _sanitize_binary_executor_labels(path_str, labels)
+        api_count = count_exploit_api_tokens(data)
+        if api_count >= 3:
+            _binary_exploit_api_cache[path_str.lower()] = api_count
         if labels or quick_read >= max_read or quick_read >= size:
             return sorted(set(labels))
         read_len = min(size, max_read)
@@ -5392,6 +5575,9 @@ def _probe_executable_binary_labels(path: Path) -> list[str]:
         labels.extend(scan_binary_blob_for_executor_names(data))
         labels.extend(loose_executor_labels_for_artifact(data.decode("utf-16le", errors="ignore")[:500000]))
         labels = _sanitize_binary_executor_labels(path_str, labels)
+        api_count = count_exploit_api_tokens(data)
+        if api_count >= 3:
+            _binary_exploit_api_cache[path_str.lower()] = api_count
     except OSError:
         return []
     return sorted(set(labels))
@@ -5607,6 +5793,9 @@ def _merge_binary_probe_results(
             )
             continue
         cheat_hints = cheat_path_hint_labels(path_str)
+        api_count = _binary_exploit_api_cache.get(path_key, 0)
+        if api_count >= 3 and "exploit_api_surface" not in cheat_hints:
+            cheat_hints = sorted(set(cheat_hints + ["exploit_api_surface"]))
         weird = list(weird_filename_reasons(path.stem, path.name))
         if not _path_is_trusted_install_zone(path_str):
             for part in path.parts[:-1]:
@@ -11895,7 +12084,9 @@ def scan_live_executor_processes() -> list[dict[str, object]]:
             labels = sorted(set(match_executor_labels(blob, patterns) + executor_labels_for_artifact_text(blob)))
             cheat_hints = cheat_path_hint_labels(exe or name)
             strong_cheat = [hint for hint in cheat_hints if hint in STRONG_CHEAT_HINT_LABELS]
-            process_stem = Path(name or exe).stem.lower().replace(" ", "")
+            process_stem = Path(name or exe).stem.lower().replace(" ", "").replace("_", "").replace("-", "")
+            if process_stem in SUSPICIOUS_PROCESS_NAME_STEMS:
+                labels = sorted(set(labels + ["suspicious_process"]))
             if process_stem in RESEARCH_TOOL_PROCESS_STEMS or any(
                 process_stem.startswith(stem.replace(" ", "")) for stem in RESEARCH_TOOL_PROCESS_STEMS
             ):
@@ -16232,6 +16423,10 @@ def build_report() -> dict:
             executor_label_matcher=lambda text: sorted(
                 set(match_executor_labels(text, executor_name_patterns(), path_context=True))
             ),
+        )
+        executor_artifact_evidence = merge_runtime_provenance_into_artifact_evidence(
+            executor_artifact_evidence,
+            roblox_runtime,
         )
         for hit in executor_artifact_evidence.get("hits") or []:
             path = str(hit.get("path") or "")

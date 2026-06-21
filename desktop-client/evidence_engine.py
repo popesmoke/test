@@ -10,6 +10,8 @@ ARTIFACT_SOURCE_RELIABILITY: dict[str, float] = {
     "sha256_blocklist": 0.95,
     "live_process": 0.92,
     "live_injected_module": 0.94,
+    "live_memory_region": 0.86,
+    "live_external_handle": 0.93,
     "bam_execution_binary": 0.90,
     "bam_execution": 0.88,
     "dam_execution": 0.88,
@@ -58,6 +60,8 @@ STRONG_EVIDENCE_SOURCES = frozenset(
         "sha256_blocklist",
         "live_process",
         "live_injected_module",
+        "live_external_handle",
+        "live_memory_region",
         "bam_execution",
         "bam_execution_binary",
         "dam_execution",
@@ -70,6 +74,8 @@ RELIABILITY_CLASS_BY_SOURCE: dict[str, str] = {
     "sha256_blocklist": "strong",
     "live_process": "strong",
     "live_injected_module": "strong",
+    "live_external_handle": "strong",
+    "live_memory_region": "strong",
     "bam_execution": "strong",
     "bam_execution_binary": "strong",
     "dam_execution": "strong",
@@ -164,8 +170,12 @@ def compute_hit_confidence(
     for reason in reasons:
         if reason.startswith("sha256_blocklist:"):
             strength = max(strength, 0.94)
-        elif reason in {"module_from_high_risk_folder", "unsigned_module_in_roblox"}:
+        elif reason in {"module_from_high_risk_folder", "unsigned_module_in_roblox", "known_executor_module_in_roblox"}:
             strength = max(strength, 0.78)
+        elif reason in {"cross_process_vm_access_to_roblox", "known_executor_process_stem"}:
+            strength = max(strength, 0.90)
+        elif reason == "private_executable_writable_region":
+            strength = max(strength, 0.72)
         elif reason == "executor_name_in_module":
             strength = max(strength, 0.58)
 
@@ -335,6 +345,71 @@ def build_provenance_chains(
     return chains[:40]
 
 
+def _score_runtime_signals(runtime: dict[str, Any]) -> tuple[float, list[str], int]:
+    """Weight live Roblox signals by confidence — avoid JIT false-positive inflation."""
+    score = 0.0
+    reasons: list[str] = []
+    signal_count = 0
+
+    memory = list(runtime.get("suspicious_memory_regions") or [])
+    high_memory = [row for row in memory if row.get("confidence") == "high"]
+    medium_memory = [row for row in memory if row.get("confidence") == "medium"]
+    if high_memory:
+        score += min(28, 16 + len(high_memory) * 4)
+        reasons.append(
+            f"{len(high_memory)} high-confidence private RWX region(s) in Roblox (PE-aware filter)."
+        )
+        signal_count += 1
+    elif medium_memory:
+        score += min(14, 8 + len(medium_memory) * 2)
+        reasons.append(f"{len(medium_memory)} medium-confidence private RWX region(s) in Roblox.")
+        signal_count += 1
+
+    modules = list(runtime.get("module_trust_failures") or [])
+    high_modules = [row for row in modules if row.get("confidence") == "high" or float(row.get("confidence_hint") or 0) >= 0.82]
+    if high_modules:
+        score += min(26, 18 + len(high_modules) * 2)
+        reasons.append("Unsigned or known-executor modules loaded into Roblox.")
+        signal_count += 1
+    elif modules:
+        score += 10
+        reasons.append("Suspicious anonymous or untrusted mappings inside Roblox.")
+        signal_count += 1
+
+    handles = list(runtime.get("external_process_handles") or [])
+    verified = list(runtime.get("verified_external_handles") or [])
+    if verified:
+        score += min(34, 26 + len(verified) * 3)
+        reasons.append(
+            f"{len(verified)} external process(es) hold VM write/create-thread access to Roblox (handle table verified)."
+        )
+        signal_count += 1
+    elif handles:
+        medium_handles = [row for row in handles if row.get("confidence") in {"high", "medium"}]
+        if medium_handles:
+            score += min(18, 10 + len(medium_handles) * 2)
+            reasons.append("External process(es) near Roblox match executor heuristics.")
+            signal_count += 1
+
+    drivers = list(runtime.get("suspicious_drivers") or [])
+    high_drivers = [row for row in drivers if row.get("confidence") == "high"]
+    if high_drivers:
+        score += min(20, 14 + len(high_drivers))
+        reasons.append("Kernel drivers match exploit/mapper keywords or nonstandard paths.")
+        signal_count += 1
+    elif drivers:
+        score += 8
+        reasons.append("Non-Microsoft kernel drivers present.")
+        signal_count += 1
+
+    if runtime.get("launch_provenance_anomaly"):
+        score += 12
+        reasons.append("Roblox launch chain looks unusual.")
+        signal_count += 1
+
+    return score, reasons, signal_count
+
+
 def build_evidence_verdict(
     *,
     executor_artifact_evidence: dict[str, Any] | None,
@@ -367,22 +442,9 @@ def build_evidence_verdict(
 
     runtime_score = 0.0
     runtime_reasons: list[str] = []
+    runtime_signal_count = 0
     if runtime.get("available"):
-        if runtime.get("suspicious_memory_regions"):
-            runtime_score += 28
-            runtime_reasons.append("Suspicious executable private memory in Roblox.")
-        if runtime.get("module_trust_failures"):
-            runtime_score += 22
-            runtime_reasons.append("Unsigned/untrusted modules loaded into Roblox.")
-        if runtime.get("external_process_handles"):
-            runtime_score += 30
-            runtime_reasons.append("External process(es) hold high-risk access to Roblox.")
-        if runtime.get("suspicious_drivers"):
-            runtime_score += 18
-            runtime_reasons.append("Non-Microsoft or suspicious kernel drivers present.")
-        if runtime.get("launch_provenance_anomaly"):
-            runtime_score += 12
-            runtime_reasons.append("Roblox launch chain looks unusual.")
+        runtime_score, runtime_reasons, runtime_signal_count = _score_runtime_signals(runtime)
 
     artifact_score = min(70, len(high_hits) * 14 + len(medium_hits) * 5)
     corroboration_bonus = min(15, len(strong_sources) * 3)
@@ -419,17 +481,7 @@ def build_evidence_verdict(
         "high_confidence_hit_count": len(high_hits),
         "medium_confidence_hit_count": len(medium_hits),
         "strong_source_count": len(strong_sources),
-        "runtime_signal_count": sum(
-            1
-            for key in (
-                "suspicious_memory_regions",
-                "module_trust_failures",
-                "external_process_handles",
-                "suspicious_drivers",
-                "launch_provenance_anomaly",
-            )
-            if runtime.get(key)
-        ),
+        "runtime_signal_count": runtime_signal_count,
         "tamper_risk": round(tamper_risk, 3),
         "scan_complete": not bool(budget.get("deadline_exceeded")),
         "reconstruction_confidence": recon,
