@@ -2936,8 +2936,10 @@ SCAN_MAX_SECONDS = 360.0
 SCAN_TARGET_MIN_SECONDS = 180.0
 # Reserve time for correlation/report assembly so the filesystem walk cannot consume the whole budget.
 SCAN_CORRELATION_RESERVE_SECONDS = 70.0
-FULL_PC_WALK_MAX_SECONDS = 120.0
+FULL_PC_WALK_MAX_SECONDS = 90.0
 PREFETCH_ARTIFACT_MAX_FILES = 100
+ARTIFACT_SCAN_MAX_TIMEOUT_SEC = 12.0
+DISK_EXECUTABLE_FALLBACK_TIMEOUT_SEC = 8.0
 
 # Global scan deadline (monotonic). Set once per build_report().
 _scan_deadline_monotonic: float | None = None
@@ -3303,6 +3305,30 @@ CHEAT_HINT_BENIGN_SEGMENTS = frozenset(
         "installer",
         "update",
         "patch",
+    }
+)
+
+LOLBIN_LAUNCHER_STEMS = frozenset(
+    {
+        "mshta",
+        "rundll32",
+        "regsvr32",
+        "wscript",
+        "cscript",
+        "powershell",
+        "pwsh",
+        "cmd",
+        "forfiles",
+        "pcalua",
+    }
+)
+
+IFEO_ROBLOX_TARGETS = frozenset(
+    {
+        "robloxplayerbeta.exe",
+        "robloxplayer.exe",
+        "robloxstudiobeta.exe",
+        "robloxstudio.exe",
     }
 )
 
@@ -5028,7 +5054,7 @@ def full_pc_scan_roots() -> list[tuple[Path, int]]:
         if value:
             _add(Path(value), 4)
 
-    if scan_seconds_remaining() > SCAN_CORRELATION_RESERVE_SECONDS + 45:
+    if scan_seconds_remaining() > SCAN_CORRELATION_RESERVE_SECONDS + 75:
         for drive in all_logical_drive_roots(include_removable=True):
             try:
                 key = str(drive.resolve()).lower()
@@ -8339,6 +8365,32 @@ def bypass_resilience_signals(
                 weight=15,
             )
 
+    for hint in (prefetch_health or {}).get("tamper_hints") or []:
+        if hint == "readonly_prefetch_files":
+            add(
+                severity="medium",
+                title="Prefetch files marked read-only",
+                detail="Multiple Prefetch (.pf) files have the read-only attribute — sometimes used to freeze execution history.",
+                category="tamper",
+                weight=12,
+            )
+        elif hint == "sysmain_stopped":
+            add(
+                severity="high",
+                title="SysMain (Prefetch) service is stopped",
+                detail="The SysMain service that maintains Prefetch is not running, reducing execution trace collection.",
+                category="tamper",
+                weight=16,
+            )
+        elif hint == "prefetch_folder_empty":
+            add(
+                severity="medium",
+                title="Prefetch folder empty while SysMain runs",
+                detail="Prefetch should normally retain recent program traces when SysMain is active.",
+                category="cover_up",
+                weight=12,
+            )
+
     severity_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3}
     findings.sort(key=lambda row: (severity_rank.get(str(row.get("severity")), 9), row.get("title") or ""))
     capped = min(100, risk_score)
@@ -8358,14 +8410,58 @@ def prefetch_health_signals(prefetch: dict) -> dict:
         return {"available": False, "reason": "Prefetch health signals require available Windows Prefetch metadata"}
 
     items = prefetch.get("items", [])
+    readonly_pf_count = 0
+    prefetch_dir = Path(os.getenv("SystemRoot", "C:\\Windows")) / "Prefetch"
+    if prefetch_dir.is_dir():
+        try:
+            for pf_file in prefetch_dir.glob("*.pf"):
+                try:
+                    if getattr(pf_file.stat(), "st_file_attributes", 0) & 0x1:
+                        readonly_pf_count += 1
+                except OSError:
+                    continue
+        except OSError:
+            readonly_pf_count = 0
+
+    sysmain_status = ""
+    try:
+        svc = run_command(
+            ["powershell", "-NoProfile", "-Command", "(Get-Service -Name SysMain -ErrorAction SilentlyContinue).Status"],
+            timeout=4,
+            max_chars=80,
+        )
+        sysmain_status = str(svc or "").strip()
+    except Exception:
+        sysmain_status = ""
+
     if not items:
-        return {"available": True, "count": 0, "oldest_modified": None, "newest_modified": None}
+        return {
+            "available": True,
+            "count": 0,
+            "oldest_modified": None,
+            "newest_modified": None,
+            "readonly_prefetch_files": readonly_pf_count,
+            "sysmain_status": sysmain_status or None,
+            "tamper_hints": (
+                ["prefetch_folder_empty"]
+                if sysmain_status.lower() == "running"
+                else []
+            ),
+        }
     modified = sorted(item["modified"] for item in items if item.get("modified"))
+    tamper_hints: list[str] = []
+    if readonly_pf_count >= 3:
+        tamper_hints.append("readonly_prefetch_files")
+    if sysmain_status.lower() == "stopped":
+        tamper_hints.append("sysmain_stopped")
     return {
         "available": True,
         "count_sampled": len(items),
         "oldest_modified": modified[0] if modified else None,
         "newest_modified": modified[-1] if modified else None,
+        "readonly_prefetch_files": readonly_pf_count,
+        "sysmain_status": sysmain_status or None,
+        "tamper_hints": tamper_hints,
         "indicator_hits": [
             {
                 **item,
@@ -11417,6 +11513,211 @@ def scan_roblox_protocol_handler_registry() -> list[dict[str, object]]:
     return hits[:12]
 
 
+def scan_ifeo_injection_hijacks() -> list[dict[str, object]]:
+    """Detect Image File Execution Options debugger/global-flag hijacks (common injection prep)."""
+    if platform.system() != "Windows":
+        return []
+    script = (
+        "$roots=@("
+        "'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options',"
+        "'HKCU:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options'"
+        ");"
+        "$targets=@('robloxplayerbeta.exe','robloxplayer.exe','robloxstudiobeta.exe','robloxstudio.exe');"
+        "$out=@();"
+        "foreach($root in $roots){"
+        " if(-not(Test-Path -LiteralPath $root)){continue}"
+        " Get-ChildItem -LiteralPath $root -ErrorAction SilentlyContinue | ForEach-Object {"
+        "  $name=$_.PSChildName.ToLower();"
+        "  if($targets -notcontains $name -and $name -notmatch "
+        "'executor|synapse|solara|delta|wave|volt|xeno|potassium|seliware|sirhurt|vegax|codex'){return}"
+        "  $props=Get-ItemProperty -LiteralPath $_.PSPath -ErrorAction SilentlyContinue;"
+        "  if(-not($props.Debugger -or $props.GlobalFlag -or $props.VerifierDlls)){return}"
+        "  $out += [pscustomobject]@{"
+        "    target=$name;"
+        "    debugger=[string]$props.Debugger;"
+        "    globalflag=[string]$props.GlobalFlag;"
+        "    key=$_.PSPath"
+        "  }"
+        " }"
+        "};"
+        "$out | ConvertTo-Json -Compress"
+    )
+    data = forensic_powershell_json(script, timeout=8.0, max_chars=12000)
+    rows = data if isinstance(data, list) else [data] if isinstance(data, dict) else []
+    hits: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        target = str(row.get("target") or "").lower()
+        debugger_value = str(row.get("debugger") or "")
+        key_path = str(row.get("key") or "")
+        labels = sorted(
+            set(
+                match_executor_labels(f"{target} {debugger_value}", executor_name_patterns())
+                + executor_labels_for_artifact_text(debugger_value)
+            )
+        )
+        if target in IFEO_ROBLOX_TARGETS:
+            labels = sorted(set(labels + ["roblox_ifeo_hijack"]))
+        if not labels:
+            labels = ["ifeo_hijack"]
+        _append_executor_artifact_hit(
+            hits,
+            seen,
+            path=key_path or target,
+            labels=labels,
+            occurred_at=None,
+            artifact_source="ifeo_hijack",
+            file_exists=None,
+            note="Image File Execution Options entry may redirect or debug a game/executor binary at launch.",
+            extra={"target_binary": target, "debugger": debugger_value[:240]},
+        )
+    return hits[:16]
+
+
+def build_cross_artifact_executor_correlation(
+    *,
+    bam: dict,
+    trash: dict | None,
+    amcache: dict | None,
+    prefetch_health: dict | None,
+    executor_artifact_evidence: dict | None,
+    forensic_bundle: dict | None,
+) -> dict[str, object]:
+    """
+    Cross-validate executor evidence across independent Windows artifacts (BAM, Prefetch, Amcache, USN).
+    Survives single-source tampering when multiple forensic layers disagree.
+    """
+    if platform.system() != "Windows":
+        return {"available": False, "reason": "Windows-only", "signals": []}
+
+    signals: list[dict[str, object]] = []
+    recycle_paths = {
+        str(item.get("original_path") or "").lower()
+        for item in (trash or {}).get("items") or []
+        if item.get("original_path")
+    }
+    artifact_hits = (executor_artifact_evidence or {}).get("hits") or []
+    artifact_sources_by_path: dict[str, set[str]] = {}
+    for hit in artifact_hits:
+        path_key = _artifact_path_key(str(hit.get("path") or ""))
+        if not path_key:
+            continue
+        artifact_sources_by_path.setdefault(path_key, set()).add(str(hit.get("artifact_source") or ""))
+
+    for item in bam.get("items") or []:
+        path = str(item.get("normalized_path") or "")
+        if not path or item.get("path_allowlisted"):
+            continue
+        labels = list(item.get("executor_name_hits") or [])
+        strong_cheat = [
+            hint for hint in (item.get("cheat_filename_hints") or []) if hint in STRONG_CHEAT_HINT_LABELS
+        ]
+        if not labels and not strong_cheat:
+            continue
+        path_key = _artifact_path_key(path)
+        sources = artifact_sources_by_path.get(path_key, set())
+        if item.get("file_exists") is False and path.lower() not in recycle_paths:
+            signals.append(
+                {
+                    "type": "executed_then_removed",
+                    "severity": "high",
+                    "summary": "A flagged program ran on this PC but was removed without a Recycle Bin trace.",
+                    "path": path,
+                    "labels": labels or strong_cheat,
+                    "occurred_at": item.get("last_execution_utc"),
+                    "corroborating_sources": sorted(sources),
+                }
+            )
+        stem = Path(path).stem.lower()
+        if stem in LOLBIN_LAUNCHER_STEMS and (labels or strong_cheat):
+            signals.append(
+                {
+                    "type": "lolbin_launch",
+                    "severity": "medium",
+                    "summary": "A system launcher was used to run or wrap a flagged program.",
+                    "path": path,
+                    "labels": labels or strong_cheat,
+                    "occurred_at": item.get("last_execution_utc"),
+                }
+            )
+        if len(sources) >= 2:
+            signals.append(
+                {
+                    "type": "multi_source_agreement",
+                    "severity": "high",
+                    "summary": "Multiple independent Windows traces agree on the same flagged program.",
+                    "path": path,
+                    "labels": labels or strong_cheat,
+                    "occurred_at": item.get("last_execution_utc"),
+                    "corroborating_sources": sorted(sources),
+                }
+            )
+
+    amcache_paths = {
+        _artifact_path_key(str(row.get("path") or row.get("full_path") or ""))
+        for row in (amcache or {}).get("items") or []
+        if row.get("path") or row.get("full_path")
+    }
+    prefetch_stems = {
+        Path(str(row.get("name") or "")).stem.lower()
+        for row in (prefetch_health or {}).get("indicator_hits") or []
+        if row.get("name")
+    }
+    for path_key, sources in artifact_sources_by_path.items():
+        if "bam_execution" not in sources and "full_pc_filesystem" not in sources:
+            continue
+        if path_key in amcache_paths and not any(stem in path_key for stem in prefetch_stems):
+            signals.append(
+                {
+                    "type": "amcache_without_prefetch",
+                    "severity": "medium",
+                    "summary": "Program identity was recorded in Amcache but no matching Prefetch trace was found.",
+                    "path": path_key,
+                    "labels": [],
+                    "corroborating_sources": sorted(sources | {"amcache"}),
+                }
+            )
+
+    usn_deletes = [
+        str(row.get("path") or "")
+        for row in (forensic_bundle or {}).get("usn_file_lifecycle_rows") or []
+        if any("DELETE" in str(reason).upper() for reason in (row.get("reasons") or []))
+    ]
+    for deleted_path in usn_deletes[:120]:
+        labels = match_executor_labels(deleted_path, executor_name_patterns(), path_context=True)
+        if not labels:
+            continue
+        if path_exists_on_disk(deleted_path):
+            continue
+        signals.append(
+            {
+                "type": "usn_deleted_executor",
+                "severity": "high",
+                "summary": "NTFS change journal shows a flagged program was deleted from disk.",
+                "path": deleted_path,
+                "labels": labels,
+            }
+        )
+
+    deduped: list[dict[str, object]] = []
+    seen_keys: set[str] = set()
+    for row in signals:
+        key = f"{row.get('type')}|{_artifact_path_key(str(row.get('path') or ''))}"
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        deduped.append(row)
+
+    return {
+        "available": True,
+        "signal_count": len(deduped),
+        "signals": deduped[:40],
+        "note": "Cross-artifact correlation validates executor evidence across BAM, Prefetch, Amcache, and USN.",
+    }
+
+
 def scan_live_executor_processes() -> list[dict[str, object]]:
     """Flag running processes whose image name/path matches a tracked executor."""
     if platform.system() != "Windows":
@@ -11599,10 +11900,11 @@ def build_roblox_exploit_surface_report(
     prefetched = prefetched_artifact_scans or {}
     known = list(prefetched.get("known_install_path") or [])
     protocol = list(prefetched.get("roblox_protocol_registry") or [])
+    ifeo = list(prefetched.get("ifeo_hijack") or [])
     processes = list(prefetched.get("live_process") or [])
     autoexec = list(prefetched.get("roblox_autoexec") or [])
     history = list(prefetched.get("browser_history_domain") or [])
-    combined = known + protocol + processes + autoexec + history
+    combined = known + protocol + ifeo + processes + autoexec + history
     by_executor: dict[str, int] = {}
     for hit in combined:
         for label in hit.get("executor_name_hits") or []:
@@ -11612,12 +11914,13 @@ def build_roblox_exploit_surface_report(
         "hit_count": len(combined),
         "known_install_paths": known,
         "protocol_handler_hits": protocol,
+        "ifeo_hijack_hits": ifeo,
         "live_process_hits": processes,
         "autoexec_hits": autoexec,
         "browser_history_hits": history,
         "executor_hit_counts": by_executor,
         "tracked_executor_total": len(SCAN_TARGET_EXECUTORS),
-        "note": "Roblox-dedicated surface scan: install folders, protocol hijacks, live processes, "
+        "note": "Roblox-dedicated surface scan: install folders, protocol hijacks, IFEO debugger hooks, live processes, "
         "autoexec workspaces, and executor download-site browser history.",
     }
 
@@ -11727,6 +12030,12 @@ def _submit_independent_artifact_scans(pool: ThreadPoolExecutor) -> dict[str, ob
     if platform.system() != "Windows":
         return {}
     jobs = {
+        "known_install_path": scan_executor_known_install_paths,
+        "live_process": scan_live_executor_processes,
+        "roblox_protocol_registry": scan_roblox_protocol_handler_registry,
+        "ifeo_hijack": scan_ifeo_injection_hijacks,
+        "roblox_autoexec": scan_roblox_autoexec_artifacts,
+        "browser_history_domain": scan_browser_history_executor_domains,
         "recent_lnk": scan_recent_lnk_executor_hits,
         "registry_uninstall": scan_registry_uninstall_executor_hits,
         "mui_cache": scan_mui_cache_executor_hits,
@@ -11739,11 +12048,6 @@ def _submit_independent_artifact_scans(pool: ThreadPoolExecutor) -> dict[str, ob
         "shimcache": scan_shimcache_executor_hits,
         "scheduled_task": scan_scheduled_tasks_executor_hits,
         "prefetch_execution": scan_entire_prefetch_executor_hits,
-        "known_install_path": scan_executor_known_install_paths,
-        "roblox_protocol_registry": scan_roblox_protocol_handler_registry,
-        "live_process": scan_live_executor_processes,
-        "roblox_autoexec": scan_roblox_autoexec_artifacts,
-        "browser_history_domain": scan_browser_history_executor_domains,
     }
     return {key: pool.submit(fn) for key, fn in jobs.items()}
 
@@ -11756,7 +12060,7 @@ def _resolve_prefetched_artifact_scans(futures: dict[str, object]) -> dict[str, 
             resolved[key] = []
             continue
         try:
-            rows = future.result(timeout=min(remaining, 30.0))  # type: ignore[union-attr]
+            rows = future.result(timeout=min(remaining, ARTIFACT_SCAN_MAX_TIMEOUT_SEC))  # type: ignore[union-attr]
             resolved[key] = list(rows) if rows else []
         except Exception:
             resolved[key] = []
@@ -12087,11 +12391,12 @@ def build_executor_artifact_evidence(
     ingest("shimcache", parallel_artifact_results.get("shimcache") or [])
     ingest("recycle_bin_content", parallel_artifact_results.get("recycle_bin_content") or [])
     ingest("scheduled_task", parallel_artifact_results.get("scheduled_task") or [])
-    ingest("known_install_path", parallel_artifact_results.get("known_install_path") or [])
-    ingest("roblox_protocol_registry", parallel_artifact_results.get("roblox_protocol_registry") or [])
-    ingest("live_process", parallel_artifact_results.get("live_process") or [])
-    ingest("roblox_autoexec", parallel_artifact_results.get("roblox_autoexec") or [])
-    ingest("browser_history_domain", parallel_artifact_results.get("browser_history_domain") or [])
+    ingest("known_install_path", list(prefetched.get("known_install_path") or []))
+    ingest("roblox_protocol_registry", list(prefetched.get("roblox_protocol_registry") or []))
+    ingest("ifeo_hijack", list(prefetched.get("ifeo_hijack") or []))
+    ingest("live_process", list(prefetched.get("live_process") or []))
+    ingest("roblox_autoexec", list(prefetched.get("roblox_autoexec") or []))
+    ingest("browser_history_domain", list(prefetched.get("browser_history_domain") or []))
 
     by_executor: dict[str, int] = {}
     for hit in hits:
@@ -14438,16 +14743,30 @@ def _scan_file_for_strings(path: Path) -> list[dict]:
 
 
 def _recent_disk_executable_powershell_fallback() -> list[dict]:
+    if scan_collect_phase_exhausted():
+        return []
+    profile = os.getenv("USERPROFILE")
+    if not profile:
+        return []
+    roots = [
+        profile,
+        os.getenv("LOCALAPPDATA") or "",
+        os.getenv("APPDATA") or "",
+        str(Path(profile) / "Downloads"),
+        str(Path(profile) / "Desktop"),
+    ]
+    roots = [r for r in roots if r and Path(r).is_dir()]
+    if not roots:
+        return []
+    roots_literal = ",".join(f"'{r.replace(chr(39), chr(39) + chr(39))}'" for r in roots[:5])
     script = (
+        f"$roots=@({roots_literal});"
         "$cut=(Get-Date).AddDays(-45);"
-        "$roots = Get-CimInstance Win32_LogicalDisk -ErrorAction SilentlyContinue | "
-        "Where-Object { $_.DriveType -in 2,3 } | ForEach-Object { $_.DeviceID + '\\' };"
         "$out=@();"
         "foreach($root in $roots){"
-        " if(-not(Test-Path -LiteralPath $root)){continue}"
         " Get-ChildItem -LiteralPath $root -Recurse -File -ErrorAction SilentlyContinue |"
         " Where-Object { $_.Extension -match '^\\.(exe|dll|bat|ps1|msi|vbs|scr|com)$' -and $_.LastWriteTime -ge $cut } |"
-        " Select-Object -First 200 | ForEach-Object {"
+        " Select-Object -First 120 | ForEach-Object {"
         "  $out += [pscustomobject]@{"
         "    Path=$_.FullName;"
         "    Name=$_.Name;"
@@ -14456,9 +14775,13 @@ def _recent_disk_executable_powershell_fallback() -> list[dict]:
         "  }"
         " }"
         "};"
-        "$out | Sort-Object Modified -Descending | Select-Object -First 300 | ConvertTo-Json -Compress"
+        "$out | Sort-Object Modified -Descending | Select-Object -First 180 | ConvertTo-Json -Compress"
     )
-    raw = run_command(["powershell", "-NoProfile", "-Command", script], timeout=90, max_chars=120000)
+    raw = run_command(
+        ["powershell", "-NoProfile", "-Command", script],
+        timeout=DISK_EXECUTABLE_FALLBACK_TIMEOUT_SEC,
+        max_chars=80000,
+    )
     rows: list[dict] = []
     try:
         if raw and not raw.startswith("Unavailable:"):
@@ -15738,6 +16061,14 @@ def build_report() -> dict:
             recent_items=recent_items,
             prefetched_artifact_scans=prefetched_artifact_scans,
         )
+        cross_artifact_executor = build_cross_artifact_executor_correlation(
+            bam=bam_registry,
+            trash=trash,
+            amcache=amcache,
+            prefetch_health=prefetch_health,
+            executor_artifact_evidence=executor_artifact_evidence,
+            forensic_bundle=forensic_bundle,
+        )
         executor_activity = build_executor_activity_summary(
             generated_at=generated_at,
             recent_items=recent_items,
@@ -15818,6 +16149,9 @@ def build_report() -> dict:
         "elapsed_seconds": _phase_times["total_seconds"],
         "deadline_exceeded": scan_deadline_exceeded(),
         "correlation_reserve_seconds": SCAN_CORRELATION_RESERVE_SECONDS,
+        "full_pc_walk_max_seconds": FULL_PC_WALK_MAX_SECONDS,
+        "artifact_scan_max_timeout_seconds": ARTIFACT_SCAN_MAX_TIMEOUT_SEC,
+        "seconds_remaining_at_finish": round(scan_seconds_remaining(), 2),
     }
 
     return {
@@ -15895,6 +16229,7 @@ def build_report() -> dict:
             "prefetch_health": prefetch_health,
             "roblox_executor_indicators": executor_indicators,
             "executor_artifact_evidence": executor_artifact_evidence,
+            "cross_artifact_executor_correlation": cross_artifact_executor,
             "designated_folder_suspicious_files": designated,
             "executor_sha256_blocklist": sha_blocklist,
             "executor_activity_summary": executor_activity,
