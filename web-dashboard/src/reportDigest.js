@@ -1,4 +1,5 @@
 import { sanitizeEventTimestamp } from "./activityTime.js";
+import { sanitizeScanReview } from "./resultPrivacy.js";
 
 function pathBasename(path) {
   const key = String(path || "").replace(/\//g, "\\");
@@ -101,14 +102,17 @@ export function scanReviewFromReport(report) {
   const sec = report.security_integrity_signals ?? {};
   const bundled = sec.scan_review;
   const downloads = sec.browser_download_history;
+  let review;
   if (bundled?.available) {
     let merged = { ...bundled };
     if (downloads?.available && !bundled.download_history?.items?.length) {
       merged = { ...merged, download_history: downloads };
     }
-    return enrichBundledScanReview(merged, report);
+    review = enrichBundledScanReview(merged, report);
+  } else {
+    review = buildClientScanReview(report);
   }
-  return buildClientScanReview(report);
+  return sanitizeScanReview(review);
 }
 
 function enrichBundledScanReview(bundled, report) {

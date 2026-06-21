@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { defenderSummary } from "./defenderSignals.js";
 import { scanReviewFromReport } from "./reportDigest.js";
+import { formatDisplayLocation, privacyPath } from "./resultPrivacy.js";
 
 const VERDICT_META = {
   clean: {
@@ -174,14 +175,10 @@ function ProblemCard({ problem }) {
   );
 }
 
-function PathFold({ path }) {
-  if (!path) return null;
-  return (
-    <details className="simple-path-fold">
-      <summary>Show location on PC</summary>
-      <code>{path}</code>
-    </details>
-  );
+function LocationHint({ row, path }) {
+  const text = formatDisplayLocation(row) || privacyPath(path);
+  if (!text) return null;
+  return <span className="simple-location-hint muted">{text}</span>;
 }
 
 function activityEventBadge(event) {
@@ -387,7 +384,7 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
                   .
                 </p>
               ) : null}
-              <PathFold path={event.path} />
+              <LocationHint row={event} path={event.path} />
             </li>
             );
           })}
@@ -456,7 +453,7 @@ function EvidenceChainsTab({ review, formatGmtPlus3 }) {
                       <time>{step.occurred_at ? formatGmtPlus3(step.occurred_at) : "Time unknown"}</time>
                     </div>
                     <p>{step.detail}</p>
-                    <PathFold path={step.path} />
+                    <LocationHint row={step} path={step.path} />
                   </li>
                 ))}
               </ol>
@@ -517,7 +514,7 @@ function DownloadsTab({ review, formatGmtPlus3 }) {
                   <code>{row.url}</code>
                 </details>
               ) : null}
-              <PathFold path={row.target_path} />
+              <LocationHint row={row} path={row.target_path} />
             </li>
           ))}
         </ul>
@@ -555,9 +552,9 @@ function ExecutionTab({ review, formatGmtPlus3 }) {
             >
               <time>{row.occurred_at ? formatGmtPlus3(row.occurred_at) : "Time unknown"}</time>
               <p>
-                <strong>{row.name || "Program"}</strong> — {row.summary}
+                <strong>{row.name || row.file_name || "Program"}</strong> — {row.summary}
               </p>
-              <PathFold path={row.path} />
+              <LocationHint row={row} path={row.path} />
             </li>
           ))}
         </ul>
@@ -604,9 +601,9 @@ function ProgramsTab({ review, formatGmtPlus3 }) {
           {shown.slice(0, 50).map((row, index) => (
             <li key={`${row.path}-${index}`} className={row.suspicious ? "simple-program--warn" : ""}>
               <div>
-                <strong>{row.name || "File"}</strong>
+                <strong>{row.name || row.file_name || "File"}</strong>
                 {row.labels?.length ? (
-                  <span className="simple-tag">{row.labels.slice(0, 3).join(", ")}</span>
+                  <span className="simple-tag">{row.labels.slice(0, 2).join(", ")}</span>
                 ) : null}
                 <p className="muted">
                   {row.file_exists === false ? "Removed from disk · " : ""}
@@ -616,7 +613,7 @@ function ProgramsTab({ review, formatGmtPlus3 }) {
                   Last seen {row.last_seen ? formatGmtPlus3(row.last_seen) : "unknown"}
                 </p>
               </div>
-              <PathFold path={row.path} />
+              <LocationHint row={row} path={row.path} />
             </li>
           ))}
         </ul>
@@ -707,10 +704,10 @@ function StringsTab({ review, formatGmtPlus3 }) {
             <li key={`${row.file_path}-${index}`}>
               <p className="simple-string-snippet">"{row.snippet}"</p>
               <p className="muted">
-                Matched: {(row.matched_terms ?? []).slice(0, 6).join(", ") || "keywords"}
+                Suspicious text pattern detected
                 {row.occurred_at ? ` · ${formatGmtPlus3(row.occurred_at)}` : ""}
               </p>
-              <PathFold path={row.file_path} />
+              <LocationHint row={row} path={row.file_path} />
             </li>
           ))}
         </ul>

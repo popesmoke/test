@@ -29,6 +29,7 @@ import {
 import "./styles.css";
 import { formatDisplayDate, normalizeIsoDateString } from "./dateFormat.js";
 import { sanitizeEventTimestamp } from "./activityTime.js";
+import { privacyPath, privacyAccountLabel, redactProfilePrefix, publicFindingLabels } from "./resultPrivacy.js";
 import { AdminPanel } from "./AdminPanel.jsx";
 import { defenderHasActionableSignal, defenderSummary } from "./defenderSignals.js";
 import { exportReportPdf } from "./exportReportPdf.js";
@@ -1485,8 +1486,7 @@ function RobloxSection({ report, query, token }) {
           ) : (
             accounts.slice(0, 40).map((account) => {
               const headshot = robloxHeadshotUrl(account);
-              const profileUrl = `https://www.roblox.com/users/${account.user_id}/profile`;
-              const displayName = account.username || `User ${account.user_id}`;
+              const displayName = privacyAccountLabel(account);
               return (
                 <div className="account-row" key={account.user_id}>
                   <div className="avatar">
@@ -1498,12 +1498,9 @@ function RobloxSection({ report, query, token }) {
                   </div>
                   <div>
                     <strong>{displayName}</strong>
-                    <span>User ID {account.user_id}</span>
+                    <span>Logged-in Roblox session detected</span>
                     <span>
-                      <a href={profileUrl} target="_blank" rel="noreferrer">
-                        {profileUrl}
-                      </a>
-                      {account.sources?.length ? ` · ${account.sources.join(", ")}` : ""}
+                      {account.sources?.length ? `Detected via ${account.sources.join(", ")}` : "Session detected"}
                     </span>
                   </div>
                 </div>
@@ -1727,8 +1724,10 @@ function SystemSection({ report, query }) {
               .map((hit, index) => (
                 <div className="evidence-row evidence-row--static" key={`sh-${index}`}>
                   <div className="evidence-row-main">
-                    <strong className="evidence-row-title">{(hit.matched ?? []).join(", ") || "keyword"}</strong>
-                    <p className="evidence-row-path">{hit.line}</p>
+                    <strong className="evidence-row-title">
+                      {publicFindingLabels(hit.matched ?? []).join(", ") || "Suspicious activity"}
+                    </strong>
+                    <p className="evidence-row-path">{redactProfilePrefix(hit.line)}</p>
                     <small className="evidence-row-meta">
                       {hit.lines_from_end != null ? `${hit.lines_from_end} line(s) from end of history` : "history match"}
                     </small>
@@ -2010,7 +2009,7 @@ function DeletionsSection({ report, query }) {
             {trashItems.slice(0, 30).map((item, index) => (
               <div className="executor-event-row" key={`trash-${item.name}-${index}`}>
                 <div>
-                  <strong>{item.original_path || item.name}</strong>
+                  <strong>{basenameOf(item.original_path || item.name) || "Deleted item"}</strong>
                   <p className="executor-event-path">{item.location}</p>
                   {item.timestamp_source ? (
                     <small className="timestamp-source">Source: {formatTimestampSource(item.timestamp_source)}</small>
@@ -2199,10 +2198,10 @@ function ForensicFindingsSection({ report, query }) {
                       <strong className="evidence-row-title">{d.reason ?? "Finding"}</strong>
                       <p className="plain-summary evidence-plain-summary">
                         {d.file_path
-                          ? `Review item for “${basenameOf(d.file_path)}” at the path below.`
+                          ? `Review item for “${basenameOf(d.file_path)}”.`
                           : "Review item with no file path attached."}
                       </p>
-                      <p className="evidence-row-path">{d.file_path || "—"}</p>
+                      <p className="evidence-row-path">{privacyPath(d.file_path) || "—"}</p>
                       <small className="evidence-row-meta">
                         {d.artifact_source ?? "—"} · risk {d.risk_score ?? 0}
                         {src ? ` · ${formatTimestampSource(src)}` : ""}
@@ -2216,16 +2215,8 @@ function ForensicFindingsSection({ report, query }) {
                     <div className="evidence-detail-grid">
                       <span>Confidence</span>
                       <strong>{d.confidence ?? "—"}</strong>
-                      <span>Signature</span>
-                      <strong>{d.signature_status ?? "—"}</strong>
-                      <span>SHA256</span>
-                      <strong className="mono">{d.sha256 || "—"}</strong>
-                      <span>Entropy</span>
-                      <strong>
-                        {d.entropy_score != null && typeof d.entropy_score === "number"
-                          ? d.entropy_score.toFixed(2)
-                          : "—"}
-                      </strong>
+                      <span>Assessment</span>
+                      <strong>Suspicious activity indicator</strong>
                     </div>
                     {correlated && Object.keys(correlated).length ? (
                       <p className="muted small-note">
@@ -2302,7 +2293,7 @@ function PcaExecutedCard({ report, query }) {
                   A compatibility-related system trace exists for{" "}
                   <strong>{basenameOf(item.normalized_path || item.raw)}</strong>.
                 </p>
-                <p className="evidence-row-path">{item.normalized_path || item.raw}</p>
+                <p className="evidence-row-path">{privacyPath(item.normalized_path || item.raw) || "—"}</p>
                 <small className="evidence-row-meta">
                   {item.file_exists ? "File still on disk" : "File no longer on disk"}
                   {item.timestamp_source
@@ -2385,7 +2376,7 @@ function ForensicCorrelationSection({ report, query }) {
             <div className="evidence-row evidence-row--static" key={`tl-${row.artifact}-${index}`}>
               <div className="evidence-row-main">
                 <p className="plain-summary">{timelineRowSummary(row)}</p>
-                <p className="evidence-row-path">{row.path || "—"}</p>
+                <p className="evidence-row-path">{privacyPath(row.path) || "—"}</p>
                 <small className="evidence-row-meta">Trace type: {row.artifact_label || artifactFriendlyLabel(row.artifact)}</small>
               </div>
               <time className="evidence-row-time">

@@ -2839,9 +2839,6 @@ EXECUTOR_INSTALL_DIR_NAMES = frozenset(
         "vega x",
         "codex",
         "codexexecutor",
-        "executor",
-        "scriptware",
-        "script-ware",
     }
 )
 
@@ -2939,8 +2936,8 @@ SCAN_MAX_SECONDS = 360.0
 SCAN_TARGET_MIN_SECONDS = 180.0
 # Reserve time for correlation/report assembly so the filesystem walk cannot consume the whole budget.
 SCAN_CORRELATION_RESERVE_SECONDS = 70.0
-FULL_PC_WALK_MAX_SECONDS = 150.0
-PREFETCH_ARTIFACT_MAX_FILES = 180
+FULL_PC_WALK_MAX_SECONDS = 120.0
+PREFETCH_ARTIFACT_MAX_FILES = 100
 
 # Global scan deadline (monotonic). Set once per build_report().
 _scan_deadline_monotonic: float | None = None
@@ -3007,6 +3004,10 @@ EXECUTOR_BENIGN_PATH_FRAGMENTS = (
     "\\program files\\npcap\\",
     "\\nvidia corporation\\",
     "\\gamedvr\\",
+    "\\espressif\\",
+    "\\checkpoint\\",
+    "\\checkpoints\\",
+    "\\inject\\node_modules\\",
 )
 
 GAME_CONTENT_EXTENSIONS = frozenset(
@@ -3037,12 +3038,12 @@ FULL_PC_SECONDARY_DRIVE_DEPTH = 2
 EXECUTOR_HASH_SCAN_MAX_FILES = 4_000
 EXECUTOR_HASH_MAX_FILE_BYTES = 120_000_000
 EXECUTOR_ACTIVITY_RECENT_HOURS = 72
-USN_JOURNAL_MAX_LINES = 12_000
+USN_JOURNAL_MAX_LINES = 8_000
 USN_DELETE_MAX_LINES = 6000
 RECYCLE_BIN_MAX_ITEMS = 500
 RECYCLE_BIN_HASH_MAX_BYTES = 80_000_000
 FULL_PC_SCAN_MAX_DEPTH = FULL_PC_USER_ZONE_DEPTH
-FULL_PC_SCAN_MAX_ENUMERATED = 100_000
+FULL_PC_SCAN_MAX_ENUMERATED = 75_000
 FULL_PC_SCAN_MAX_HITS = 3000
 FULL_PC_BINARY_PROBE_MAX_FILES = 3_500
 FULL_PC_BINARY_PROBE_MAX_BYTES = 8_000_000
@@ -3217,18 +3218,119 @@ CHEAT_FILENAME_HINT_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("flyhack", re.compile(r"fly[\s._-]*hack|flyhack", re.IGNORECASE)),
     ("noclip", re.compile(r"noclip|no[\s._-]*clip", re.IGNORECASE)),
     ("cheat_engine", re.compile(r"cheat[\s._-]*engine|cheatengine", re.IGNORECASE)),
-    ("dll_injector", re.compile(r"dll[\s._-]*inject|injector", re.IGNORECASE)),
-    ("esp", re.compile(r"\besp\b", re.IGNORECASE)),
-    ("exploit", re.compile(r"(?:roblox|rbx|lua|script)[\s._-]*exploit|exploit[\s._-]*(?:roblox|rbx|lua|script)", re.IGNORECASE)),
+    ("dll_injector", re.compile(r"dll[\s._-]*inject(?:or|ion)?", re.IGNORECASE)),
+    (
+        "esp",
+        re.compile(
+            r"(?:wall|player|enemy|box|name|chams|visual)[\s._-]*esp|"
+            r"esp[\s._-]*(?:hack|cheat|overlay|box|menu|aim)|"
+            r"(?:^|[_\-.])esp(?:$|[_\-.])",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "exploit",
+        re.compile(
+            r"(?:roblox|rbx|lua|script)[\s._-]*exploit|"
+            r"exploit[\s._-]*(?:roblox|rbx|lua|script|loader|ware|menu|dll)",
+            re.IGNORECASE,
+        ),
+    ),
     ("free_cheat", re.compile(r"free[\s._-]*cheat", re.IGNORECASE)),
     ("rbx_cheat", re.compile(r"rbx[\s._-]*cheat|rbx[\s._-]*hack", re.IGNORECASE)),
-    ("sunc_compat", re.compile(r"\bsunc\b|sunccheck|sunc\.percent", re.IGNORECASE)),
-    ("key_system", re.compile(r"key[\s._-]*system|getkey|checkpoint", re.IGNORECASE)),
-    ("unc_compat", re.compile(r"\bunc\b|unccheck|unc\.percent|getgenv|hookmetamethod", re.IGNORECASE)),
+    ("sunc_compat", re.compile(r"\bsunc(?:check|\.percent|_lib|library)\b|sunccheck|sunc\.percent", re.IGNORECASE)),
+    (
+        "key_system",
+        re.compile(
+            r"(?:executor|loader|script|exploit)[\s._-]*key[\s._-]*system|"
+            r"getkey(?:link)?(?:\.(?:lua|txt|json))?",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "unc_compat",
+        re.compile(
+            r"\bunc(?:check|\.percent|_lib|library)\b|unccheck|unc\.percent|"
+            r"getgenv|hookmetamethod|hookfunction\b",
+            re.IGNORECASE,
+        ),
+    ),
     ("hyperion_bypass", re.compile(r"hyperion|byfron|anticheat[\s._-]*bypass|bypass[\s._-]*hyperion", re.IGNORECASE)),
     ("hwid_spoof", re.compile(r"hwid[\s._-]*spoof|spoofer", re.IGNORECASE)),
     ("auto_execute", re.compile(r"auto[\s._-]*exec(?:ute)?|autoexec", re.IGNORECASE)),
 ]
+
+# Only these cheat hints are strong enough to flag on their own (without executor branding).
+STRONG_CHEAT_HINT_LABELS = frozenset(
+    {
+        "aimbot",
+        "wallhack",
+        "triggerbot",
+        "silent_aim",
+        "speedhack",
+        "flyhack",
+        "noclip",
+        "cheat_engine",
+        "dll_injector",
+        "roblox_hack",
+        "rbx_cheat",
+        "free_cheat",
+        "hyperion_bypass",
+        "hwid_spoof",
+        "sunc_compat",
+        "unc_compat",
+        "script_hub",
+        "auto_execute",
+    }
+)
+
+CHEAT_HINT_BENIGN_SEGMENTS = frozenset(
+    {
+        "espn",
+        "espresso",
+        "espressif",
+        "esp8266",
+        "esp32",
+        "checkpoint",
+        "checkpoints",
+        "unc",
+        "uncertainty",
+        "uncategorized",
+        "injector",
+        "injection",
+        "injections",
+        "setup",
+        "installer",
+        "update",
+        "patch",
+    }
+)
+
+# Reverse-engineering / injection tools commonly paired with exploit development.
+RESEARCH_TOOL_PROCESS_STEMS = frozenset(
+    {
+        "cheatengine",
+        "cheat engine",
+        "cheatengine-x86_64",
+        "processhacker",
+        "x64dbg",
+        "x32dbg",
+        "ida64",
+        "ida",
+        "idag",
+        "idaw",
+        "reclass",
+        "reclass.net",
+        "binaryninja",
+        "ghidra",
+        "dnspy",
+        "ollydbg",
+        "windbg",
+        "hxd",
+        "fiddler",
+        "wireshark",
+    }
+)
 
 USER_FOLDER_SCAN_EXTENSIONS = frozenset(
     {".exe", ".dll", ".txt", ".json", ".log", ".bat", ".ps1", ".msi", ".vbs", ".scr", ".com", ".jar", ".zip", ".rar", ".7z"}
@@ -3483,8 +3585,16 @@ class _FullPcScanBudget:
         self.enumerated = 0
         self.total_hits = 0
         self.stop = threading.Event()
+        import time as _time
+
+        self._walk_deadline = _time.perf_counter() + FULL_PC_WALK_MAX_SECONDS
 
     def should_stop(self) -> bool:
+        import time as _time
+
+        if _time.perf_counter() >= self._walk_deadline:
+            self.stop.set()
+            return True
         return self.stop.is_set() or scan_collect_phase_exhausted()
 
     def note_enumerated(self) -> bool:
@@ -3863,9 +3973,14 @@ def executor_name_patterns() -> dict[str, re.Pattern[str]]:
 
 def cheat_filename_hint_labels(filename: str) -> list[str]:
     labels: list[str] = []
+    segment = str(filename or "").strip()
+    segment_low = segment.lower()
     for label, pattern in CHEAT_FILENAME_HINT_PATTERNS:
-        if pattern.search(filename):
-            labels.append(label)
+        if not pattern.search(segment):
+            continue
+        if segment_low in CHEAT_HINT_BENIGN_SEGMENTS and label in {"esp", "unc_compat", "dll_injector", "exploit"}:
+            continue
+        labels.append(label)
     return labels
 
 
@@ -5139,7 +5254,7 @@ def weird_filename_reasons(stem: str, full_name: str) -> list[str]:
         transitions = sum(1 for i in range(len(letters) - 1) if letters[i].islower() != letters[i + 1].islower())
         if transitions >= min(10, max(6, len(letters) // 3)):
             reasons.append("chaotic_mixed_case")
-    if stem.lower() in {"setup", "installer", "update", "patch", "crack", "loader", "inject", "bypass", "exploit"}:
+    if stem.lower() in {"crack", "loader", "bypass"}:
         reasons.append("generic_risky_token")
     return reasons
 
@@ -5202,7 +5317,8 @@ def designated_scan_hit_is_actionable(item: dict) -> bool:
     path = str(item.get("path") or "")
     cheat_hints = item.get("cheat_filename_hints") or []
     weird = item.get("name_anomaly_reasons") or []
-    if cheat_hints:
+    strong_cheat = [hint for hint in cheat_hints if hint in STRONG_CHEAT_HINT_LABELS]
+    if strong_cheat:
         return True
 
     executor_labels = item.get("executor_name_hits")
@@ -5215,6 +5331,9 @@ def designated_scan_hit_is_actionable(item: dict) -> bool:
         if path_is_allowlisted(path) and all(label in EXECUTOR_AMBIGUOUS_NAMES for label in executor_labels):
             return False
         return True
+
+    if cheat_hints:
+        return False
 
     if not weird:
         return False
@@ -6833,7 +6952,8 @@ def command_history_keyword_hits() -> dict:
     if userprofile:
         candidates.append(Path(userprofile) / "AppData" / "Roaming" / "Microsoft" / "Windows" / "PowerShell" / "PSReadLine" / "ConsoleHost_history.txt")
 
-    keywords = EXECUTOR_NAMES + [
+    executor_patterns = executor_name_patterns()
+    cleanup_keywords = [
         "prefetch",
         "usn",
         "fsutil",
@@ -6853,6 +6973,11 @@ def command_history_keyword_hits() -> dict:
         "deletejournal",
         "vssadmin",
     ]
+    cleanup_patterns = [
+        re.compile(re.escape(keyword), re.IGNORECASE)
+        for keyword in cleanup_keywords
+        if len(keyword) >= 4
+    ]
     hits = []
     for path in candidates:
         if not path.exists():
@@ -6868,7 +6993,14 @@ def command_history_keyword_hits() -> dict:
             continue
         total = len(lines)
         for offset, line in enumerate(lines):
-            matched = [keyword for keyword in keywords if keyword.lower() in line.lower()]
+            matched: list[str] = []
+            line_low = line.lower()
+            for name, pattern in executor_patterns.items():
+                if pattern.search(line):
+                    matched.append(name)
+            for keyword, pattern in zip(cleanup_keywords, cleanup_patterns):
+                if pattern.search(line_low):
+                    matched.append(keyword)
             if not matched:
                 continue
             lines_from_end = total - offset
@@ -6877,7 +7009,7 @@ def command_history_keyword_hits() -> dict:
                 {
                     "path": str(path),
                     "line_number_from_tail": lines_from_end,
-                    "matched": matched,
+                    "matched": sorted(set(matched)),
                     "line": line[:500],
                     "history_file_modified_utc": file_mtime,
                     "occurred_at": occurred_at,
@@ -10715,7 +10847,7 @@ def scan_entire_prefetch_executor_hits() -> list[dict[str, object]]:
         extracted_paths = extract_dos_paths_from_binary(
             pf_bytes,
             limit=16,
-            require_executor_label=False,
+            require_executor_label=True,
             executable_only=True,
         ) if pf_bytes else []
         for extracted in extracted_paths:
@@ -11304,7 +11436,14 @@ def scan_live_executor_processes() -> list[dict[str, object]]:
             if (name or "").lower() in ROBLOX_PROCESS_NAMES:
                 continue
             labels = sorted(set(match_executor_labels(blob, patterns) + executor_labels_for_artifact_text(blob)))
-            if not labels and not cheat_path_hint_labels(exe or name):
+            cheat_hints = cheat_path_hint_labels(exe or name)
+            strong_cheat = [hint for hint in cheat_hints if hint in STRONG_CHEAT_HINT_LABELS]
+            process_stem = Path(name or exe).stem.lower().replace(" ", "")
+            if process_stem in RESEARCH_TOOL_PROCESS_STEMS or any(
+                process_stem.startswith(stem.replace(" ", "")) for stem in RESEARCH_TOOL_PROCESS_STEMS
+            ):
+                labels = sorted(set(labels + ["research_tool"]))
+            if not labels and not strong_cheat:
                 continue
             if not labels:
                 labels = ["suspicious_process"]
@@ -12290,7 +12429,7 @@ foreach ($d in (Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3 OR DriveT
       $isDelete = $line -match 'FILE_DELETE|0x80000002|0x80000200'
       $isRename = $line -match 'RENAME_OLD_NAME|RENAME_NEW_NAME|0x00001000|0x00002000'
       $isExec = $line -match '\.EXE|\.DLL|\.PS1|\.BAT|\.MSI|\.VBS|\.JS'
-      $isCheatish = $line -match '(?i)cheat|hack|exploit|inject|script.?hub|aimbot|executor|delta|solara|synapse|potassium|wave|xeno|volt|cosmic|lumen|seliware|madium|sirhurt|serotonin|severe|rbxcli|matcha|photon|vegax|codex|macsploit|opiumware|dx9ware|matrixhub|velocity'
+      $isCheatish = $line -match '(?i)cheat|hack|exploit|inject(?:or|ion)|script.?hub|aimbot|executor|synapse|potassium|solara|seliware|sirhurt|serotonin|rbxcli|macsploit|opiumware|dx9ware|matrixhub|deltaexecutor|vegax|codexexecutor|xenoexecutor|waveexecutor|voltexecutor|cosmicexecutor|velocityexecutor|lumenexecutor|potassiumware|hyperion|byfron|hwid.?spoof|autoexec'
       if ($isDelete -and $deleteList.Count -lt $maxDelete -and ($isExec -or $isCheatish -or $inProfile)) {
         [void]$deleteList.Add(($d + [char]9 + $line))
       }
@@ -12306,7 +12445,7 @@ foreach ($d in (Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3 OR DriveT
   delete_lines = @($deleteList)
 } | ConvertTo-Json -Compress -Depth 3
 """.strip()
-        data = forensic_powershell_json(script, timeout=48.0, max_chars=520000)
+        data = forensic_powershell_json(script, timeout=35.0, max_chars=520000)
         lines: list[str] = []
         delete_lines: list[str] = []
         if isinstance(data, dict):
@@ -14183,12 +14322,22 @@ STRING_SCAN_MAX_BYTES_PER_FILE = 350_000
 STRING_SCAN_CONTEXT_CHARS = 90
 
 SUSPICIOUS_STRING_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
-    ("executor_brand", re.compile("|".join(re.escape(n) for n in EXECUTOR_NAMES), re.IGNORECASE)),
+    (
+        "executor_brand",
+        re.compile(
+            "|".join(
+                re.escape(name)
+                for name in EXECUTOR_NAMES
+                if name not in EXECUTOR_AMBIGUOUS_NAMES
+            ),
+            re.IGNORECASE,
+        ),
+    ),
     (
         "injection_language",
         re.compile(
-            r"inject(?:or|ion)?|dll\s*hook|memory\s*scan|execute\s*script|script\s*ware|external\s*cheat|"
-            r"bypass\s*anticheat|setfflag|getrawmetatable|hookfunction|loadstring",
+            r"dll[\s._-]*inject(?:or|ion)?|memory\s*scan|execute\s*script|script\s*ware|external\s*cheat|"
+            r"bypass\s*anticheat|setfflag|getrawmetatable|hookfunction|loadstring\s*\(",
             re.IGNORECASE,
         ),
     ),
@@ -14196,11 +14345,17 @@ SUSPICIOUS_STRING_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         "cleanup_language",
         re.compile(
             r"wevtutil\s+cl|Clear-EventLog|fsutil\s+usn|deletejournal|vssadmin\s+delete|Remove-Item.*Prefetch|"
-            r"cipher\s+/w|cleaner|trace\s*wipe|Clear-RecycleBin|\$Recycle\.Bin|rd\s+/s\s+/q|del\s+/[fq]",
+            r"cipher\s+/w|trace\s*wipe|Clear-RecycleBin|\$Recycle\.Bin|rd\s+/s\s+/q|del\s+/[fq]",
             re.IGNORECASE,
         ),
     ),
-    ("cheat_terms", re.compile(r"aimbot|wallhack|esp\b|noclip|speedhack|triggerbot|free\s*cheat", re.IGNORECASE)),
+    (
+        "cheat_terms",
+        re.compile(
+            r"aimbot|wallhack|(?:wall|player|enemy)[\s._-]*esp|noclip|speedhack|triggerbot|free[\s._-]*cheat",
+            re.IGNORECASE,
+        ),
+    ),
 ]
 
 
@@ -14254,6 +14409,15 @@ def _scan_file_for_strings(path: Path) -> list[dict]:
             else:
                 matched_terms.extend([str(x) for x in found[:5]])
         if not matched_groups:
+            continue
+        strong_groups = {"executor_brand", "injection_language", "cleanup_language", "cheat_terms"}
+        if not strong_groups.intersection(matched_groups):
+            continue
+        if matched_groups == {"cheat_terms"} and not re.search(
+            r"aimbot|wallhack|noclip|speedhack|triggerbot|free[\s._-]*cheat|esp[\s._-]*(hack|cheat|overlay)",
+            line,
+            re.IGNORECASE,
+        ):
             continue
         snippet = line.strip()
         if len(snippet) > STRING_SCAN_CONTEXT_CHARS * 2:
