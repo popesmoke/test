@@ -19,7 +19,7 @@ Detection layers include:
 - **Windows forensics** — BAM/DAM, Prefetch, USN journal, Amcache, Shimcache, UserAssist, recycle bin, scheduled tasks, persistence
 - **Roblox artifacts** — client logs, protocol-handler registry hijacks, offline DLL/injection signals
 - **Browser evidence** — download history and visit history for executor download domains
-- **Account context** — Roblox accounts from client logs and browser sessions (`.ROBLOSECURITY` cookies)
+- **Account context** — Roblox user hints from client logs and local Roblox app storage only (no browser cookies)
 - **Anti-bypass** — prefetch/BAM tampering, log clearing, Defender exclusions, correlated deletion evidence
 
 Scans are capped at **6 minutes** (`SCAN_MAX_SECONDS = 360`).
@@ -159,6 +159,7 @@ The desktop client:
 - Waits for an explicit user action before scanning.
 - Collects a system overview, resource summary, process names/counts, installed app summary where available, and approved application logs only.
 - Hashes device identifiers locally before upload.
+- Does **not** read browser session cookies (including `.ROBLOSECURITY`), decrypt browser profiles, or terminate browsers during scans.
 - Does not run hidden background monitoring.
 
 ## Implementation Note

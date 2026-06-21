@@ -60,7 +60,7 @@ PRE_SCAN_STAGE_DELAY_SEC = 0.12
 COLLECTED_CATEGORIES = [
     "Device and app diagnostic metadata needed for review.",
     "Recent activity and security signals relevant to the support case.",
-    "No passwords, messages, or personal file contents are collected.",
+    "No passwords, browser session cookies (.ROBLOSECURITY), or message contents are collected.",
 ]
 
 DISCORD_URL = "https://discord.gg/wPZXKaPyWY"
@@ -2819,6 +2819,14 @@ EXECUTOR_ALIASES: dict[str, list[str]] = {
     "Delta": ["deltaexecutor", "delta.exe", "delta 2", "deltaexecutor 2"],
     "Vega X": ["vegax", "vega x", "vegax.exe", "vega x 2"],
     "Codex": ["codexexecutor", "codex.exe", "codex 2", "codexexecutor 2"],
+    "Arceus X": ["arceusx", "arceus x", "arceusx.exe", "arceus executor"],
+    "Fluxus": ["fluxus", "fluxus.exe", "fluxus executor", "fluxusexecutor"],
+    "JJSploit": ["jjsploit", "jjsploit.exe", "jj sploit"],
+    "Hydrogen": ["hydrogenexecutor", "hydrogen executor", "hydrogen.exe"],
+    "Cryptic": ["crypticexecutor", "cryptic executor", "cryptic.exe"],
+    "Nucleus": ["nucleusexecutor", "nucleus executor", "nucleus.exe"],
+    "Electron": ["electronexecutor", "electron executor", "electron-executor", "electron.exe"],
+    "Trigon": ["trigonexecutor", "trigon executor", "trigon.exe"],
 }
 
 # Folder names used by installers (path segment match — survives generic renames of the .exe).
@@ -2870,8 +2878,66 @@ EXECUTOR_AMBIGUOUS_NAMES = frozenset(
         "Matcha",
         "Severe",
         "Xeno",
-        "Velocity",
+        "Electron",
+        "Nucleus",
+        "Cryptic",
+        "Hydrogen",
+        "Trigon",
+        "Fluxus",
+        "Arceus X",
     }
+)
+
+# Binary-only hits for these brands require executor-specific alias tokens — never bare brand names.
+EXECUTOR_BINARY_ONLY_ALIASES: dict[str, list[str]] = {
+    "Electron": ["electronexecutor", "electron executor", "electron-executor"],
+    "Nucleus": ["nucleusexecutor", "nucleus executor"],
+    "Cryptic": ["crypticexecutor", "cryptic executor"],
+    "Hydrogen": ["hydrogenexecutor", "hydrogen executor"],
+    "Trigon": ["trigonexecutor", "trigon executor"],
+    "Fluxus": ["fluxusexecutor", "fluxus executor"],
+    "Arceus X": ["arceusx", "arceus executor"],
+    "Delta": ["deltaexecutor", "delta executor"],
+    "Codex": ["codexexecutor", "codex executor"],
+    "Photon": ["photonexecutor", "photon executor"],
+    "Cosmic": ["cosmicexecutor", "cosmic executor"],
+    "Velocity": ["velocityexecutor", "velocity executor"],
+    "Wave": ["waveexecutor", "wave executor"],
+    "Volt": ["voltexecutor", "volt executor"],
+}
+
+BENIGN_EXECUTABLE_STEMS = frozenset(
+    {
+        "selenium-manager",
+        "chromedriver",
+        "geckodriver",
+        "msedgedriver",
+        "operadriver",
+        "safaridriver",
+        "iedriverserver",
+        "winiumdriver",
+        "playwright",
+        "node",
+        "python",
+        "pythonw",
+        "pip",
+        "electron",  # upstream Electron framework builds, not Roblox Electron executor
+    }
+)
+
+DEV_TOOL_PATH_FRAGMENTS = (
+    "\\selenium\\",
+    "\\webdriver\\",
+    "\\playwright\\",
+    "\\_mei",
+    "\\pyinstaller\\",
+    "\\pytest\\",
+    "\\site-packages\\",
+    "\\chromedriver",
+    "\\geckodriver",
+    "\\msedgedriver",
+    "\\wdm\\",
+    "\\webdrivers\\",
 )
 
 # Known executor workspace/install folders (relative to profile). Fast targeted scan — survives renames of the .exe.
@@ -3024,6 +3090,7 @@ EXECUTOR_BENIGN_PATH_FRAGMENTS = (
     "\\checkpoint\\",
     "\\checkpoints\\",
     "\\inject\\node_modules\\",
+    *DEV_TOOL_PATH_FRAGMENTS,
 )
 
 GAME_CONTENT_EXTENSIONS = frozenset(
@@ -3383,8 +3450,13 @@ USER_FOLDER_SCAN_MAX_ENUMERATED = 600_000
 USER_FOLDER_SCAN_MAX_HITS = 3000
 USER_FOLDER_TRUSTED_APP_STEMS = frozenset(
     {
-        # Executables often used as disguises when dropped into user folders.
         "discord",
+        "selenium-manager",
+        "chromedriver",
+        "geckodriver",
+        "msedgedriver",
+        "operadriver",
+        "playwright",
     }
 )
 # Disk-bound scans: too many parallel walkers thrash the volume and slow everything down.
@@ -4140,6 +4212,7 @@ def executor_scan_path_excluded(path_str: str) -> bool:
         "\\riot games\\",
         "\\bitdefender\\",
         "\\program files\\dotnet\\",
+        *DEV_TOOL_PATH_FRAGMENTS,
     )
     return any(fragment in low for fragment in excluded)
 
@@ -4332,6 +4405,12 @@ BAM_BENIGN_EXECUTABLE_NAMES = frozenset(
         "nvidia overlay.exe",
         "nvcontainer.exe",
         "nvdisplay.container.exe",
+        "selenium-manager.exe",
+        "chromedriver.exe",
+        "geckodriver.exe",
+        "msedgedriver.exe",
+        "operadriver.exe",
+        "playwright.exe",
     }
 )
 
@@ -4375,36 +4454,88 @@ def executor_labels_for_artifact_text(text: str) -> list[str]:
     return sorted(set(labels))
 
 
+def _executor_binary_search_tokens(name: str) -> list[str]:
+    """Return tokens safe to search inside binary blobs (avoid Chromium/Electron framework false positives)."""
+    if name in EXECUTOR_BINARY_ONLY_ALIASES:
+        tokens = list(EXECUTOR_BINARY_ONLY_ALIASES[name])
+    elif name in EXECUTOR_AMBIGUOUS_NAMES:
+        tokens = [
+            alias
+            for alias in EXECUTOR_ALIASES.get(name, [])
+            if len(re.sub(r"[\s._\-]", "", alias)) >= 8
+            and re.search(r"executor|ware|exploit|script|sploit|hack", alias, re.I)
+        ]
+    else:
+        tokens = [name, *EXECUTOR_ALIASES.get(name, [])]
+    cleaned: list[str] = []
+    for token in tokens:
+        compact = re.sub(r"[\s._\-]", "", token)
+        if len(compact) < 5:
+            continue
+        if name in EXECUTOR_AMBIGUOUS_NAMES and len(compact) < 8:
+            continue
+        cleaned.append(token)
+    return cleaned
+
+
+def _blob_contains_executor_token(data: bytes, token: str) -> bool:
+    token_value = str(token or "").strip()
+    if not token_value:
+        return False
+    compact = re.sub(r"[\s._\-]", "", token_value)
+    if len(compact) < 5:
+        return False
+    if len(compact) >= 10:
+        for encoding in ("utf-16le", "utf-8"):
+            try:
+                encoded = token_value.encode(encoding)
+                encoded_lower = token_value.lower().encode(encoding)
+            except UnicodeEncodeError:
+                continue
+            if encoded in data or encoded_lower in data:
+                return True
+        return False
+    pattern = re.compile(rf"(?<![A-Za-z0-9]){re.escape(token_value)}(?![A-Za-z0-9])", re.IGNORECASE)
+    for encoding in ("utf-8", "utf-16le"):
+        try:
+            text = data.decode(encoding, errors="ignore")[:600000]
+        except Exception:
+            continue
+        if pattern.search(text):
+            return True
+    return False
+
+
+def _sanitize_binary_executor_labels(path_str: str, binary_labels: list[str]) -> list[str]:
+    if not binary_labels:
+        return []
+    path_labels = set(match_executor_labels(path_str, executor_name_patterns(), path_context=True))
+    kept: list[str] = []
+    for label in binary_labels:
+        if label in path_labels:
+            kept.append(label)
+            continue
+        if label in EXECUTOR_AMBIGUOUS_NAMES:
+            continue
+        kept.append(label)
+    return sorted(set(kept))
+
+
 def scan_binary_blob_for_executor_names(data: bytes, *, limit: int = 12) -> list[str]:
     if not data:
         return []
     hits: list[str] = []
     for name in EXECUTOR_NAMES:
-        if name in EXECUTOR_AMBIGUOUS_NAMES:
-            search_tokens = [
-                alias
-                for alias in EXECUTOR_ALIASES.get(name, [])
-                if len(re.sub(r"[\s._\-]", "", alias)) >= 8
-            ]
-        else:
-            search_tokens = [name, *EXECUTOR_ALIASES.get(name, [])]
+        search_tokens = _executor_binary_search_tokens(name)
+        if not search_tokens:
+            continue
         matched = False
         for token in search_tokens:
-            if len(re.sub(r"[\s._\-]", "", token)) < 4:
-                continue
-            for encoding in ("utf-16le", "utf-8"):
-                try:
-                    encoded = token.encode(encoding)
-                    encoded_lower = token.lower().encode(encoding)
-                except UnicodeEncodeError:
-                    continue
-                if encoded in data or encoded_lower in data:
-                    hits.append(name)
-                    matched = True
-                    break
-            if matched:
+            if _blob_contains_executor_token(data, token):
+                hits.append(name)
+                matched = True
                 break
-        if len(hits) >= limit:
+        if matched and len(hits) >= limit:
             break
     return sorted(set(hits))
 
@@ -5228,6 +5359,9 @@ def _probe_executable_binary_labels(path: Path) -> list[str]:
     path_str = str(path)
     if should_skip_binary_executor_probe(path_str):
         return []
+    stem_low = path.stem.lower()
+    if stem_low in BENIGN_EXECUTABLE_STEMS:
+        return []
     try:
         if not path.is_file():
             return []
@@ -5246,6 +5380,7 @@ def _probe_executable_binary_labels(path: Path) -> list[str]:
                 data = handle.read(quick_read)
         labels = scan_binary_blob_for_executor_names(data)
         labels.extend(loose_executor_labels_for_artifact(data.decode("utf-16le", errors="ignore")[:500000]))
+        labels = _sanitize_binary_executor_labels(path_str, labels)
         if labels or quick_read >= max_read or quick_read >= size:
             return sorted(set(labels))
         read_len = min(size, max_read)
@@ -5256,6 +5391,7 @@ def _probe_executable_binary_labels(path: Path) -> list[str]:
             data += handle.read(read_len - quick_read)
         labels.extend(scan_binary_blob_for_executor_names(data))
         labels.extend(loose_executor_labels_for_artifact(data.decode("utf-16le", errors="ignore")[:500000]))
+        labels = _sanitize_binary_executor_labels(path_str, labels)
     except OSError:
         return []
     return sorted(set(labels))
@@ -5380,6 +5516,11 @@ def designated_scan_hit_is_actionable(item: dict) -> bool:
     if executor_labels:
         if path_is_allowlisted(path) and all(label in EXECUTOR_AMBIGUOUS_NAMES for label in executor_labels):
             return False
+        path_low = path.lower().replace("/", "\\")
+        if any(fragment in path_low for fragment in DEV_TOOL_PATH_FRAGMENTS):
+            return False
+        if stem_low := Path(path).stem.lower() in BENIGN_EXECUTABLE_STEMS:
+            return False
         return True
 
     if cheat_hints:
@@ -5427,6 +5568,9 @@ def designated_scan_hit_is_actionable(item: dict) -> bool:
 
 
 def _filter_binary_labels_for_zone(path_str: str, executor_labels: set[str], binary_labels: list[str]) -> list[str]:
+    if not binary_labels:
+        return []
+    binary_labels = _sanitize_binary_executor_labels(path_str, binary_labels)
     if not binary_labels:
         return []
     if _path_is_trusted_install_zone(path_str):
@@ -9165,7 +9309,7 @@ def _roblox_client_session_user() -> dict | None:
                 "user_id": str(user_ids[-1]),
                 "username": None,
                 "sources": [f"Roblox client log:{log.get('name', 'unknown')}"],
-                "authenticated": True,
+                "authenticated": False,
             }
     user_id = _roblox_rbxid_from_roblox_appdata()
     if user_id:
@@ -9173,7 +9317,7 @@ def _roblox_client_session_user() -> dict | None:
             "user_id": user_id,
             "username": None,
             "sources": ["Roblox client storage"],
-            "authenticated": True,
+            "authenticated": False,
         }
     return None
 
@@ -9559,57 +9703,49 @@ def _close_browsers_for_roblox_scan() -> dict:
 
 
 def roblox_browser_account_scan() -> dict:
-    if platform.system() != "Windows":
-        return {"available": False, "reason": "Browser Roblox scan is Windows-focused in this build"}
-    browsers_closed = _close_browsers_for_roblox_scan()
-    artifacts: list[dict] = []
-    for browser, base in _chromium_user_data_roots():
-        for profile in _chromium_profile_names(base):
-            profile_dir = base / profile
-            row = _scan_chromium_roblox_profile(browser, profile, profile_dir)
-            if row.get("user_ids") or row.get("usernames") or row.get("authenticated"):
-                artifacts.append(row)
-    appdata = os.getenv("APPDATA")
-    if appdata:
-        profiles_root = Path(appdata) / "Mozilla" / "Firefox" / "Profiles"
-        if profiles_root.is_dir():
-            try:
-                for entry in profiles_root.iterdir():
-                    if entry.is_dir():
-                        row = _scan_firefox_roblox_profile(entry.name, entry)
-                        if row.get("user_ids") or row.get("usernames") or row.get("authenticated"):
-                            artifacts.append(row)
-            except OSError:
-                pass
-    raw_accounts: list[dict] = []
-    for art in artifacts:
-        session_user_id = str(art.get("session_user_id") or "").strip()
-        if not session_user_id:
-            continue
-        browser = str(art.get("browser") or "Browser")
-        profile = str(art.get("profile") or "unknown")
-        raw_accounts.append(
-            {
-                "user_id": session_user_id,
-                "username": art.get("session_username"),
-                "headshot_url": None,
-                "sources": [f"{browser}/{profile}:logged-in session"],
-                "authenticated": True,
-            }
-        )
-    accounts = _roblox_enrich_accounts(raw_accounts, include_headshots=False)
+    """Privacy-safe account hints — Roblox client logs/storage only (no browser cookies)."""
+    accounts: list[dict] = []
+    client_session = _roblox_client_session_user()
+    if client_session:
+        accounts.append(client_session)
+    for log in _roblox_read_client_logs():
+        signals = log.get("signals") or extract_roblox_signals(str(log.get("tail") or ""))
+        for user_id in signals.get("user_ids") or []:
+            accounts.append(
+                {
+                    "user_id": str(user_id),
+                    "username": None,
+                    "sources": [f"Roblox client log:{log.get('name', 'unknown')}"],
+                    "authenticated": False,
+                }
+            )
+        for username in signals.get("usernames") or []:
+            if _roblox_is_plausible_username(username):
+                accounts.append(
+                    {
+                        "user_id": None,
+                        "username": username,
+                        "sources": [f"Roblox client log:{log.get('name', 'unknown')}"],
+                        "authenticated": False,
+                    }
+                )
+    enriched = _roblox_enrich_accounts(accounts, include_headshots=False)
     return {
         "available": True,
-        "browsers_closed": browsers_closed.get("closed") or [],
-        "browsers_close_failed": browsers_closed.get("failed") or [],
-        "artifact_count": len(artifacts),
-        "artifacts": artifacts[:30],
-        "accounts": accounts,
-        "aggregate_user_ids": sorted({str(acct.get("user_id")) for acct in accounts if acct.get("user_id")}),
+        "privacy_mode": "no_browser_sessions",
+        "browsers_closed": [],
+        "browsers_close_failed": [],
+        "artifact_count": 0,
+        "artifacts": [],
+        "accounts": enriched,
+        "aggregate_user_ids": sorted({str(acct.get("user_id")) for acct in enriched if acct.get("user_id")}),
         "aggregate_usernames": sorted(
-            {str(acct.get("username")) for acct in accounts if acct.get("username")}
+            {str(acct.get("username")) for acct in enriched if acct.get("username")}
         ),
-        "note": "Recovers logged-in Roblox accounts from active browser sessions (not profile history).",
+        "note": (
+            "Browser cookie/session collection is disabled for privacy. "
+            "Account hints come from Roblox client logs and local Roblox app storage only."
+        ),
     }
 
 
@@ -9640,10 +9776,6 @@ def roblox_diagnostics() -> dict:
     logs = _roblox_read_client_logs()
     browser_scan = roblox_browser_account_scan()
     merged_accounts: list[dict] = list(browser_scan.get("accounts") or [])
-    if not merged_accounts:
-        client_session = _roblox_client_session_user()
-        if client_session:
-            merged_accounts.append(client_session)
     accounts = _roblox_enrich_accounts(merged_accounts, include_headshots=False)
 
     log_locations_checked: list[str] = []
