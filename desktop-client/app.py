@@ -26,7 +26,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed
 from queue import Empty, PriorityQueue
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 from tkinter import BOTH, BooleanVar, Canvas, Frame, PhotoImage, StringVar, Tk, ttk, messagebox
 
 import psutil
@@ -51,11 +51,16 @@ SCAN_STAGES = [
     "Uploading Report",
 ]
 
-# Progress bar uses 0–100; the long build_report() phase is animated slowly instead of jumping to ~67%.
-PROGRESS_TICK_SEC = 0.55
-PROGRESS_STEP = 0.25
-PROGRESS_CAP_DURING_SCAN = 88.0
-PRE_SCAN_STAGE_DELAY_SEC = 0.12
+# Progress bar: real milestones from build_report() plus a light animation between updates.
+PROGRESS_TICK_SEC = 0.22
+PROGRESS_STEP = 0.55
+PROGRESS_CAP_DURING_SCAN = 92.0
+PRE_SCAN_STAGE_DELAY_SEC = 0.08
+PRE_SCAN_STAGE_PROGRESS = {
+    "Initializing Scan": 8.0,
+    "System Environment Check": 14.0,
+    "Application Data Review": 20.0,
+}
 
 COLLECTED_CATEGORIES = [
     "Device and app diagnostic metadata needed for review.",
@@ -3078,13 +3083,15 @@ EXECUTOR_RBXASSET_SIGNATURES: dict[str, list[str]] = {
 
 # Hard ceiling for the full diagnostic pass (user requirement: never exceed 6 minutes).
 SCAN_MAX_SECONDS = 360.0
-SCAN_TARGET_MIN_SECONDS = 180.0
 # Reserve time for correlation/report assembly so the filesystem walk cannot consume the whole budget.
-SCAN_CORRELATION_RESERVE_SECONDS = 55.0
-FULL_PC_WALK_MAX_SECONDS = 85.0
+SCAN_CORRELATION_RESERVE_SECONDS = 42.0
+FULL_PC_WALK_MAX_SECONDS = 68.0
 PREFETCH_ARTIFACT_MAX_FILES = 100
-ARTIFACT_SCAN_MAX_TIMEOUT_SEC = 12.0
-DISK_EXECUTABLE_FALLBACK_TIMEOUT_SEC = 8.0
+PREFETCH_METADATA_MAX_ITEMS = 400
+ARTIFACT_SCAN_MAX_TIMEOUT_SEC = 10.0
+DISK_EXECUTABLE_FALLBACK_TIMEOUT_SEC = 6.0
+PIPELINE_DRAIN_MAX_SECONDS = 9.0
+AUTHENTICODE_MAX_PATHS = 64
 
 # Global scan deadline (monotonic). Set once per build_report().
 _scan_deadline_monotonic: float | None = None
@@ -3191,11 +3198,11 @@ USN_DELETE_MAX_LINES = 6000
 RECYCLE_BIN_MAX_ITEMS = 500
 RECYCLE_BIN_HASH_MAX_BYTES = 80_000_000
 FULL_PC_SCAN_MAX_DEPTH = FULL_PC_USER_ZONE_DEPTH
-FULL_PC_SCAN_MAX_ENUMERATED = 75_000
+FULL_PC_SCAN_MAX_ENUMERATED = 58_000
 FULL_PC_SCAN_MAX_HITS = 3000
-FULL_PC_BINARY_PROBE_MAX_FILES = 3_500
-FULL_PC_BINARY_PROBE_MAX_BYTES = 8_000_000
-OPTIONAL_COLLECTOR_TIMEOUT_SEC = 10.0
+FULL_PC_BINARY_PROBE_MAX_FILES = 3_200
+FULL_PC_BINARY_PROBE_MAX_BYTES = 6_000_000
+OPTIONAL_COLLECTOR_TIMEOUT_SEC = 8.0
 SCAN_TARGET_EXECUTORS = list(EXECUTOR_NAMES)
 FULL_PC_SKIP_DIR_FRAGMENTS = (
     "\\windows\\winsxs\\",
@@ -3289,9 +3296,9 @@ INDICATOR_LOW_VALUE_EXTENSIONS = frozenset(
     }
 )
 BINARY_PROBE_QUICK_BYTES = 1_048_576
-# Parallel drive roots; 2–3 walkers overlap I/O without thrashing a single volume.
-DISK_WALK_WORKERS = min(3, max(2, (os.cpu_count() or 4) // 2))
-BINARY_PROBE_WORKERS = min(12, max(6, (os.cpu_count() or 4)))
+# Parallel drive roots; 3–4 walkers overlap I/O without thrashing a single volume.
+DISK_WALK_WORKERS = min(4, max(3, (os.cpu_count() or 4) // 2))
+BINARY_PROBE_WORKERS = min(14, max(8, (os.cpu_count() or 4)))
 
 ROBLOX_PROCESS_NAMES = frozenset({"robloxplayerbeta.exe", "robloxplayer.exe", "roblox.exe"})
 ROBLOX_MODULE_TRUSTED_FRAGMENTS = (
@@ -3524,11 +3531,29 @@ USER_FOLDER_TRUSTED_APP_STEMS = frozenset(
         "playwright",
     }
 )
-# Disk-bound scans: too many parallel walkers thrash the volume and slow everything down.
-SCAN_WORKERS = min(10, max(6, (os.cpu_count() or 4) + 2))
-HASH_SCAN_WORKERS = min(8, max(4, (os.cpu_count() or 4)))
+# Disk-bound scans: parallel walkers overlap I/O without thrashing a single volume.
+SCAN_WORKERS = min(14, max(8, (os.cpu_count() or 4) + 4))
+HASH_SCAN_WORKERS = min(10, max(5, (os.cpu_count() or 4)))
 PROCESS_SCAN_MAX_ITERATIONS = 2_500
 RECENT_EXECUTABLE_WINDOW_DAYS = 45
+
+# Optional UI hook: build_report() reports real milestones while collectors run.
+_scan_progress_callback: Callable[[float, str | None], None] | None = None
+
+
+def set_scan_progress_callback(callback: Callable[[float, str | None], None] | None) -> None:
+    global _scan_progress_callback
+    _scan_progress_callback = callback
+
+
+def _report_scan_progress(percent: float, stage: str | None = None) -> None:
+    callback = _scan_progress_callback
+    if callback is None:
+        return
+    try:
+        callback(percent, stage)
+    except Exception:
+        pass
 
 # Populated once per build_report() pass to avoid duplicate full USN journal reads.
 _usn_comprehensive_cache: dict[str, object] | None = None
@@ -3742,7 +3767,9 @@ class _BlocklistHashPipeline:
         }
 
     def collect(self) -> tuple[list[dict], int]:
-        self._queue.join()
+        deadline = time.perf_counter() + PIPELINE_DRAIN_MAX_SECONDS
+        while self._queue.unfinished_tasks > 0 and time.perf_counter() < deadline:
+            time.sleep(0.04)
         self._stop.set()
         for thread in self._threads:
             thread.join(timeout=2.0)
@@ -3861,7 +3888,9 @@ class _BinaryProbePipeline:
                 self._queue.task_done()
 
     def collect(self) -> tuple[dict[str, list[str]], dict[str, Path]]:
-        self._queue.join()
+        deadline = time.perf_counter() + PIPELINE_DRAIN_MAX_SECONDS
+        while self._queue.unfinished_tasks > 0 and time.perf_counter() < deadline:
+            time.sleep(0.04)
         self._stop.set()
         for thread in self._threads:
             thread.join(timeout=2.0)
@@ -6642,42 +6671,54 @@ def prefetch_metadata() -> dict:
     if not folder.exists():
         return {"available": False, "reason": "Prefetch folder not found"}
 
-    items = []
+    import heapq
+
+    items_heap: list[tuple[float, int, dict]] = []
     executor_name_hits_in_prefetch = 0
+    total_pf_files = 0
+    seq = 0
     try:
-        files = sorted(folder.glob("*.pf"), key=lambda path: path.stat().st_mtime, reverse=True)
+        with os.scandir(folder) as scan_iter:
+            for entry in scan_iter:
+                if not entry.name.lower().endswith(".pf"):
+                    continue
+                total_pf_files += 1
+                name = entry.name
+                stem = prefetch_extract_stem(name)
+                pf_labels = executor_labels_for_artifact_text(name)
+                if not pf_labels:
+                    pf_labels = executor_labels_for_artifact_text(stem)
+                if pf_labels:
+                    executor_name_hits_in_prefetch += 1
+                try:
+                    stat = entry.stat()
+                    last_run = parse_prefetch_last_run_utc(Path(entry.path))
+                    row = {
+                        "name": name,
+                        "modified": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+                        "accessed": datetime.fromtimestamp(stat.st_atime, timezone.utc).isoformat(),
+                        "last_run_utc": last_run,
+                        "size_bytes": stat.st_size,
+                        "executor_name_hits": pf_labels,
+                    }
+                    seq += 1
+                    if len(items_heap) < PREFETCH_METADATA_MAX_ITEMS:
+                        heapq.heappush(items_heap, (stat.st_mtime, seq, row))
+                    elif stat.st_mtime > items_heap[0][0]:
+                        heapq.heapreplace(items_heap, (stat.st_mtime, seq, row))
+                except OSError:
+                    continue
     except Exception as exc:
         return {"available": False, "reason": str(exc)}
 
-    for path in files:
-        try:
-            stat = path.stat()
-            last_run = parse_prefetch_last_run_utc(path)
-            pf_labels = executor_labels_for_artifact_text(path.name)
-            if not pf_labels:
-                pf_labels = executor_labels_for_artifact_text(prefetch_extract_stem(path.name))
-            if pf_labels:
-                executor_name_hits_in_prefetch += 1
-            items.append(
-                {
-                    "name": path.name,
-                    "modified": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
-                    "accessed": datetime.fromtimestamp(stat.st_atime, timezone.utc).isoformat(),
-                    "last_run_utc": last_run,
-                    "size_bytes": stat.st_size,
-                    "executor_name_hits": pf_labels,
-                }
-            )
-        except Exception:
-            continue
-    # Keep metadata payload bounded; full Prefetch sweep runs separately on every .pf file.
+    items = [row for _, _, row in sorted(items_heap, key=lambda item: item[0], reverse=True)]
     return {
         "available": True,
         "folder": str(folder),
         "count": len(items),
-        "total_pf_files": len(items),
+        "total_pf_files": total_pf_files,
         "executor_pf_matches": executor_name_hits_in_prefetch,
-        "items": items[:400],
+        "items": items,
     }
 
 
@@ -7407,9 +7448,9 @@ def deletion_and_log_clearing_signals() -> dict:
         "} | ConvertTo-Json -Depth 5 -Compress"
     )
     ps = ["powershell", "-NoProfile", "-Command"]
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        event_future = pool.submit(run_command, ps + [event_script], 24, 24000)
-        security_future = pool.submit(run_command, ps + [security_script], 32, 48000)
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        event_future = pool.submit(run_command, ps + [event_script], 20, 24000)
+        security_future = pool.submit(run_command, ps + [security_script], 26, 48000)
         usn_future = pool.submit(usn_journal_comprehensive_read)
         event_sample = event_future.result()
         security_raw = security_future.result()
@@ -11092,7 +11133,7 @@ def scan_amcache_executor_hits() -> list[dict[str, object]]:
     if not _path_is_file_safe(path):
         return []
     try:
-        data = path.read_bytes()[:50_000_000]
+        data = path.read_bytes()[:25_000_000]
         stat = _path_stat_safe(path)
         modified = (
             datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()
@@ -11155,10 +11196,12 @@ def scan_entire_prefetch_executor_hits() -> list[dict[str, object]]:
         labels = executor_labels_for_artifact_text(name)
         if not labels:
             labels = executor_labels_for_artifact_text(stem)
+        read_cap = 524_288 if labels else 2_000_000
         pf_bytes: bytes = b""
         try:
-            pf_bytes = pf_file.read_bytes()[:2_000_000]
-            labels = sorted(set(labels + scan_binary_blob_for_executor_names(pf_bytes)))
+            pf_bytes = pf_file.read_bytes()[:read_cap]
+            if not labels:
+                labels = sorted(set(scan_binary_blob_for_executor_names(pf_bytes)))
         except OSError:
             if not labels:
                 continue
@@ -16064,6 +16107,7 @@ def build_report() -> dict:
     _reset_binary_probe_result_cache()
     _reset_scan_deadline()
     scan_started_at = datetime.now(timezone.utc).isoformat()
+    _report_scan_progress(24.0, SCAN_STAGES[3])
     _collect_started = _time.perf_counter()
     memory = psutil.virtual_memory()
     disk = psutil.disk_usage(str(Path.home().anchor or Path.home()))
@@ -16120,6 +16164,7 @@ def build_report() -> dict:
         deletion_signals = fut_deletion.result()
         designated, sha_blocklist = fut_folders.result()
         forensic_core = fut_forensic_core.result()
+        _report_scan_progress(48.0, SCAN_STAGES[3])
         fut_disk_exe = pool.submit(recent_disk_executable_scan)
 
         fut_forensic = pool.submit(
@@ -16164,7 +16209,9 @@ def build_report() -> dict:
             wait(_barrier_two, timeout=max(0.0, scan_seconds_remaining()))
 
         _mark_phase("collectors", _collect_started)
+        _report_scan_progress(64.0, SCAN_STAGES[3])
         _correlate_started = _time.perf_counter()
+        _report_scan_progress(68.0, SCAN_STAGES[4])
         prefetched_artifact_scans = _resolve_prefetched_artifact_scans(artifact_scan_futures)
         roblox_surface = build_roblox_exploit_surface_report(prefetched_artifact_scans)
         forensic_bundle = fut_forensic.result()
@@ -16307,10 +16354,21 @@ def build_report() -> dict:
                 set(match_executor_labels(text, executor_name_patterns(), path_context=True))
             ),
         )
-        for hit in executor_artifact_evidence.get("hits") or []:
+        auth_targets = [
+            hit
+            for hit in (executor_artifact_evidence.get("hits") or [])
+            if str(hit.get("path") or "").lower().endswith((".exe", ".dll"))
+            and path_exists_on_disk(str(hit.get("path") or ""))
+        ][:AUTHENTICODE_MAX_PATHS]
+
+        def _attach_authenticode(hit: dict) -> None:
             path = str(hit.get("path") or "")
-            if path.lower().endswith((".exe", ".dll")) and path_exists_on_disk(path):
-                hit["authenticode_status"] = _win_authenticode_status(path)
+            hit["authenticode_status"] = _win_authenticode_status(path)
+
+        if auth_targets:
+            auth_workers = min(8, len(auth_targets))
+            with ThreadPoolExecutor(max_workers=auth_workers) as auth_pool:
+                list(auth_pool.map(_attach_authenticode, auth_targets))
         executor_activity = build_executor_activity_summary(
             generated_at=generated_at,
             recent_items=recent_items,
@@ -16392,6 +16450,7 @@ def build_report() -> dict:
         )
 
     _mark_phase("correlation", _correlate_started)
+    _report_scan_progress(86.0, SCAN_STAGES[4])
     _phase_times["total_seconds"] = round(_time.perf_counter() - _phase_started, 2)
     _scan_budget = {
         "max_seconds": SCAN_MAX_SECONDS,
@@ -17116,75 +17175,98 @@ class DiagnosticApp:
     def scan_and_upload(self) -> None:
         try:
             stop_anim = threading.Event()
-            progress_value = {"v": 2.0}
+            progress_value = {"v": 5.0}
+            progress_lock = threading.Lock()
+            stage_state = {"current": SCAN_STAGES[0]}
+
+            def on_scan_progress(percent: float, stage: str | None = None) -> None:
+                with progress_lock:
+                    progress_value["v"] = max(progress_value["v"], float(percent))
+                    if stage:
+                        stage_state["current"] = stage
+                self.root.after(0, self.set_progress_percent, progress_value["v"])
+                if stage:
+                    self.root.after(0, self.set_stage, stage, "running")
 
             def animate_progress() -> None:
                 while not stop_anim.is_set():
-                    current = progress_value["v"]
-                    if current < PROGRESS_CAP_DURING_SCAN:
-                        progress_value["v"] = min(PROGRESS_CAP_DURING_SCAN, current + PROGRESS_STEP)
-                        pct = progress_value["v"]
-                        self.root.after(0, self.set_progress_percent, pct)
+                    with progress_lock:
+                        current = progress_value["v"]
+                        if current < PROGRESS_CAP_DURING_SCAN:
+                            progress_value["v"] = min(PROGRESS_CAP_DURING_SCAN, current + PROGRESS_STEP)
+                            pct = progress_value["v"]
+                        else:
+                            pct = current
+                    self.root.after(0, self.set_progress_percent, pct)
                     time.sleep(PROGRESS_TICK_SEC)
 
             anim_thread = threading.Thread(target=animate_progress, daemon=True)
 
-            with ThreadPoolExecutor(max_workers=1) as pool:
-                report_future = pool.submit(build_report)
+            set_scan_progress_callback(on_scan_progress)
+            try:
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    report_future = pool.submit(build_report)
 
-                for stage in SCAN_STAGES[:3]:
-                    self.root.after(0, self.set_stage, stage, "running")
-                    time.sleep(PRE_SCAN_STAGE_DELAY_SEC)
-                    progress_value["v"] = max(progress_value["v"], {"Preparing Scan": 10, "Checking Device": 18, "Reviewing App Data": 26}[stage])
                     self.root.after(0, self.set_progress_percent, progress_value["v"])
-                    self.root.after(0, self.set_stage, stage, "complete")
-
-                collect_stage = "Collecting Diagnostics"
-                self.root.after(0, self.set_stage, collect_stage, "running")
-                anim_thread.start()
-
-                scan_deadline = time.monotonic() + SCAN_MAX_SECONDS
-                while not report_future.done():
-                    if time.monotonic() >= scan_deadline:
-                        raise RuntimeError(
-                            f"Scan exceeded the {int(SCAN_MAX_SECONDS // 60)}-minute limit. "
-                            "Please rebuild the scanner from the latest source and try again."
+                    for stage in SCAN_STAGES[:3]:
+                        self.root.after(0, self.set_stage, stage, "running")
+                        time.sleep(PRE_SCAN_STAGE_DELAY_SEC)
+                        progress_value["v"] = max(
+                            progress_value["v"],
+                            PRE_SCAN_STAGE_PROGRESS.get(stage, progress_value["v"]),
                         )
-                    time.sleep(0.25)
+                        self.root.after(0, self.set_progress_percent, progress_value["v"])
+                        self.root.after(0, self.set_stage, stage, "complete")
 
-                stop_anim.set()
-                anim_thread.join(timeout=2.0)
-                report = report_future.result(timeout=10)
-                self.root.after(0, self.set_stage, collect_stage, "complete")
+                    collect_stage = SCAN_STAGES[3]
+                    self.root.after(0, self.set_stage, collect_stage, "running")
+                    anim_thread.start()
 
-                finalize_stage = "Finalizing Report"
-                self.root.after(0, self.set_stage, finalize_stage, "running")
-                progress_value["v"] = 93.0
-                self.root.after(0, self.set_progress_percent, progress_value["v"])
-                time.sleep(0.05)
-                self.root.after(0, self.set_stage, finalize_stage, "complete")
+                    scan_deadline = time.monotonic() + SCAN_MAX_SECONDS
+                    while not report_future.done():
+                        if time.monotonic() >= scan_deadline:
+                            raise RuntimeError(
+                                f"Scan exceeded the {int(SCAN_MAX_SECONDS // 60)}-minute limit. "
+                                "Please rebuild the scanner from the latest source and try again."
+                            )
+                        time.sleep(0.2)
 
-                upload_stage = "Uploading Results"
-                self.root.after(0, self.set_stage, upload_stage, "running")
-                payload = {
-                    "pin": self.pin.get().strip(),
-                    "consent_version": CONSENT_VERSION,
-                    "collected_categories": COLLECTED_CATEGORIES,
-                    "report": report,
-                }
-                response = requests.post(f"{API_URL}/reports", json=payload, timeout=20)
-                if response.status_code == 410:
-                    raise RuntimeError("This PIN has expired. Ask your reviewer for a new PIN.")
-                if response.status_code == 404:
-                    raise RuntimeError("PIN not found. Check the code and try again.")
-                if response.status_code == 409:
-                    raise RuntimeError("This PIN was already used or is no longer valid.")
-                response.raise_for_status()
-                self.root.after(0, self.set_progress_percent, 100)
-                self.root.after(0, self.set_stage, upload_stage, "complete")
+                    stop_anim.set()
+                    anim_thread.join(timeout=2.0)
+                    report = report_future.result(timeout=15)
+                    self.root.after(0, self.set_stage, collect_stage, "complete")
+
+                    finalize_stage = SCAN_STAGES[4]
+                    self.root.after(0, self.set_stage, finalize_stage, "running")
+                    progress_value["v"] = max(progress_value["v"], 90.0)
+                    self.root.after(0, self.set_progress_percent, progress_value["v"])
+                    time.sleep(0.04)
+                    self.root.after(0, self.set_stage, finalize_stage, "complete")
+
+                    upload_stage = SCAN_STAGES[5]
+                    self.root.after(0, self.set_stage, upload_stage, "running")
+                    payload = {
+                        "pin": self.pin.get().strip(),
+                        "consent_version": CONSENT_VERSION,
+                        "collected_categories": COLLECTED_CATEGORIES,
+                        "report": report,
+                    }
+                    response = requests.post(f"{API_URL}/reports", json=payload, timeout=20)
+                    if response.status_code == 410:
+                        raise RuntimeError("This PIN has expired. Ask your reviewer for a new PIN.")
+                    if response.status_code == 404:
+                        raise RuntimeError("PIN not found. Check the code and try again.")
+                    if response.status_code == 409:
+                        raise RuntimeError("This PIN was already used or is no longer valid.")
+                    response.raise_for_status()
+                    self.root.after(0, self.set_progress_percent, 100)
+                    self.root.after(0, self.set_stage, upload_stage, "complete")
+            finally:
+                set_scan_progress_callback(None)
 
             self.root.after(0, self.complete)
         except Exception as exc:
+            set_scan_progress_callback(None)
             self.root.after(0, self.fail, str(exc))
 
     def _exit_after_success(self) -> None:
