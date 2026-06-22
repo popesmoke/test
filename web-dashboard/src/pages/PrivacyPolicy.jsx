@@ -5,8 +5,7 @@ export function PrivacyPolicyPage() {
   return (
     <LegalDocument
       badge="Privacy"
-      title="Virello"
-      highlight="Privacy Policy"
+      title="Virello Privacy Policy"
       updated="June 22, 2026"
       meta={["Applies to website, Discord, and desktop scanner"]}
     >

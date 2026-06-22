@@ -5,8 +5,7 @@ export function TermsOfServicePage() {
   return (
     <LegalDocument
       badge="Terms"
-      title="Virello"
-      highlight="Terms of Service"
+      title="Virello Terms of Service"
       updated="June 22, 2026"
       meta={["By using Virello you agree to these terms"]}
     >

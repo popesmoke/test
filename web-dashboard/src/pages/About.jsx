@@ -6,7 +6,7 @@ import { LegalArticle, LegalDocument } from "../components/LegalPage.jsx";
 
 export function AboutPage() {
   return (
-    <LegalDocument badge="About" title="Who" highlight="We Are" updated="June 2026">
+    <LegalDocument badge="About" title="Who we are" updated="June 2026">
       <p className="legal-doc__lead">
         Virello is a Roblox executor diagnostic platform for reviewers who need fast checks, clear
         evidence, and steady protection without noisy setup or ambiguous results.

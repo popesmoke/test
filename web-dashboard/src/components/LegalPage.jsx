@@ -1,15 +1,12 @@
 import React from "react";
 import { Link } from "react-router-dom";
 
-export function LegalDocument({ badge, title, highlight, updated, meta = [], children }) {
+export function LegalDocument({ badge, title, updated, meta = [], children }) {
   return (
     <div className="legal-doc">
       <header className="legal-doc__hero">
         <span className="legal-doc__badge">{badge}</span>
-        <h1>
-          {title}
-          {highlight ? <span className="legal-doc__highlight"> {highlight}</span> : null}
-        </h1>
+        <h1>{title}</h1>
         <div className="legal-doc__meta">
           {updated ? <span>Updated {updated}</span> : null}
           {meta.map((item) => (

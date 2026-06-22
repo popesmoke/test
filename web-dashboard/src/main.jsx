@@ -28,50 +28,48 @@ function formatSessionStatus(status) {
   return status || "unknown";
 }
 
-function SessionRail({ sessions, selectedId, onSelect, onDelete }) {
-  if (!sessions.length) {
-    return (
-      <div className="session-rail session-rail--empty">
-        <p>No PIN sessions yet. Generate one to start a review.</p>
-      </div>
-    );
-  }
-
+function SessionSidebar({ sessions, selectedId, onSelect, onDelete }) {
   return (
-    <div className="session-rail" role="tablist" aria-label="PIN sessions">
-      {sessions.map((session) => {
-        const active = selectedId === session.id;
-        return (
-          <div key={session.id} className={`session-chip-wrap ${active ? "active" : ""}`}>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={active}
-              className="session-chip"
-              onClick={() => onSelect(session.id)}
-            >
-              <span className="session-chip__pin">{session.pin}</span>
-              <span className={`session-chip__status status ${formatSessionStatus(session.status)}`}>
-                {formatSessionStatus(session.status)}
-              </span>
-              {session.reviewer_verdict ? (
-                <span className={`verdict-tag verdict-tag--${session.reviewer_verdict}`}>{session.reviewer_verdict}</span>
-              ) : null}
-              <span className="session-chip__time">{formatGmtPlus3(session.created_at)}</span>
-            </button>
-            <button
-              type="button"
-              className="session-chip__delete"
-              title="Delete session"
-              aria-label={`Delete session ${session.pin}`}
-              onClick={() => onDelete(session)}
-            >
-              <MaterialIcon name="close" size={16} />
-            </button>
-          </div>
-        );
-      })}
-    </div>
+    <aside className="session-sidebar">
+      <div className="session-sidebar__head">
+        <h2>PIN sessions</h2>
+        <p>Pick a session to open its report.</p>
+      </div>
+      {sessions.length === 0 ? (
+        <p className="session-sidebar__empty">No sessions yet. Create a PIN to get started.</p>
+      ) : (
+        <ul className="session-sidebar__list">
+          {sessions.map((session) => {
+            const active = selectedId === session.id;
+            return (
+              <li key={session.id} className={`session-item ${active ? "active" : ""}`}>
+                <button type="button" className="session-item__main" onClick={() => onSelect(session.id)}>
+                  <span className="session-item__pin">{session.pin}</span>
+                  <span className={`session-item__status status ${formatSessionStatus(session.status)}`}>
+                    {formatSessionStatus(session.status)}
+                  </span>
+                  {session.reviewer_verdict ? (
+                    <span className={`verdict-tag verdict-tag--${session.reviewer_verdict}`}>
+                      {session.reviewer_verdict}
+                    </span>
+                  ) : null}
+                  <span className="session-item__time">{formatGmtPlus3(session.created_at)}</span>
+                </button>
+                <button
+                  type="button"
+                  className="session-item__delete"
+                  title="Delete session"
+                  aria-label={`Delete session ${session.pin}`}
+                  onClick={() => onDelete(session)}
+                >
+                  <MaterialIcon name="delete_outline" size={18} />
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </aside>
   );
 }
 
@@ -2479,33 +2477,35 @@ function Results({ detail, token, onSessionReviewSaved }) {
   return (
     <section className={`workspace-panel ${expertMode ? "workspace-panel--expert" : "workspace-panel--simple"}`}>
       <header className="workspace-panel__header">
-        <div className="workspace-panel__title">
-          <p className="eyebrow">Session PIN {detail.pin}</p>
-          <h2>{expertMode ? "Advanced review" : "Scan results"}</h2>
-          <p className="workspace-panel__meta">
-            {detail.completed_at
-              ? `Submitted ${formatGmtPlus3(detail.completed_at)}`
-              : "Waiting for the desktop scanner to submit results."}
-          </p>
-        </div>
-        <div className="header-badges">
-          {detail.status === "completed" && (
-            <span className="score-badge">
-              {expertMode
-                ? `Suspicion ${summary.score}/100`
-                : `Concern ${Math.min(
-                    100,
-                    summary.evidenceVerdict?.score ??
-                      Math.round(
-                        summary.score * 0.75 +
-                          ((report.security_integrity_signals?.bypass_resilience?.risk_score ?? 0) * 0.35),
-                      ),
-                  )}/100`}
+        <div className="workspace-panel__top">
+          <div className="workspace-panel__title">
+            <p className="eyebrow">PIN {detail.pin}</p>
+            <h2>{expertMode ? "Advanced review" : "Scan results"}</h2>
+            <p className="workspace-panel__meta">
+              {detail.completed_at
+                ? `Submitted ${formatGmtPlus3(detail.completed_at)}`
+                : "Waiting for the desktop scanner to submit results."}
+            </p>
+          </div>
+          <div className="header-badges">
+            {detail.status === "completed" && (
+              <span className="score-badge">
+                {expertMode
+                  ? `Suspicion ${summary.score}/100`
+                  : `Concern ${Math.min(
+                      100,
+                      summary.evidenceVerdict?.score ??
+                        Math.round(
+                          summary.score * 0.75 +
+                            ((report.security_integrity_signals?.bypass_resilience?.risk_score ?? 0) * 0.35),
+                        ),
+                    )}/100`}
+              </span>
+            )}
+            <span className={`status large ${formatSessionStatus(detail.status)}`}>
+              {formatSessionStatus(detail.status)}
             </span>
-          )}
-          <span className={`status large ${formatSessionStatus(detail.status)}`}>
-            {formatSessionStatus(detail.status)}
-          </span>
+          </div>
         </div>
         <div className="workspace-panel__actions">
           <button type="button" className="btn btn--ghost btn--sm" onClick={() => downloadReport(detail)}>
@@ -2896,9 +2896,9 @@ export function Dashboard({ token, onLogout }) {
       {isSuperAdmin && showAdmin ? (
         <AdminPanel apiUrl={API_URL} token={token} authHeaders={authHeaders} />
       ) : (
-        <div className={`workspace-stage ${hasAccess ? "" : "workspace-stage--locked"}`}>
+        <div className={`workspace-body ${hasAccess ? "" : "workspace-body--locked"}`}>
           {hasAccess ? (
-            <SessionRail
+            <SessionSidebar
               sessions={sessions}
               selectedId={selectedId}
               onSelect={setSelectedId}

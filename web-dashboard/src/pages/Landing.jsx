@@ -43,11 +43,7 @@ export function LandingPage() {
       <section className="hero">
         <div className="hero__content">
           <p className="hero__eyebrow">Roblox Screenshare &amp; Diagnostic Platform</p>
-          <h1>
-            Clear evidence.
-            <br />
-            <span className="hero__accent">Confident decisions.</span>
-          </h1>
+          <h1>Forensic scans for screenshare review</h1>
           <p className="hero__lead">
             Virello Secure helps reviewers verify Roblox executor risk with structured forensic scans,
             calibrated confidence scoring, and a workflow built for real screenshare cases.
