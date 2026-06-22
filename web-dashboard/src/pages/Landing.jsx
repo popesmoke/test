@@ -7,44 +7,44 @@ import { IconDiscord } from "../components/VirelloIcons.jsx";
 const FEATURES = [
   {
     icon: "search",
-    title: "Execution timeline",
-    text: "See what ran on the PC and when — sorted by risk so reviewers open the worst hits first.",
+    title: "Activity timeline",
+    text: "Recent PC activity in order — highest-priority signals surface first.",
     wide: true,
   },
   {
     icon: "download",
     title: "Download history",
-    text: "Browser downloads cross-checked against known executor names and suspicious file labels.",
+    text: "Browser downloads collected and checked against your review rules.",
   },
   {
     icon: "hash",
-    title: "Renamed binary detection",
-    text: "Fingerprints catch executors even when the file on disk was renamed or moved.",
+    title: "File fingerprinting",
+    text: "Known signatures still match even when a file was renamed or moved.",
   },
   {
     icon: "folder",
-    title: "Profile folder sweep",
-    text: "Downloads, Desktop, and Documents scanned for cheat loaders and disguised filenames.",
+    title: "Profile folder scan",
+    text: "Common user folders checked for items that match your watch lists.",
   },
   {
     icon: "group",
-    title: "Linked account correlation",
-    text: "Roblox and Discord accounts found on the device, shown together for context.",
+    title: "Linked accounts",
+    text: "Game and chat accounts on the device, grouped for quick context.",
   },
   {
     icon: "speed",
-    title: "Risk scoring engine",
-    text: "Findings ranked by severity. Weak signals stay buried unless they stack with stronger ones.",
+    title: "Priority scoring",
+    text: "Findings ranked so reviewers see what matters most, not everything at once.",
   },
   {
     icon: "lock",
     title: "Consent-first collection",
-    text: "The user approves the scan before anything leaves their PC. No passwords or messages.",
+    text: "Nothing leaves the PC until the user approves. No passwords or private messages.",
   },
   {
     icon: "dashboard",
-    title: "Case review dashboard",
-    text: "PIN-based handoff from scanner to reviewer. Notes, verdicts, and export in one place.",
+    title: "Review workspace",
+    text: "PIN handoff, reviewer notes, verdicts, and export in one console.",
   },
 ];
 
@@ -53,11 +53,11 @@ export function LandingPage() {
     <div className="landing">
       <section className="hero hero--asymmetric">
         <div className="hero__content">
-          <p className="hero__eyebrow">Windows · Roblox · Screenshare</p>
-          <h1>Detect Roblox executors in minutes</h1>
+          <p className="hero__eyebrow">Windows · Screenshare reviews</p>
+          <h1>Structured PC scans for live reviews</h1>
           <p className="hero__lead">
-            Built for Discord screenshare reviews. Virello scans a Windows PC with the user&apos;s consent,
-            ranks what it finds, and hands reviewers a structured case — not a wall of raw logs.
+            Virello collects system signals with the user&apos;s consent, ranks what matters,
+            and hands reviewers a clear case file — not a wall of raw logs.
           </p>
           <div className="hero__actions">
             <Link to="/download" className="btn btn--primary btn--lg">
@@ -73,20 +73,20 @@ export function LandingPage() {
           </div>
           <ul className="hero__trust">
             <li>User must approve before upload</li>
-            <li>29 executor brands on the watch list</li>
-            <li>Typical scan under 3 minutes</li>
+            <li>Configurable watch lists</li>
+            <li>Most scans finish in about 2 minutes</li>
           </ul>
         </div>
         <aside className="hero__panel">
           <div className="hero__panel-inner">
             <div className="hero__stat hero__stat--highlight">
               <MaterialIcon name="timer" size={22} />
-              <span className="hero__stat-value">~3 min</span>
-              <span className="hero__stat-label">Typical scan time on a standard gaming PC</span>
+              <span className="hero__stat-value">~2 min</span>
+              <span className="hero__stat-label">Typical scan time on a modern gaming PC</span>
             </div>
             <div className="hero__stat">
-              <span className="hero__stat-value">29</span>
-              <span className="hero__stat-label">Executor brands tracked (Volt, Wave, Solara, Xeno, …)</span>
+              <span className="hero__stat-value">Multi</span>
+              <span className="hero__stat-label">Signal layers — files, logs, registry, and runtime</span>
             </div>
             <div className="hero__stat">
               <span className="hero__stat-value">Win 10+</span>
@@ -106,9 +106,9 @@ export function LandingPage() {
       <section className="section">
         <header className="section__header section__header--left">
           <p className="section__eyebrow">What you get</p>
-          <h2>Evidence-based executor detection for Roblox moderation</h2>
+          <h2>Built for reviewers who need signal, not noise</h2>
           <p>
-            Each capability maps to a real section in the review console — not marketing filler.
+            Each capability maps to a real section in the review console.
           </p>
         </header>
         <div className="feature-grid feature-grid--asymmetric">
@@ -142,12 +142,6 @@ export function LandingPage() {
         </div>
       </section>
 
-      <p className="landing-attribution muted">
-        Icons by{" "}
-        <a href="https://icons8.com" target="_blank" rel="noreferrer">
-          Icons8
-        </a>
-      </p>
     </div>
   );
 }

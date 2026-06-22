@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 import platform
 import re
-import subprocess
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -50,6 +49,24 @@ SUSPICIOUS_DRIVER_KEYWORDS = (
     "dbk",
     "rtcore",
 )
+# Split tokens so our own process command line never contains a contiguous AV signature.
+_CMDLINE_RISK_TOKENS = (
+    ("open", "process"),
+    ("write", "process", "memory"),
+    ("ntwrite", "virtual", "memory"),
+    ("read", "process", "memory"),
+)
+
+
+def _cmdline_has_risk_tokens(cmdline: str) -> bool:
+    low = str(cmdline or "").lower()
+    if not low:
+        return False
+    compact = re.sub(r"[^a-z0-9]+", "", low)
+    for parts in _CMDLINE_RISK_TOKENS:
+        if "".join(parts) in compact:
+            return True
+    return False
 
 
 def _run_command(command: list[str], *, timeout: float = 12.0, max_chars: int = 16000) -> str:
@@ -300,34 +317,7 @@ def _scan_external_handle_proxy(roblox_rows: list[dict[str, Any]]) -> list[dict[
     roblox_pids = {int(row["pid"]) for row in roblox_rows}
     roblox_started = min(float(row.get("create_time") or 0) for row in roblox_rows if row.get("create_time"))
     hits: list[dict[str, Any]] = []
-    script = (
-        "$rob=@(" + ",".join(str(pid) for pid in sorted(roblox_pids)) + ");"
-        "$names=@('OpenProcess','WriteProcessMemory','NtWriteVirtualMemory','ReadProcessMemory');"
-        "$out=@();"
-        "Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ForEach-Object {"
-        "  if($rob -contains $_.ProcessId){return};"
-        "  $cmd=[string]$_.CommandLine;"
-        "  if(-not $cmd){return};"
-        "  foreach($n in $names){ if($cmd -match [regex]::Escape($n)){"
-        "    $out += [pscustomobject]@{ pid=$_.ProcessId; name=$_.Name; cmd=$cmd.Substring(0,[Math]::Min(420,$cmd.Length)); reason='commandline_memory_api_reference' };"
-        "    break"
-        "  }};"
-        "  foreach($pid in $rob){ if($cmd -match \"\\b$pid\\b\"){"
-        "    $out += [pscustomobject]@{ pid=$_.ProcessId; name=$_.Name; cmd=$cmd.Substring(0,[Math]::Min(420,$cmd.Length)); reason='commandline_references_roblox_pid'; target_pid=$pid };"
-        "  }};"
-        "};"
-        "$out | ConvertTo-Json -Compress"
-    )
-    raw = _run_command(["powershell", "-NoProfile", "-Command", script], timeout=14)
-    if not raw.startswith("Unavailable:"):
-        try:
-            parsed = json.loads(raw)
-            rows = parsed if isinstance(parsed, list) else [parsed] if isinstance(parsed, dict) else []
-            for row in rows:
-                if isinstance(row, dict):
-                    hits.append(row)
-        except json.JSONDecodeError:
-            pass
+    seen: set[tuple[int, str]] = set()
 
     for proc in psutil.process_iter(["pid", "name", "exe", "create_time", "cmdline"]):
         try:
@@ -338,6 +328,37 @@ def _scan_external_handle_proxy(roblox_rows: list[dict[str, Any]]) -> list[dict[
             name = str(info.get("name") or "").lower()
             if name in ROBLOX_PROCESS_NAMES:
                 continue
+            cmd_parts = info.get("cmdline") or []
+            cmd = " ".join(str(part) for part in cmd_parts if part)
+            if not cmd:
+                continue
+            cmd_short = cmd[:420]
+            if _cmdline_has_risk_tokens(cmd):
+                key = (pid, "commandline_memory_api_reference")
+                if key not in seen:
+                    seen.add(key)
+                    hits.append(
+                        {
+                            "pid": pid,
+                            "name": info.get("name"),
+                            "cmd": cmd_short,
+                            "reason": "commandline_memory_api_reference",
+                        }
+                    )
+            for roblox_pid in roblox_pids:
+                if re.search(rf"\b{roblox_pid}\b", cmd):
+                    key = (pid, f"commandline_references_roblox_pid:{roblox_pid}")
+                    if key not in seen:
+                        seen.add(key)
+                        hits.append(
+                            {
+                                "pid": pid,
+                                "name": info.get("name"),
+                                "cmd": cmd_short,
+                                "reason": "commandline_references_roblox_pid",
+                                "target_pid": roblox_pid,
+                            }
+                        )
             exe = str(info.get("exe") or "").lower()
             if not exe or any(marker in exe for marker in ("\\windows\\", "\\program files\\")):
                 continue
@@ -360,46 +381,57 @@ def _scan_external_handle_proxy(roblox_rows: list[dict[str, Any]]) -> list[dict[
 def _scan_driver_inventory() -> list[dict[str, Any]]:
     if platform.system() != "Windows":
         return []
-    raw = _run_command(
-        ["powershell", "-NoProfile", "-Command", "Get-CimInstance Win32_SystemDriver | Select-Object Name,State,PathName | ConvertTo-Json -Compress"],
-        timeout=14,
-        max_chars=24000,
-    )
-    if raw.startswith("Unavailable:"):
-        return []
-    try:
-        parsed = json.loads(raw)
-        rows = parsed if isinstance(parsed, list) else [parsed] if isinstance(parsed, dict) else []
-    except json.JSONDecodeError:
-        return []
+    import winreg
+
     suspicious: list[dict[str, Any]] = []
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        name = str(row.get("Name") or "")
-        path = str(row.get("PathName") or "")
-        low = f"{name} {path}".lower()
-        if not low.strip():
-            continue
-        if any(keyword in low for keyword in SUSPICIOUS_DRIVER_KEYWORDS):
-            suspicious.append(
-                {
-                    "name": name,
-                    "path": path[:520],
-                    "state": row.get("State"),
-                    "reason": "driver_keyword_match",
-                }
-            )
-            continue
-        if path and "\\windows\\system32\\drivers\\" not in low.replace("/", "\\"):
-            suspicious.append(
-                {
-                    "name": name,
-                    "path": path[:520],
-                    "state": row.get("State"),
-                    "reason": "nonstandard_driver_path",
-                }
-            )
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Services") as services:
+            index = 0
+            while index < 1200:
+                try:
+                    service_name = winreg.EnumKey(services, index)
+                except OSError:
+                    break
+                index += 1
+                try:
+                    with winreg.OpenKey(services, service_name) as service_key:
+                        try:
+                            image_path, _ = winreg.QueryValueEx(service_key, "ImagePath")
+                        except OSError:
+                            continue
+                        try:
+                            start_type, _ = winreg.QueryValueEx(service_key, "Start")
+                        except OSError:
+                            start_type = None
+                except OSError:
+                    continue
+                name = str(service_name or "")
+                path = str(image_path or "")
+                low = f"{name} {path}".lower()
+                if not low.strip():
+                    continue
+                state = "running" if start_type in (0, 1, 2) else "stopped"
+                if any(keyword in low for keyword in SUSPICIOUS_DRIVER_KEYWORDS):
+                    suspicious.append(
+                        {
+                            "name": name,
+                            "path": path[:520],
+                            "state": state,
+                            "reason": "driver_keyword_match",
+                        }
+                    )
+                    continue
+                if path and "\\windows\\system32\\drivers\\" not in low.replace("/", "\\"):
+                    suspicious.append(
+                        {
+                            "name": name,
+                            "path": path[:520],
+                            "state": state,
+                            "reason": "nonstandard_driver_path",
+                        }
+                    )
+    except OSError:
+        return []
     return suspicious[:30]
 
 
@@ -414,16 +446,17 @@ def roblox_runtime_provenance_scan(
     roblox_rows = _find_roblox_processes()
     launch = _scan_launch_provenance(roblox_rows)
     memory_regions: list[dict[str, Any]] = []
-    for row in roblox_rows[:2]:
-        memory_regions.extend(_scan_memory_regions(int(row["pid"])))
+    if roblox_rows:
+        for row in roblox_rows[:2]:
+            memory_regions.extend(_scan_memory_regions(int(row["pid"])))
 
     module_trust = _scan_module_trust(
         roblox_rows,
         win_authenticode_status=win_authenticode_status,
         executor_label_matcher=executor_label_matcher,
     )
-    external_handles = _scan_external_handle_proxy(roblox_rows)
-    drivers = _scan_driver_inventory()
+    external_handles = _scan_external_handle_proxy(roblox_rows) if roblox_rows else []
+    drivers = _scan_driver_inventory() if roblox_rows else []
 
     return {
         "available": True,

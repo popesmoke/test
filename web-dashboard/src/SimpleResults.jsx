@@ -1,32 +1,27 @@
 ﻿import React, { useMemo, useState } from "react";
-import {
-  AlertTriangle,
-  CheckCircle2,
-  ChevronRight,
-  Clock3,
-  Download,
-  FileDown,
-  FileText,
-  FileCode2,
-  HelpCircle,
-  ListChecks,
-  Play,
-  Search,
-  Shield,
-  ShieldAlert,
-  GitBranch,
-  Users,
-} from "lucide-react";
+import { MaterialIcon } from "./components/MaterialIcon.jsx";
 import { defenderSummary } from "./defenderSignals.js";
 import { scanReviewFromReport } from "./reportDigest.js";
 import { formatDisplayLocation, privacyPath } from "./resultPrivacy.js";
 import { sortBySuspicion } from "./reviewerCopy.js";
 
+const TABS = [
+  { id: "overview", label: "Summary", icon: "description" },
+  { id: "accounts", label: "Accounts", icon: "users" },
+  { id: "chains", label: "Evidence chains", icon: "git_branch" },
+  { id: "activity", label: "Activity", icon: "history" },
+  { id: "downloads", label: "Downloads", icon: "file_down" },
+  { id: "execution", label: "Programs run", icon: "play" },
+  { id: "programs", label: "Program list", icon: "file_code" },
+  { id: "strings", label: "Keywords", icon: "search" },
+  { id: "security", label: "Security", icon: "shield" },
+];
+
 const VERDICT_META = {
   clean: {
     label: "Looks OK",
     tone: "clean",
-    blurb: "No strong signs of cheats or cover-up on this scan.",
+    blurb: "No strong warning signs on this scan.",
   },
   watch: {
     label: "Needs review",
@@ -40,22 +35,10 @@ const VERDICT_META = {
   },
 };
 
-const TABS = [
-  { id: "overview", label: "Summary", icon: FileText },
-  { id: "accounts", label: "Accounts", icon: Users },
-  { id: "chains", label: "Evidence chains", icon: GitBranch },
-  { id: "activity", label: "Activity", icon: Clock3 },
-  { id: "downloads", label: "Downloads", icon: FileDown },
-  { id: "execution", label: "Programs run", icon: Play },
-  { id: "programs", label: "Program list", icon: FileCode2 },
-  { id: "strings", label: "Keywords", icon: Search },
-  { id: "security", label: "Security", icon: Shield },
-];
-
 const ACTIVITY_FILTERS = [
   { id: "all", label: "All" },
-  { id: "executors", label: "Executors" },
-  { id: "suspicious", label: "Suspicious files" },
+  { id: "executors", label: "Programs" },
+  { id: "suspicious", label: "Files" },
   { id: "deletions", label: "Deletions" },
 ];
 
@@ -151,23 +134,35 @@ function SimpleStat({ label, value, hint }) {
   );
 }
 
+function PanelHeader({ icon, title, text }) {
+  return (
+    <header className="ws-panel__head">
+      <MaterialIcon name={icon} size={20} />
+      <div>
+        <h4>{title}</h4>
+        {text ? <p>{text}</p> : null}
+      </div>
+    </header>
+  );
+}
+
 function ProblemCard({ problem }) {
   const [open, setOpen] = useState(false);
-  const icon =
-    problem.severity === "high" || problem.severity === "critical" ? (
-      <ShieldAlert size={18} />
-    ) : problem.severity === "medium" ? (
-      <AlertTriangle size={18} />
-    ) : (
-      <HelpCircle size={18} />
-    );
+  const iconName =
+    problem.severity === "high" || problem.severity === "critical"
+      ? "shield_alert"
+      : problem.severity === "medium"
+        ? "alert_triangle"
+        : "help_circle";
 
   return (
     <article className={`ws-finding ws-finding--${problem.severity}`}>
       <button type="button" className="ws-finding__toggle" onClick={() => setOpen((v) => !v)}>
-        <span className="ws-finding__icon">{icon}</span>
+        <span className="ws-finding__icon">
+          <MaterialIcon name={iconName} size={18} />
+        </span>
         <strong>{problem.title}</strong>
-        <ChevronRight size={16} className={open ? "open" : ""} />
+        <MaterialIcon name="chevron_right" size={16} className={open ? "open" : ""} />
       </button>
       {open ? <p className="ws-finding__detail">{problem.detail}</p> : null}
     </article>
@@ -225,13 +220,7 @@ function OverviewTab({ verdict, problems, review, formatGmtPlus3 }) {
       </section>
 
       <section className="ws-panel">
-        <header className="ws-panel__head">
-          <ListChecks size={20} />
-          <div>
-            <h4>What stood out</h4>
-            <p>The main things a reviewer should know, in plain words.</p>
-          </div>
-        </header>
+        <PanelHeader icon="list_checks" title="What stood out" text="Main signals for this case, in plain words." />
         <div className="ws-panel__body">
           {problems.length ? (
             <div>
@@ -241,7 +230,7 @@ function OverviewTab({ verdict, problems, review, formatGmtPlus3 }) {
             </div>
           ) : (
             <div className="ws-empty-state">
-              <CheckCircle2 size={24} />
+              <MaterialIcon name="check_circle" size={24} />
               <p>Nothing concerning jumped out on this scan.</p>
             </div>
           )}
@@ -291,13 +280,11 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
 
   return (
     <section className="ws-panel">
-      <header className="ws-panel__head">
-        <Clock3 size={20} />
-        <div>
-          <h4>Last computer activity</h4>
-          <p>Executors, suspicious files, and deletions only. Newest first.</p>
-        </div>
-      </header>
+      <PanelHeader
+        icon="history"
+        title="Recent activity"
+        text="Flagged events only — newest first."
+      />
       <div className="ws-panel__body">
       <div className="ws-filter-row">
         {ACTIVITY_FILTERS.map((row) => (
@@ -376,15 +363,14 @@ function EvidenceChainsTab({ review, formatGmtPlus3 }) {
   const shown = onlyHigh ? chains.filter((c) => c.confidence === "high") : chains;
 
   return (
-    <section className="simple-panel">
-      <header className="simple-panel-head">
-        <GitBranch size={22} />
-        <div>
-          <h4>Evidence chains</h4>
-          <p>When multiple traces agree — e.g. downloaded, ran, then deleted but still logged.</p>
-        </div>
-      </header>
-      <div className="simple-filter-row">
+    <section className="ws-panel">
+      <PanelHeader
+        icon="git_branch"
+        title="Evidence chains"
+        text="Related traces grouped when multiple signals agree."
+      />
+      <div className="ws-panel__body">
+      <div className="ws-filter-row">
         <button type="button" className={!onlyHigh ? "active" : ""} onClick={() => setOnlyHigh(false)}>
           All chains ({block.chain_count ?? chains.length})
         </button>
@@ -421,11 +407,12 @@ function EvidenceChainsTab({ review, formatGmtPlus3 }) {
           ))}
         </ul>
       ) : (
-        <div className="simple-empty">
-          <CheckCircle2 size={28} />
+        <div className="ws-empty-state">
+          <MaterialIcon name="check_circle" size={28} />
           <p>No multi-trace evidence chains on this scan.</p>
         </div>
       )}
+      </div>
     </section>
   );
 }
@@ -437,21 +424,20 @@ function AccountsTab({ report, token, formatGmtPlus3 }) {
   const discordAccounts = discord.accounts ?? [];
 
   return (
-    <section className="simple-panel">
-      <header className="simple-panel-head">
-        <Users size={22} />
-        <div>
-          <h4>Linked accounts</h4>
-          <p>Roblox and Discord accounts found on this device — usernames and profile links only.</p>
-        </div>
-      </header>
-      <h5 className="simple-subhead">Roblox</h5>
+    <section className="ws-panel">
+      <PanelHeader
+        icon="users"
+        title="Linked accounts"
+        text="Accounts found on this device — usernames and profile links only."
+      />
+      <div className="ws-panel__body">
+      <h5 className="simple-subhead">Game accounts</h5>
       {robloxIds.length ? (
-        <p className="muted panel-intro">{robloxIds.length} account(s) detected. Open forensic view for avatars and profile links.</p>
+        <p className="muted panel-intro">{robloxIds.length} account(s) on this device.</p>
       ) : (
-        <p className="muted">No Roblox accounts were found.</p>
+        <p className="muted">No game accounts were found.</p>
       )}
-      <h5 className="simple-subhead">Discord</h5>
+      <h5 className="simple-subhead">Chat accounts</h5>
       {discordAccounts.length ? (
         <ul className="simple-program-list">
           {discordAccounts.map((account) => (
@@ -464,8 +450,9 @@ function AccountsTab({ report, token, formatGmtPlus3 }) {
           ))}
         </ul>
       ) : (
-        <p className="muted">No Discord accounts were found in local client data.</p>
+        <p className="muted">No chat accounts were found in local client data.</p>
       )}
+      </div>
     </section>
   );
 }
@@ -483,14 +470,9 @@ function DownloadsTab({ review, formatGmtPlus3 }) {
   });
 
   return (
-    <section className="simple-panel">
-      <header className="simple-panel-head">
-        <FileDown size={22} />
-        <div>
-          <h4>Browser download history</h4>
-          <p>Files downloaded through Chrome, Edge, Brave, or Firefox — like the browser's own download list.</p>
-        </div>
-      </header>
+    <section className="ws-panel">
+      <PanelHeader icon="file_down" title="Download history" text="Browser downloads from this device." />
+      <div className="ws-panel__body">
       <div className="simple-filter-row">
         <button type="button" className={!onlyFlagged ? "active" : ""} onClick={() => setOnlyFlagged(false)}>
           All downloads ({block.download_count ?? 0})
@@ -536,6 +518,7 @@ function DownloadsTab({ review, formatGmtPlus3 }) {
           No browser download records were read. The browser may be closed, profiles encrypted, or history cleared.
         </p>
       )}
+      </div>
     </section>
   );
 }
@@ -545,14 +528,9 @@ function ExecutionTab({ review, formatGmtPlus3 }) {
   const items = block.items ?? [];
 
   return (
-    <section className="simple-panel">
-      <header className="simple-panel-head">
-        <Play size={22} />
-        <div>
-          <h4>Execution activity</h4>
-          <p>Programs and files that look like they were run on this PC.</p>
-        </div>
-      </header>
+    <section className="ws-panel">
+      <PanelHeader icon="play" title="Execution activity" text="Programs that appear to have run on this PC." />
+      <div className="ws-panel__body">
       <p className="muted panel-intro">
         {block.suspicious_count ?? 0} flagged · {block.event_count ?? 0} total runs traced
       </p>
@@ -574,6 +552,7 @@ function ExecutionTab({ review, formatGmtPlus3 }) {
       ) : (
         <p className="muted">No execution traces were recorded.</p>
       )}
+      </div>
     </section>
   );
 }
@@ -585,14 +564,9 @@ function ProgramsTab({ review, formatGmtPlus3 }) {
   const shown = onlyFlagged ? items.filter((i) => i.suspicious) : items;
 
   return (
-    <section className="simple-panel">
-      <header className="simple-panel-head">
-        <FileCode2 size={22} />
-        <div>
-          <h4>Program list (executables)</h4>
-          <p>Apps and files found on this PC, with suspicious items highlighted.</p>
-        </div>
-      </header>
+    <section className="ws-panel">
+      <PanelHeader icon="file_code" title="Program list" text="Executables found on this PC." />
+      <div className="ws-panel__body">
       <div className="simple-filter-row">
         <button
           type="button"
@@ -633,6 +607,7 @@ function ProgramsTab({ review, formatGmtPlus3 }) {
       ) : (
         <p className="muted">No programs in this filter. Try showing all found.</p>
       )}
+      </div>
     </section>
   );
 }
@@ -645,14 +620,9 @@ function SecurityTab({ report, formatGmtPlus3 }) {
   const psEvents = sec.powershell_operational_events?.events ?? [];
 
   return (
-    <section className="simple-panel">
-      <header className="simple-panel-head">
-        <Shield size={22} />
-        <div>
-          <h4>Security & antivirus</h4>
-          <p>Defender status, quarantine history, PowerShell logs, and service changes.</p>
-        </div>
-      </header>
+    <section className="ws-panel">
+      <PanelHeader icon="shield" title="Security" text="Defender status, quarantine, and system change logs." />
+      <div className="ws-panel__body">
       {defenderView.available ? (
         <p className={`simple-verdict-line simple-verdict-line--${defenderView.tone}`}>
           {defenderView.statusLabel}
@@ -694,6 +664,7 @@ function SecurityTab({ report, formatGmtPlus3 }) {
           </ul>
         </>
       ) : null}
+      </div>
     </section>
   );
 }
@@ -703,14 +674,9 @@ function StringsTab({ review, formatGmtPlus3 }) {
   const items = block.items ?? [];
 
   return (
-    <section className="simple-panel">
-      <header className="simple-panel-head">
-        <Search size={22} />
-        <div>
-          <h4>Word matches (string detection)</h4>
-          <p>Cheat, injection, or cleanup words found inside files, logs, or command history.</p>
-        </div>
-      </header>
+    <section className="ws-panel">
+      <PanelHeader icon="search" title="Keyword matches" text="Review words found in logs and command history." />
+      <div className="ws-panel__body">
       {items.length ? (
         <ul className="simple-string-list">
           {items.slice(0, 40).map((row, index) => (
@@ -725,11 +691,12 @@ function StringsTab({ review, formatGmtPlus3 }) {
           ))}
         </ul>
       ) : (
-        <div className="simple-empty">
-          <CheckCircle2 size={28} />
-          <p>No suspicious words were found in scanned text.</p>
+        <div className="ws-empty-state">
+          <MaterialIcon name="check_circle" size={28} />
+          <p>No keyword matches in scanned text.</p>
         </div>
       )}
+      </div>
     </section>
   );
 }
@@ -781,14 +748,14 @@ export function SimpleResults({
       </div>
 
       <nav className="ws-dock" aria-label="Report sections">
-        {TABS.map(({ id, label, icon: Icon }) => (
+        {TABS.map(({ id, label, icon }) => (
           <button
             key={id}
             type="button"
             className={`ws-dock__tab ${tab === id ? "ws-dock__tab--active" : ""}`}
             onClick={() => setTab(id)}
           >
-            <Icon size={15} />
+            <MaterialIcon name={icon} size={15} />
             {label}
           </button>
         ))}

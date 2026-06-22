@@ -17,6 +17,7 @@ import { authHeaders, DISCORD_ERROR_MESSAGES, startDiscordLogin } from "./lib/au
 import { consumeAuthCallback } from "./lib/authCallback.js";
 import { MaterialIcon, renderIcon } from "./components/MaterialIcon.jsx";
 import { ConfirmModal } from "./components/ConfirmModal.jsx";
+import { EXPERT_NAV_GROUPS } from "./dashboardNav.js";
 import { reviewerSafeText, sortBySuspicion } from "./reviewerCopy.js";
 
 const AUTH_CALLBACK = consumeAuthCallback();
@@ -2617,7 +2618,7 @@ function WorkspaceInspector({
               className={`ws-inspector__mode ${expertMode ? "ws-inspector__mode--expert" : ""}`}
               onClick={onToggleMode}
             >
-              {expertMode ? "← Simple overview" : "Forensic analysis →"}
+              {expertMode ? "← Simple overview" : "Advanced review →"}
             </button>
           ) : null}
         </div>

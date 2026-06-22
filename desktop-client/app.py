@@ -3081,14 +3081,14 @@ EXECUTOR_RBXASSET_SIGNATURES: dict[str, list[str]] = {
     "Swift": ["swift", "rbxasset://swift"],
 }
 
-# Target window: scans aim for ~2 minutes; collectors wind down gracefully before the hard ceiling.
-SCAN_SOFT_TARGET_SECONDS = 90.0
-# Hard ceiling for the full diagnostic pass — collectors may continue briefly past this without failing.
-SCAN_MAX_SECONDS = 210.0
+# Target window: scans aim for ~90s on modern hardware; collectors wind down before the hard ceiling.
+SCAN_SOFT_TARGET_SECONDS = 72.0
+# Hard ceiling for the full diagnostic pass (3 minutes).
+SCAN_MAX_SECONDS = 180.0
 # Reserve time for correlation/report assembly so the filesystem walk cannot consume the whole budget.
-SCAN_CORRELATION_RESERVE_SECONDS = 28.0
-FULL_PC_WALK_MAX_SECONDS = 42.0
-PREFETCH_ARTIFACT_MAX_FILES = 100
+SCAN_CORRELATION_RESERVE_SECONDS = 22.0
+FULL_PC_WALK_MAX_SECONDS = 30.0
+PREFETCH_ARTIFACT_MAX_FILES = 80
 PREFETCH_METADATA_MAX_ITEMS = 400
 ARTIFACT_SCAN_MAX_TIMEOUT_SEC = 7.0
 DISK_EXECUTABLE_FALLBACK_TIMEOUT_SEC = 6.0
@@ -3209,7 +3209,7 @@ FULL_PC_SCAN_MAX_ENUMERATED = 32_000
 FULL_PC_SCAN_MAX_HITS = 2400
 FULL_PC_BINARY_PROBE_MAX_FILES = 2_000
 FULL_PC_BINARY_PROBE_MAX_BYTES = 6_000_000
-OPTIONAL_COLLECTOR_TIMEOUT_SEC = 5.0
+OPTIONAL_COLLECTOR_TIMEOUT_SEC = 4.0
 SCAN_TARGET_EXECUTORS = list(EXECUTOR_NAMES)
 FULL_PC_SKIP_DIR_FRAGMENTS = (
     "\\windows\\winsxs\\",
@@ -9128,16 +9128,23 @@ def _roblox_valid_user_id(user_id: str | None) -> bool:
     return int(user_id) > 0
 
 
+def _roblox_all_user_ids_from_text_blob(text: str) -> list[str]:
+    found: set[str] = set()
+    for candidate in _ROBLOX_RBXID_FROM_TRACKER.findall(str(text or "")):
+        if _roblox_valid_user_id(candidate):
+            found.add(str(candidate))
+    for candidate in _ROBLOX_USER_ID_TEXT.findall(str(text or "")):
+        if _roblox_valid_user_id(candidate):
+            found.add(str(candidate))
+    for candidate in _ROBLOX_URL_USER_ID.findall(str(text or "")):
+        if _roblox_valid_user_id(candidate):
+            found.add(str(candidate))
+    return sorted(found, key=lambda value: int(value))
+
+
 def _roblox_rbxid_from_text_blob(text: str) -> str | None:
-    matches = _ROBLOX_RBXID_FROM_TRACKER.findall(str(text or ""))
-    for candidate in reversed(matches):
-        if _roblox_valid_user_id(candidate):
-            return str(candidate)
-    user_ids = _ROBLOX_USER_ID_TEXT.findall(str(text or ""))
-    for candidate in reversed(user_ids):
-        if _roblox_valid_user_id(candidate):
-            return str(candidate)
-    return None
+    ids = _roblox_all_user_ids_from_text_blob(text)
+    return ids[-1] if ids else None
 
 
 def _roblox_rbxid_from_profile_storage(profile_dir: Path) -> str | None:
@@ -9146,19 +9153,20 @@ def _roblox_rbxid_from_profile_storage(profile_dir: Path) -> str | None:
         return None
     candidates: list[Path] = []
     try:
-        candidates.extend(sorted(storage_dir.glob("*.ldb"), key=lambda path: path.stat().st_mtime, reverse=True)[:12])
-        candidates.extend(sorted(storage_dir.glob("*.log"), key=lambda path: path.stat().st_mtime, reverse=True)[:4])
+        candidates.extend(sorted(storage_dir.glob("*.ldb"), key=lambda path: path.stat().st_mtime, reverse=True)[:16])
+        candidates.extend(sorted(storage_dir.glob("*.log"), key=lambda path: path.stat().st_mtime, reverse=True)[:6])
     except OSError:
         return None
+    found: set[str] = set()
     for path in candidates:
         try:
             text = path.read_bytes().decode("latin-1", errors="ignore")
         except OSError:
             continue
-        user_id = _roblox_rbxid_from_text_blob(text)
-        if user_id:
-            return user_id
-    return None
+        found.update(_roblox_all_user_ids_from_text_blob(text))
+    if not found:
+        return None
+    return sorted(found, key=lambda value: int(value))[-1]
 
 
 def _roblox_rbxid_from_roblox_appdata() -> str | None:
@@ -9379,26 +9387,21 @@ def _roblox_all_user_ids_from_appdata() -> list[str]:
     roblox_root = Path(local_app) / "Roblox"
     if not roblox_root.is_dir():
         return []
-    found: set[str] = set()
     scan_paths: list[Path] = []
     for pattern in ("*.log", "*.txt", "*.json", "*.xml", "*.dat"):
         try:
-            scan_paths.extend(sorted(roblox_root.rglob(pattern), key=lambda path: path.stat().st_mtime, reverse=True)[:12])
+            scan_paths.extend(sorted(roblox_root.rglob(pattern), key=lambda path: path.stat().st_mtime, reverse=True)[:16])
         except OSError:
             continue
-    for path in scan_paths[:36]:
+    found: set[str] = set()
+    for path in scan_paths[:48]:
         if not path.is_file() or path.stat().st_size > 2_000_000:
             continue
         try:
             text = path.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
-        user_id = _roblox_rbxid_from_text_blob(text)
-        if user_id:
-            found.add(user_id)
-        for candidate in _ROBLOX_USER_ID_TEXT.findall(text):
-            if _roblox_valid_user_id(candidate):
-                found.add(str(candidate))
+        found.update(_roblox_all_user_ids_from_text_blob(text))
     return sorted(found, key=lambda value: int(value))
 
 
@@ -9910,9 +9913,10 @@ def _roblox_browser_profile_account_hints() -> list[dict]:
 
 
 def roblox_browser_account_scan() -> dict:
-    """Privacy-safe account hints — Roblox client logs/storage only (no browser cookies)."""
+    """Privacy-safe account hints — Roblox client logs/storage plus browser profiles."""
     accounts: list[dict] = []
     seen_ids: set[str] = set()
+    artifacts: list[dict] = []
 
     def _append_account(user_id: str | None, username: str | None, sources: list[str]) -> None:
         if user_id:
@@ -9939,6 +9943,25 @@ def roblox_browser_account_scan() -> dict:
                 }
             )
 
+    def _merge_browser_artifact(artifact: dict) -> None:
+        if not isinstance(artifact, dict):
+            return
+        browser = artifact.get("browser") or "Browser"
+        profile = artifact.get("profile") or "Default"
+        source_label = f"{browser} {profile}"
+        session_uid = artifact.get("session_user_id")
+        if session_uid:
+            _append_account(
+                str(session_uid),
+                artifact.get("session_username"),
+                [f"{source_label} session"],
+            )
+        for uid in artifact.get("user_ids") or []:
+            _append_account(str(uid), None, [f"{source_label} history"])
+        for username in artifact.get("usernames") or []:
+            if _roblox_is_plausible_username(username):
+                _append_account(None, username, [f"{source_label} history"])
+
     client_session = _roblox_client_session_user()
     if client_session:
         _append_account(
@@ -9948,8 +9971,43 @@ def roblox_browser_account_scan() -> dict:
         )
     for user_id in _roblox_all_user_ids_from_appdata():
         _append_account(user_id, None, ["Roblox client storage"])
-    for hint in _roblox_browser_profile_account_hints():
-        _append_account(hint.get("user_id"), hint.get("username"), list(hint.get("sources") or ["Browser profile"]))
+
+    if platform.system() == "Windows":
+        local = os.getenv("LOCALAPPDATA", "")
+        appdata = os.getenv("APPDATA", "")
+        browser_roots = [
+            ("Chrome", Path(local) / "Google" / "Chrome" / "User Data"),
+            ("Edge", Path(local) / "Microsoft" / "Edge" / "User Data"),
+            ("Brave", Path(local) / "BraveSoftware" / "Brave-Browser" / "User Data"),
+            ("Opera", Path(local) / "Opera Software" / "Opera Stable"),
+        ]
+        for browser, base in browser_roots:
+            if not base.is_dir():
+                continue
+            for profile in _chromium_profile_names(base)[:10]:
+                profile_dir = base / profile
+                if scan_collect_phase_exhausted():
+                    break
+                artifact = _scan_chromium_roblox_profile(browser, profile, profile_dir)
+                artifacts.append(artifact)
+                _merge_browser_artifact(artifact)
+        firefox_root = Path(appdata) / "Mozilla" / "Firefox" / "Profiles"
+        if firefox_root.is_dir():
+            try:
+                profile_dirs = sorted(
+                    (entry for entry in firefox_root.iterdir() if entry.is_dir()),
+                    key=lambda path: path.stat().st_mtime,
+                    reverse=True,
+                )[:8]
+            except OSError:
+                profile_dirs = []
+            for profile_dir in profile_dirs:
+                if scan_collect_phase_exhausted():
+                    break
+                artifact = _scan_firefox_roblox_profile(profile_dir.name, profile_dir)
+                artifacts.append(artifact)
+                _merge_browser_artifact(artifact)
+
     for log in _roblox_read_client_logs():
         signals = log.get("signals") or extract_roblox_signals(str(log.get("tail") or ""))
         source = f"Roblox client log:{log.get('name', 'unknown')}"
@@ -9964,14 +10022,14 @@ def roblox_browser_account_scan() -> dict:
         "privacy_mode": "no_browser_sessions",
         "browsers_closed": [],
         "browsers_close_failed": [],
-        "artifact_count": 0,
-        "artifacts": [],
+        "artifact_count": len(artifacts),
+        "artifacts": artifacts[:24],
         "accounts": enriched,
         "aggregate_user_ids": sorted({str(acct.get("user_id")) for acct in enriched if acct.get("user_id")}),
         "aggregate_usernames": sorted(
             {str(acct.get("username")) for acct in enriched if acct.get("username")}
         ),
-        "note": "Client logs, local app data, and browser profile hints only.",
+        "note": "Client logs, local app data, and browser profile hints.",
     }
 
 
@@ -10057,12 +10115,81 @@ def _discord_extract_user_profiles(text: str) -> list[dict[str, str | None]]:
     return profiles
 
 
+def _discord_all_user_ids_from_text(text: str) -> list[str]:
+    found: set[str] = set()
+    for profile in _discord_extract_user_profiles(text):
+        user_id = str(profile.get("user_id") or "")
+        if user_id and _discord_is_plausible_user_id(user_id):
+            found.add(user_id)
+    for match in re.finditer(r'"id"\s*:\s*"(\d{17,20})"', text):
+        user_id = match.group(1)
+        if _discord_is_plausible_user_id(user_id):
+            found.add(user_id)
+    return sorted(found, key=lambda value: int(value))
+
+
+def _discord_browser_profile_account_hints() -> list[dict[str, object]]:
+    """Collect Discord user IDs from browser profile storage (web app logins)."""
+    if platform.system() != "Windows":
+        return []
+    local = os.getenv("LOCALAPPDATA", "")
+    if not local:
+        return []
+    hints: list[dict[str, object]] = []
+    seen: set[str] = set()
+    browser_roots = [
+        ("Chrome", Path(local) / "Google" / "Chrome" / "User Data"),
+        ("Edge", Path(local) / "Microsoft" / "Edge" / "User Data"),
+        ("Brave", Path(local) / "BraveSoftware" / "Brave-Browser" / "User Data"),
+        ("Opera", Path(local) / "Opera Software" / "Opera Stable"),
+    ]
+    for browser, base in browser_roots:
+        if not base.is_dir():
+            continue
+        for profile in _chromium_profile_names(base)[:10]:
+            storage_dir = base / profile / "Local Storage" / "leveldb"
+            if not storage_dir.is_dir():
+                continue
+            source = f"{browser} {profile}"
+            try:
+                blobs = sorted(storage_dir.glob("*.ldb"), key=lambda path: path.stat().st_mtime, reverse=True)[:10]
+                blobs.extend(sorted(storage_dir.glob("*.log"), key=lambda path: path.stat().st_mtime, reverse=True)[:4])
+            except OSError:
+                continue
+            for blob in blobs:
+                try:
+                    text = blob.read_bytes()[:1_600_000].decode("utf-8", errors="ignore")
+                except OSError:
+                    continue
+                if "discord" not in text.lower():
+                    continue
+                for user_id in _discord_all_user_ids_from_text(text):
+                    if user_id in seen:
+                        continue
+                    seen.add(user_id)
+                    hints.append(
+                        {
+                            "user_id": user_id,
+                            "display_name": None,
+                            "avatar_hash": None,
+                            "source": source,
+                        }
+                    )
+    return hints
+
+
 def _discord_collect_storage_blobs(root: Path) -> list[Path]:
     blobs: list[Path] = []
-    for name in ("settings.json", "Local State", "Preferences"):
+    for name in ("settings.json", "Local State", "Preferences", "session.json"):
         candidate = root / name
         if candidate.is_file():
             blobs.append(candidate)
+    sessions_dir = root / "sessions"
+    if sessions_dir.is_dir():
+        try:
+            blobs.extend(sorted(sessions_dir.glob("*.json"), key=lambda path: path.stat().st_mtime, reverse=True)[:8])
+        except OSError:
+            pass
     leveldb = root / "Local Storage" / "leveldb"
     if leveldb.is_dir():
         try:
@@ -10101,7 +10228,7 @@ def discord_local_accounts_scan() -> dict[str, object]:
         if not root.is_dir():
             continue
         blobs = _discord_collect_storage_blobs(root)
-        for blob in blobs[:48]:
+        for blob in blobs[:72]:
             if scan_collect_phase_exhausted():
                 break
             try:
@@ -10112,6 +10239,15 @@ def discord_local_accounts_scan() -> dict[str, object]:
                 raw.decode("utf-8", errors="ignore"),
                 raw.decode("latin-1", errors="ignore"),
             ):
+                for user_id in _discord_all_user_ids_from_text(text):
+                    account = accounts_by_id.setdefault(
+                        user_id,
+                        {
+                            "user_id": user_id,
+                            "display_name": None,
+                            "avatar_hash": None,
+                        },
+                    )
                 for profile in _discord_extract_user_profiles(text):
                     user_id = str(profile.get("user_id") or "")
                     if not user_id:
@@ -10129,6 +10265,21 @@ def discord_local_accounts_scan() -> dict[str, object]:
                     if profile.get("avatar_hash") and not account.get("avatar_hash"):
                         account["avatar_hash"] = profile["avatar_hash"]
 
+    for hint in _discord_browser_profile_account_hints():
+        user_id = str(hint.get("user_id") or "")
+        if not user_id:
+            continue
+        account = accounts_by_id.setdefault(
+            user_id,
+            {
+                "user_id": user_id,
+                "display_name": None,
+                "avatar_hash": None,
+            },
+        )
+        if hint.get("display_name") and not account.get("display_name"):
+            account["display_name"] = hint["display_name"]
+
     accounts: list[dict[str, object]] = []
     for user_id, raw in accounts_by_id.items():
         accounts.append(
@@ -10143,7 +10294,7 @@ def discord_local_accounts_scan() -> dict[str, object]:
     return {
         "available": True,
         "account_count": len(accounts),
-        "accounts": accounts[:24],
+        "accounts": accounts[:32],
         "note": "Local client storage only.",
     }
 
@@ -16666,11 +16817,15 @@ def build_report() -> dict:
             executor_artifact_evidence=executor_artifact_evidence,
             forensic_bundle=forensic_bundle,
         )
-        roblox_runtime = roblox_runtime_provenance_scan(
-            win_authenticode_status=_win_authenticode_status,
-            executor_label_matcher=lambda text: sorted(
-                set(match_executor_labels(text, executor_name_patterns(), path_context=True))
-            ),
+        roblox_runtime = (
+            {"available": False, "reason": "Scan time budget exhausted", "skipped_fast_scan": True}
+            if scan_deadline_exceeded()
+            else roblox_runtime_provenance_scan(
+                win_authenticode_status=_win_authenticode_status,
+                executor_label_matcher=lambda text: sorted(
+                    set(match_executor_labels(text, executor_name_patterns(), path_context=True))
+                ),
+            )
         )
         auth_targets = [
             hit

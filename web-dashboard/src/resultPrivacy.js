@@ -118,13 +118,35 @@ export function publicFindingLabels(labels) {
   return [...out];
 }
 
+function sanitizeActivitySummary(summary) {
+  const raw = String(summary || "").trim();
+  if (!raw) return "Activity recorded on this PC.";
+  const low = raw.toLowerCase();
+  if (low.includes("executor") || low.includes("cheat") || low.includes("inject") || low.includes("exploit")) {
+    return "Suspicious program activity was recorded.";
+  }
+  if (low.includes("deleted") || low.includes("removed") || low.includes("recycle bin")) {
+    return "File removal was logged, but a system trace remains.";
+  }
+  if (low.includes("download")) {
+    return "A browser download was recorded.";
+  }
+  if (low.includes("powershell") || low.includes("shell history") || low.includes("command")) {
+    return "Command-line activity matched review keywords.";
+  }
+  if (raw.length > 96) {
+    return "System activity was recorded on this PC.";
+  }
+  return raw;
+}
+
 function sanitizeActivityEvent(event) {
   const path = event?.path || "";
   return {
     occurred_at: event?.occurred_at ?? null,
     time_unknown: event?.time_unknown,
     category: event?.category,
-    summary: event?.summary || "Activity recorded on this PC.",
+    summary: sanitizeActivitySummary(event?.summary),
     filter: event?.filter,
     cleanup_at: event?.cleanup_at,
     cleanup_at_display: event?.cleanup_at_display,
@@ -193,7 +215,7 @@ function sanitizeChain(chain) {
     summary: chain?.summary || "Multiple related traces were found.",
     steps: (chain?.steps ?? []).map((step) => ({
       action: step?.action,
-      detail: step?.detail || "Related activity was recorded.",
+      detail: sanitizeActivitySummary(step?.detail) || "Related activity was recorded.",
       occurred_at: step?.occurred_at,
       file_exists: step?.file_exists,
       ...displayPathFields(step?.path || ""),

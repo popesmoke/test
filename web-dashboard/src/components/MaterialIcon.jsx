@@ -53,6 +53,19 @@ const ICON_SLUGS = {
   certificate: "certificate",
   folder: "folder",
   event_log: "activity-history",
+  person: "user-male-circle",
+  gpp_maybe: "security-checked",
+  play: "play",
+  list_checks: "task-planning",
+  git_branch: "tree-structure",
+  file_code: "source-code",
+  file_down: "download",
+  users: "group",
+  shield_alert: "security-alert",
+  alert_triangle: "error",
+  help_circle: "help",
+  check_circle: "checkmark",
+  chevron_right: "chevron-right",
 };
 
 export function MaterialIcon({ name, size = 20, className = "", filled = false }) {
