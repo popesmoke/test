@@ -1,22 +1,22 @@
 /* ─── Workspace console — distinct from sidebar-scanner UIs ─── */
 
 :root {
-  --ws-bg: #0a0809;
-  --ws-surface: #110d0f;
-  --ws-surface-2: #181214;
-  --ws-line: rgba(239, 35, 60, 0.1);
-  --ws-line-strong: rgba(239, 35, 60, 0.22);
-  --ws-text: #f3ecee;
-  --ws-muted: #b8a8ad;
-  --ws-dim: #7a656b;
-  --ws-accent: #ef233c;
-  --ws-accent-bright: #ff4d5f;
-  --ws-accent-dim: rgba(239, 35, 60, 0.14);
-  --ws-accent-glow: rgba(239, 35, 60, 0.28);
-  --ws-ok: #ff6b7a;
-  --ws-warn: #fbbf24;
-  --ws-bad: #ef233c;
-  --ws-radius: 6px;
+  --ws-bg: #0c0d10;
+  --ws-surface: #13151a;
+  --ws-surface-2: #1a1d24;
+  --ws-line: rgba(255, 255, 255, 0.08);
+  --ws-line-strong: rgba(255, 255, 255, 0.14);
+  --ws-text: #eceef2;
+  --ws-muted: #9aa3b2;
+  --ws-dim: #6b7280;
+  --ws-accent: #dc2626;
+  --ws-accent-bright: #ef4444;
+  --ws-accent-dim: rgba(220, 38, 38, 0.12);
+  --ws-accent-glow: rgba(220, 38, 38, 0.2);
+  --ws-ok: #22c55e;
+  --ws-warn: #eab308;
+  --ws-bad: #dc2626;
+  --ws-radius: 8px;
   --ws-font-mono: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
 }
 
@@ -24,16 +24,7 @@
   min-height: 100vh;
   display: flex;
   flex-direction: column;
-  background:
-    linear-gradient(180deg, rgba(239, 35, 60, 0.05) 0%, transparent 28%),
-    repeating-linear-gradient(
-      90deg,
-      transparent,
-      transparent 79px,
-      rgba(239, 35, 60, 0.025) 79px,
-      rgba(239, 35, 60, 0.025) 80px
-    ),
-    var(--ws-bg);
+  background: var(--ws-bg);
   color: var(--ws-text);
 }
 

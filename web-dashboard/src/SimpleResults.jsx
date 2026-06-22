@@ -14,7 +14,6 @@ import {
   Search,
   Shield,
   ShieldAlert,
-  Sparkles,
   GitBranch,
   Users,
 } from "lucide-react";
@@ -25,26 +24,23 @@ import { formatDisplayLocation, privacyPath } from "./resultPrivacy.js";
 const VERDICT_META = {
   clean: {
     label: "Looks OK",
-    emoji: "✅",
     tone: "clean",
-    blurb: "We did not see strong signs of cheats, hidden tools, or cover-up tricks on this scan.",
+    blurb: "No strong signs of cheats or cover-up on this scan.",
   },
   watch: {
-    label: "Something odd",
-    emoji: "⚠️",
+    label: "Needs review",
     tone: "watch",
-    blurb: "A few things looked unusual. A reviewer should take a closer look.",
+    blurb: "A few unusual signals — worth a closer look.",
   },
   bad: {
-    label: "Very suspicious",
-    emoji: "🚨",
+    label: "High risk",
     tone: "bad",
-    blurb: "Many warning signs showed up. This scan needs careful review.",
+    blurb: "Multiple warning signs — review carefully.",
   },
 };
 
 const TABS = [
-  { id: "overview", label: "Summary", icon: Sparkles },
+  { id: "overview", label: "Summary", icon: FileText },
   { id: "accounts", label: "Accounts", icon: Users },
   { id: "chains", label: "Evidence chains", icon: GitBranch },
   { id: "activity", label: "Activity", icon: Clock3 },
@@ -245,41 +241,6 @@ function OverviewTab({ verdict, problems, review, formatGmtPlus3 }) {
               <p>Nothing concerning jumped out on this scan.</p>
             </div>
           )}
-        </div>
-      </section>
-
-      <section className="ws-panel">
-        <header className="ws-panel__head">
-          <Sparkles size={20} />
-          <div>
-            <h4>Navigation guide</h4>
-            <p>Use the dock at the bottom to explore each area of the report.</p>
-          </div>
-        </header>
-        <div className="ws-panel__body">
-          <ul className="ws-tips">
-            <li>
-              <strong>Summary</strong> — start here for the big picture.
-            </li>
-            <li>
-              <strong>Last activity</strong> — what the PC did recently, in time order.
-            </li>
-            <li>
-              <strong>Download history</strong> — files downloaded in Chrome, Edge, Brave, or Firefox.
-            </li>
-            <li>
-              <strong>Programs run</strong> — apps and files that were executed.
-            </li>
-            <li>
-              <strong>Program list</strong> — executables found on disk.
-            </li>
-            <li>
-              <strong>Word matches</strong> — cheat or cleanup words inside files and history.
-            </li>
-          </ul>
-          {activity.boot_time ? (
-            <p className="muted small-note">PC last turned on: {formatGmtPlus3(activity.boot_time)}</p>
-          ) : null}
         </div>
       </section>
     </>

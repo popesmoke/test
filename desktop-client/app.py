@@ -3081,16 +3081,16 @@ EXECUTOR_RBXASSET_SIGNATURES: dict[str, list[str]] = {
     "Swift": ["swift", "rbxasset://swift"],
 }
 
-# Target window: scans aim for 3–6 minutes; collectors wind down gracefully before the hard ceiling.
-SCAN_SOFT_TARGET_SECONDS = 180.0
+# Target window: scans aim for ~2 minutes; collectors wind down gracefully before the hard ceiling.
+SCAN_SOFT_TARGET_SECONDS = 90.0
 # Hard ceiling for the full diagnostic pass — collectors may continue briefly past this without failing.
-SCAN_MAX_SECONDS = 420.0
+SCAN_MAX_SECONDS = 210.0
 # Reserve time for correlation/report assembly so the filesystem walk cannot consume the whole budget.
-SCAN_CORRELATION_RESERVE_SECONDS = 42.0
-FULL_PC_WALK_MAX_SECONDS = 68.0
+SCAN_CORRELATION_RESERVE_SECONDS = 28.0
+FULL_PC_WALK_MAX_SECONDS = 42.0
 PREFETCH_ARTIFACT_MAX_FILES = 100
 PREFETCH_METADATA_MAX_ITEMS = 400
-ARTIFACT_SCAN_MAX_TIMEOUT_SEC = 10.0
+ARTIFACT_SCAN_MAX_TIMEOUT_SEC = 7.0
 DISK_EXECUTABLE_FALLBACK_TIMEOUT_SEC = 6.0
 PIPELINE_DRAIN_MAX_SECONDS = 9.0
 AUTHENTICODE_MAX_PATHS = 64
@@ -3197,19 +3197,19 @@ EXECUTOR_SHA256_BLOCKLIST: dict[str, str] = {}
 FULL_PC_USER_ZONE_DEPTH = 11
 FULL_PC_SYSTEM_DRIVE_DEPTH = 4
 FULL_PC_SECONDARY_DRIVE_DEPTH = 2
-EXECUTOR_HASH_SCAN_MAX_FILES = 4_000
+EXECUTOR_HASH_SCAN_MAX_FILES = 2_500
 EXECUTOR_HASH_MAX_FILE_BYTES = 120_000_000
 EXECUTOR_ACTIVITY_RECENT_HOURS = 72
-USN_JOURNAL_MAX_LINES = 8_000
-USN_DELETE_MAX_LINES = 6000
+USN_JOURNAL_MAX_LINES = 5_000
+USN_DELETE_MAX_LINES = 4000
 RECYCLE_BIN_MAX_ITEMS = 500
 RECYCLE_BIN_HASH_MAX_BYTES = 80_000_000
 FULL_PC_SCAN_MAX_DEPTH = FULL_PC_USER_ZONE_DEPTH
-FULL_PC_SCAN_MAX_ENUMERATED = 58_000
-FULL_PC_SCAN_MAX_HITS = 3000
-FULL_PC_BINARY_PROBE_MAX_FILES = 3_200
+FULL_PC_SCAN_MAX_ENUMERATED = 32_000
+FULL_PC_SCAN_MAX_HITS = 2400
+FULL_PC_BINARY_PROBE_MAX_FILES = 2_000
 FULL_PC_BINARY_PROBE_MAX_BYTES = 6_000_000
-OPTIONAL_COLLECTOR_TIMEOUT_SEC = 8.0
+OPTIONAL_COLLECTOR_TIMEOUT_SEC = 5.0
 SCAN_TARGET_EXECUTORS = list(EXECUTOR_NAMES)
 FULL_PC_SKIP_DIR_FRAGMENTS = (
     "\\windows\\winsxs\\",
@@ -4842,7 +4842,7 @@ def persistence_signals() -> dict:
                 continue
             classify_entry("startup_folder", path.name, str(path))
 
-    tasks_out = run_command(["schtasks", "/Query", "/FO", "LIST", "/V"], timeout=18, max_chars=14000)
+    tasks_out = run_command(["schtasks", "/Query", "/FO", "LIST", "/V"], timeout=10, max_chars=14000)
     if tasks_out and not tasks_out.startswith("Unavailable"):
         task_name = ""
         task_run = ""
@@ -9414,6 +9414,36 @@ def _roblox_read_client_logs() -> list[dict]:
         return logs
 
 
+def _roblox_all_user_ids_from_appdata() -> list[str]:
+    local_app = os.getenv("LOCALAPPDATA")
+    if not local_app:
+        return []
+    roblox_root = Path(local_app) / "Roblox"
+    if not roblox_root.is_dir():
+        return []
+    found: set[str] = set()
+    scan_paths: list[Path] = []
+    for pattern in ("*.log", "*.txt", "*.json", "*.xml", "*.dat"):
+        try:
+            scan_paths.extend(sorted(roblox_root.rglob(pattern), key=lambda path: path.stat().st_mtime, reverse=True)[:12])
+        except OSError:
+            continue
+    for path in scan_paths[:36]:
+        if not path.is_file() or path.stat().st_size > 2_000_000:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        user_id = _roblox_rbxid_from_text_blob(text)
+        if user_id:
+            found.add(user_id)
+        for candidate in _ROBLOX_USER_ID_TEXT.findall(text):
+            if _roblox_valid_user_id(candidate):
+                found.add(str(candidate))
+    return sorted(found, key=lambda value: int(value))
+
+
 def _roblox_client_session_user() -> dict | None:
     for log in _roblox_read_client_logs():
         signals = log.get("signals") or {}
@@ -9819,30 +9849,50 @@ def _close_browsers_for_roblox_scan() -> dict:
 def roblox_browser_account_scan() -> dict:
     """Privacy-safe account hints — Roblox client logs/storage only (no browser cookies)."""
     accounts: list[dict] = []
-    client_session = _roblox_client_session_user()
-    if client_session:
-        accounts.append(client_session)
-    for log in _roblox_read_client_logs():
-        signals = log.get("signals") or extract_roblox_signals(str(log.get("tail") or ""))
-        for user_id in signals.get("user_ids") or []:
+    seen_ids: set[str] = set()
+
+    def _append_account(user_id: str | None, username: str | None, sources: list[str]) -> None:
+        if user_id:
+            uid = str(user_id)
+            if uid in seen_ids:
+                return
+            seen_ids.add(uid)
             accounts.append(
                 {
-                    "user_id": str(user_id),
-                    "username": None,
-                    "sources": [f"Roblox client log:{log.get('name', 'unknown')}"],
+                    "user_id": uid,
+                    "username": username,
+                    "sources": sources,
                     "authenticated": False,
                 }
             )
+            return
+        if username and _roblox_is_plausible_username(username):
+            accounts.append(
+                {
+                    "user_id": None,
+                    "username": username,
+                    "sources": sources,
+                    "authenticated": False,
+                }
+            )
+
+    client_session = _roblox_client_session_user()
+    if client_session:
+        _append_account(
+            client_session.get("user_id"),
+            client_session.get("username"),
+            list(client_session.get("sources") or ["Roblox client session"]),
+        )
+    for user_id in _roblox_all_user_ids_from_appdata():
+        _append_account(user_id, None, ["Roblox client storage"])
+    for log in _roblox_read_client_logs():
+        signals = log.get("signals") or extract_roblox_signals(str(log.get("tail") or ""))
+        source = f"Roblox client log:{log.get('name', 'unknown')}"
+        for user_id in signals.get("user_ids") or []:
+            _append_account(str(user_id), None, [source])
         for username in signals.get("usernames") or []:
             if _roblox_is_plausible_username(username):
-                accounts.append(
-                    {
-                        "user_id": None,
-                        "username": username,
-                        "sources": [f"Roblox client log:{log.get('name', 'unknown')}"],
-                        "authenticated": False,
-                    }
-                )
+                _append_account(None, username, [source])
     enriched = _roblox_enrich_accounts(accounts, include_headshots=False)
     return {
         "available": True,
@@ -9886,6 +9936,56 @@ def extract_roblox_signals(text: str) -> dict:
     }
 
 
+def _discord_is_plausible_user_id(user_id: str) -> bool:
+    if not re.fullmatch(r"\d{17,20}", str(user_id or "")):
+        return False
+    try:
+        value = int(user_id)
+    except ValueError:
+        return False
+    if value < 4194304:
+        return False
+    discord_epoch_ms = 1_420_070_400_000
+    timestamp_ms = (value >> 22) + discord_epoch_ms
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    return discord_epoch_ms <= timestamp_ms <= now_ms + 86_400_000
+
+
+def _discord_extract_user_profiles(text: str) -> list[dict[str, str | None]]:
+    profiles: list[dict[str, str | None]] = []
+    seen: set[str] = set()
+    profile_patterns = (
+        re.compile(
+            r'"id"\s*:\s*"(\d{17,20})"\s*,\s*"(?:username|global_name|avatar|discriminator|email)"',
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r'"(?:username|global_name|avatar|discriminator|email)"\s*:\s*"[^"]*"\s*,\s*"id"\s*:\s*"(\d{17,20})"',
+            re.IGNORECASE,
+        ),
+        re.compile(r'"user_id_cache"\s*:\s*\{[^}]{0,400}?"id"\s*:\s*"(\d{17,20})"', re.IGNORECASE),
+    )
+    for pattern in profile_patterns:
+        for user_id in pattern.findall(text):
+            if user_id in seen or not _discord_is_plausible_user_id(user_id):
+                continue
+            seen.add(user_id)
+            chunk_start = max(0, text.find(user_id) - 500)
+            chunk = text[chunk_start : chunk_start + 1200]
+            global_match = re.search(r'"global_name"\s*:\s*"([^"\\]{1,32})"', chunk)
+            user_match = re.search(r'"username"\s*:\s*"([^"\\]{2,32})"', chunk)
+            avatar_match = re.search(r'"avatar"\s*:\s*"([a-fA-F0-9]{32})"', chunk)
+            profiles.append(
+                {
+                    "user_id": user_id,
+                    "display_name": (global_match.group(1) if global_match else None)
+                    or (user_match.group(1) if user_match else None),
+                    "avatar_hash": avatar_match.group(1) if avatar_match else None,
+                }
+            )
+    return profiles
+
+
 def discord_local_accounts_scan() -> dict[str, object]:
     """Read Discord user IDs and display names from local client storage only."""
     if platform.system() != "Windows":
@@ -9895,10 +9995,6 @@ def discord_local_accounts_scan() -> dict[str, object]:
 
     appdata = Path(os.environ.get("APPDATA", ""))
     discord_roots = [appdata / name for name in ("discord", "discordcanary", "discordptb")]
-    id_re = re.compile(r'"id"\s*:\s*"(\d{17,20})"')
-    username_re = re.compile(r'"username"\s*:\s*"([^"\\]{2,32})"')
-    global_name_re = re.compile(r'"global_name"\s*:\s*"([^"\\]{1,32})"')
-    avatar_re = re.compile(r'"avatar"\s*:\s*"([a-fA-F0-9]{32})"')
     accounts_by_id: dict[str, dict[str, object]] = {}
 
     for root in discord_roots:
@@ -9908,57 +10004,52 @@ def discord_local_accounts_scan() -> dict[str, object]:
         settings_path = root / "settings.json"
         if settings_path.is_file():
             blobs.append(settings_path)
+        for extra_name in ("Local State", "Preferences"):
+            extra_path = root / extra_name
+            if extra_path.is_file():
+                blobs.append(extra_path)
         leveldb = root / "Local Storage" / "leveldb"
         if leveldb.is_dir():
-            for entry in leveldb.iterdir():
-                if entry.suffix in (".log", ".ldb") and entry.is_file():
-                    try:
-                        if entry.stat().st_size <= 8_000_000:
-                            blobs.append(entry)
-                    except OSError:
-                        continue
-        for blob in blobs[:14]:
+            try:
+                leveldb_files = sorted(
+                    (entry for entry in leveldb.iterdir() if entry.suffix in (".log", ".ldb") and entry.is_file()),
+                    key=lambda path: path.stat().st_mtime,
+                    reverse=True,
+                )
+            except OSError:
+                leveldb_files = []
+            blobs.extend(leveldb_files[:28])
+        for blob in blobs[:32]:
             if scan_collect_phase_exhausted():
                 break
             try:
-                text = blob.read_bytes()[:1_800_000].decode("utf-8", errors="ignore")
+                text = blob.read_bytes()[:2_400_000].decode("utf-8", errors="ignore")
             except OSError:
                 continue
-            for user_id in id_re.findall(text):
-                if user_id not in accounts_by_id:
-                    accounts_by_id[user_id] = {
+            for profile in _discord_extract_user_profiles(text):
+                user_id = str(profile.get("user_id") or "")
+                if not user_id:
+                    continue
+                account = accounts_by_id.setdefault(
+                    user_id,
+                    {
                         "user_id": user_id,
                         "display_name": None,
                         "avatar_hash": None,
-                    }
-                chunk_start = max(0, text.find(user_id) - 400)
-                chunk = text[chunk_start : chunk_start + 900]
-                account = accounts_by_id[user_id]
-                if not account.get("display_name"):
-                    global_match = global_name_re.search(chunk)
-                    user_match = username_re.search(chunk)
-                    account["display_name"] = (
-                        (global_match.group(1) if global_match else None)
-                        or (user_match.group(1) if user_match else None)
-                    )
-                if not account.get("avatar_hash"):
-                    avatar_match = avatar_re.search(chunk)
-                    if avatar_match:
-                        account["avatar_hash"] = avatar_match.group(1)
+                    },
+                )
+                if profile.get("display_name") and not account.get("display_name"):
+                    account["display_name"] = profile["display_name"]
+                if profile.get("avatar_hash") and not account.get("avatar_hash"):
+                    account["avatar_hash"] = profile["avatar_hash"]
 
     accounts: list[dict[str, object]] = []
     for user_id, raw in accounts_by_id.items():
-        avatar_hash = raw.get("avatar_hash")
-        if avatar_hash:
-            avatar_url = f"https://cdn.discordapp.com/avatars/{user_id}/{avatar_hash}.png?size=128"
-        else:
-            avatar_index = (int(user_id) >> 22) % 6
-            avatar_url = f"https://cdn.discordapp.com/embed/avatars/{avatar_index}.png"
         accounts.append(
             {
                 "user_id": user_id,
                 "display_name": raw.get("display_name") or f"User {user_id}",
-                "avatar_url": avatar_url,
+                "avatar_hash": raw.get("avatar_hash"),
             }
         )
 
@@ -9966,7 +10057,7 @@ def discord_local_accounts_scan() -> dict[str, object]:
     return {
         "available": True,
         "account_count": len(accounts),
-        "accounts": accounts[:8],
+        "accounts": accounts[:16],
         "note": "Parsed from local Discord client storage only — no remote API calls.",
     }
 
@@ -14370,6 +14461,39 @@ def _extract_structured_deletion_events(deletion: dict) -> list[dict]:
     return rows
 
 
+def _stratified_activity_event_slice(events: list[dict], max_events: int = 800) -> list[dict]:
+    """Return a capped event list that keeps every category represented (deletions alone can dominate sort order)."""
+    if len(events) <= max_events:
+        return events
+    by_category: dict[str, list[dict]] = defaultdict(list)
+    for event in events:
+        by_category[str(event.get("category") or "other")].append(event)
+    categories = sorted(by_category.keys(), key=lambda key: -len(by_category[key]))
+    per_category_floor = max(12, max_events // max(len(categories), 1))
+    picked: list[dict] = []
+    picked_keys: set[tuple[str, str, str]] = set()
+
+    def _event_key(row: dict) -> tuple[str, str, str]:
+        return (str(row.get("category") or ""), str(row.get("kind") or ""), str(row.get("path") or ""))
+
+    for category in categories:
+        for event in by_category[category][:per_category_floor]:
+            key = _event_key(event)
+            if key in picked_keys:
+                continue
+            picked_keys.add(key)
+            picked.append(event)
+    for event in events:
+        if len(picked) >= max_events:
+            break
+        key = _event_key(event)
+        if key in picked_keys:
+            continue
+        picked_keys.add(key)
+        picked.append(event)
+    return picked[:max_events]
+
+
 def build_user_activity_timeline(
     *,
     generated_at: str,
@@ -14790,7 +14914,7 @@ def build_user_activity_timeline(
         "by_category": dict(sorted(by_category.items(), key=lambda kv: (-kv[1], kv[0]))),
         "by_recency": dict(sorted(by_recency.items(), key=lambda kv: kv[0])),
         "insights": insights,
-        "events": events[:250],
+        "events": _stratified_activity_event_slice(events),
         "note": "Unified, timestamp-first activity feed for reviewer triage. Times are UTC in the raw report; dashboard shows GMT+3.",
     }
 

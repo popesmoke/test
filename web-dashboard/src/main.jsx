@@ -976,11 +976,18 @@ function userActivityFromReport(report) {
   if (bundled?.available) {
     const events = sanitizeTimelineEvents(report, bundled.events);
     const withTs = events.filter((e) => e.occurred_at);
+    const byCategory = events.reduce((acc, e) => {
+      const cat = e.category || "other";
+      acc[cat] = (acc[cat] || 0) + 1;
+      return acc;
+    }, {});
     return {
       ...bundled,
       events,
+      event_count: events.length,
       timestamped_event_count: withTs.length,
       missing_timestamp_count: events.length - withTs.length,
+      by_category: byCategory,
     };
   }
   return buildClientSideUserActivity(report);
@@ -1076,41 +1083,7 @@ function UserActivitySection({ report, query }) {
 
   return (
     <>
-      <Card icon="history" title="User activity timeline">
-        <div className="activity-analytics">
-          <div className="activity-stat-grid">
-            <div className="activity-stat">
-              <strong>{activity.event_count ?? 0}</strong>
-              <span>Total events</span>
-            </div>
-            <div className="activity-stat">
-              <strong>{activity.timestamped_event_count ?? 0}</strong>
-              <span>With timestamps</span>
-            </div>
-            <div className="activity-stat">
-              <strong>{activity.recent_deletion_count ?? 0}</strong>
-              <span>Deletions (7d)</span>
-            </div>
-            <div className="activity-stat">
-              <strong>{activity.recent_execution_count ?? 0}</strong>
-              <span>Executions (72h)</span>
-            </div>
-          </div>
-          {(activity.insights ?? []).length ? (
-            <div className="activity-insights">
-              <strong>Insights</strong>
-              <ul>
-                {activity.insights.map((line) => (
-                  <li key={line}>{line}</li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
-          <p className="muted activity-note">
-            Every row shows when the action happened (MM/DD/YY, GMT+3). Deleted items use Recycle Bin $I metadata first, then
-            metadata or data-file fallbacks — so null timestamps are resolved when any OS trace remains.
-          </p>
-        </div>
+      <Card icon="history" title="Activity timeline">
         <div className="activity-filters">
           <button
             type="button"
@@ -1140,30 +1113,17 @@ function UserActivitySection({ report, query }) {
                   </span>
                   <span className="activity-category-pill">{ACTIVITY_CATEGORY_LABELS[event.category] ?? event.category}</span>
                   <p className="plain-summary">{activityEventSummary(event)}</p>
-                  <p className="executor-event-path">{event.path}</p>
-                  <small className="muted">{event.detail}</small>
-                  {event.timestamp_source ? (
-                    <small className="timestamp-source">
-                      Time reference: {formatTimestampSourceWithHint(event.timestamp_source, event)}
-                    </small>
-                  ) : null}
+                  {event.path ? <p className="executor-event-path">{event.path}</p> : null}
                 </div>
                 <div className="activity-time-col">
-                  <time>{event.occurred_at ? formatGmtPlus3(event.occurred_at) : "Time unknown"}</time>
-                  {event.time_unknown ? (
-                    <span className="time-label muted">scan-time stamp removed — real time not recorded</span>
-                  ) : null}
-                  {!event.occurred_at && !event.time_unknown ? (
-                    <span className="time-label muted">needs re-scan or Admin</span>
-                  ) : null}
+                  <time>{event.occurred_at ? formatGmtPlus3(event.occurred_at) : "—"}</time>
                 </div>
               </div>
             ))}
           </div>
         ) : (
-          <p className="muted">No activity events match the current filter.</p>
+          <p className="muted">No events match this filter.</p>
         )}
-        {activity.note ? <p className="muted small-note">{activity.note}</p> : null}
       </Card>
     </>
   );
@@ -1491,19 +1451,30 @@ function RobloxAccountsCard({ report, token }) {
   );
 }
 
+function discordAvatarUrl(account) {
+  const userId = String(account.user_id || "");
+  if (!userId) return null;
+  const hash = account.avatar_hash;
+  if (hash) {
+    return `https://cdn.discordapp.com/avatars/${userId}/${hash}.png?size=128`;
+  }
+  const avatarIndex = (BigInt(userId) >> 22n) % 6n;
+  return `https://cdn.discordapp.com/embed/avatars/${avatarIndex}.png`;
+}
+
 function DiscordAccountsCard({ report }) {
   const accounts = report.application_diagnostics?.discord?.accounts ?? [];
 
   return (
     <Card icon="forum" title="Discord accounts">
       {accounts.length === 0 ? (
-        <p className="ws-empty-note">No Discord accounts were found in local client data.</p>
+        <p className="ws-empty-note">No Discord accounts found.</p>
       ) : (
         <div className="ws-account-grid">
-          {accounts.slice(0, 12).map((account) => {
+          {accounts.slice(0, 16).map((account) => {
             const userId = String(account.user_id || "");
             const displayName = account.display_name || `User ${userId}`;
-            const avatar = account.avatar_url || null;
+            const avatar = account.avatar_url || discordAvatarUrl(account);
             return (
               <div key={userId} className="ws-account-card" style={{ cursor: "default" }}>
                 {avatar ? (

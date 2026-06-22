@@ -6,7 +6,7 @@ A consent-first diagnostic sharing system with:
 - `backend/` - FastAPI API for checker auth, PIN sessions, report upload, and session results.
 - `web-dashboard/` - React dashboard for reviewers to generate PINs and inspect completed reports.
 
-This is a consent-first Roblox-focused diagnostic scanner. The desktop client runs a comprehensive exploit detection pass (3–6 minutes max) before uploading a reviewer report.
+This is a consent-first Roblox-focused diagnostic scanner. The desktop client runs a comprehensive exploit detection pass (~2–3 minutes) before uploading a reviewer report.
 
 ## Roblox Scanner Coverage
 
@@ -22,7 +22,7 @@ Detection layers include:
 - **Account context** — Roblox user hints from client logs and local Roblox app storage only (no browser cookies)
 - **Anti-bypass** — prefetch/BAM tampering, log clearing, Defender exclusions, correlated deletion evidence
 
-Scans are capped at **6 minutes** (`SCAN_MAX_SECONDS = 360`).
+Scans are capped at **3.5 minutes** (`SCAN_MAX_SECONDS = 210`).
 
 ## Quick Start
 
