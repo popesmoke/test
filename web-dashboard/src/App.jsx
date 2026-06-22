@@ -2,6 +2,7 @@ import React from "react";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { SiteLayout } from "./components/SiteLayout.jsx";
 import { AboutPage } from "./pages/About.jsx";
+import { DownloadPage } from "./pages/Download.jsx";
 import { LandingPage } from "./pages/Landing.jsx";
 import { LoginPage } from "./pages/Login.jsx";
 import { PrivacyPolicyPage } from "./pages/PrivacyPolicy.jsx";
@@ -14,9 +15,11 @@ export function AppRouter({ loginError }) {
       <Routes>
         <Route element={<SiteLayout />}>
           <Route index element={<LandingPage />} />
+          <Route path="download" element={<DownloadPage />} />
           <Route path="about" element={<AboutPage />} />
           <Route path="privacy" element={<PrivacyPolicyPage />} />
-          <Route path="terms" element={<TermsOfServicePage />} />
+          <Route path="tos" element={<TermsOfServicePage />} />
+          <Route path="terms" element={<Navigate to="/tos" replace />} />
         </Route>
         <Route path="login" element={<LoginPage loginError={loginError} />} />
         <Route path="workspace/*" element={<WorkspaceApp />} />

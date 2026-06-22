@@ -1,6 +1,5 @@
 import React from "react";
 import { Link, NavLink, Outlet } from "react-router-dom";
-import { MessageCircle, Shield } from "lucide-react";
 import {
   BRAND_FULL,
   BRAND_LOGO,
@@ -9,6 +8,7 @@ import {
   FOOTER_LINKS,
   NAV_LINKS,
 } from "../config/brand.js";
+import { IconDiscord } from "./VirelloIcons.jsx";
 
 export function SiteLayout({ children, variant = "default" }) {
   const content = children ?? <Outlet />;
@@ -40,18 +40,17 @@ export function SiteLayout({ children, variant = "default" }) {
 
           <div className="site-header__actions">
             <a
-              className="site-discord"
+              className="btn btn--ghost btn--sm"
               href={DISCORD_INVITE_URL}
               target="_blank"
               rel="noreferrer"
               title="Join Virello Discord"
             >
-              <MessageCircle size={16} />
+              <IconDiscord size={16} />
               <span>Discord</span>
             </a>
-            <Link to="/workspace" className="site-cta">
-              <Shield size={16} />
-              <span>Open Console</span>
+            <Link to="/workspace" className="btn btn--primary btn--sm">
+              Console
             </Link>
           </div>
         </div>
@@ -76,7 +75,7 @@ export function SiteLayout({ children, variant = "default" }) {
               </Link>
             ))}
             <a href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer">
-              Discord Community
+              Discord
             </a>
           </div>
 

@@ -1,114 +1,90 @@
 import React from "react";
-import { LegalPage, LegalSection } from "../components/LegalPage.jsx";
+import { LegalArticle, LegalDocument } from "../components/LegalPage.jsx";
 
 export function TermsOfServicePage() {
   return (
-    <LegalPage title="Terms of Service" updated="June 2026">
-      <p className="legal-intro">
-        These Terms of Service govern your use of the Virello website, Discord server, desktop
-        scanner, review console, and related services. By accessing or using our services, you agree
-        to these Terms.
+    <LegalDocument
+      badge="Terms"
+      title="Virello"
+      highlight="Terms of Service"
+      updated="June 22, 2026"
+      meta={["By using Virello you agree to these terms"]}
+    >
+      <p className="legal-doc__lead">
+        These terms govern your use of the Virello website, Discord server, desktop scanner, review
+        console, and related services.
       </p>
 
-      <LegalSection title="Service">
+      <LegalArticle index="I" title="Service description">
         <p>
           Virello provides digital diagnostic tools, subscriptions, and support through Discord and
-          this review platform. Features, pricing, availability, and service offerings may be
-          modified, suspended, or discontinued at any time without prior notice.
+          this review platform. Features, pricing, and availability may change without prior notice.
         </p>
-        <p>
-          Scan results are forensic indicators intended to assist human reviewers. They do not
-          constitute definitive proof of cheating and should be interpreted in context.
+        <p className="legal-doc__callout">
+          Scan results are forensic indicators to assist human reviewers — not definitive proof of
+          cheating. Interpret results in context.
         </p>
-      </LegalSection>
+      </LegalArticle>
 
-      <LegalSection title="Eligibility">
+      <LegalArticle index="II" title="Eligibility and accounts">
         <p>
           You must comply with Discord&apos;s Terms of Service and Community Guidelines and be legally
-          capable of entering into this agreement in your jurisdiction.
-        </p>
-      </LegalSection>
-
-      <LegalSection title="Accounts and access">
-        <p>
-          Access to products and services is tied to your Discord account and any roles assigned
-          after a verified purchase or staff approval.
+          capable of entering this agreement in your jurisdiction.
         </p>
         <p>
-          Sharing, transferring, reselling, or granting access to others is prohibited unless
-          explicitly authorized by Virello staff.
+          Access is tied to your Discord account and assigned roles after verified purchase or staff
+          approval. Sharing, reselling, or transferring access is prohibited unless explicitly authorized.
         </p>
-      </LegalSection>
+      </LegalArticle>
 
-      <LegalSection title="Scanner use and consent">
+      <LegalArticle index="III" title="Scanner use and consent">
         <p>
-          The desktop scanner collects diagnostic data only after explicit user consent. Users must
-          be informed of what is collected before a scan begins. Reviewers must use scan data only
-          for legitimate moderation, support, or screenshare purposes.
+          The desktop scanner collects diagnostic data only after explicit user consent. Users must be
+          informed before a scan begins. Reviewers must use scan data only for legitimate moderation,
+          support, or screenshare purposes.
         </p>
-      </LegalSection>
+      </LegalArticle>
 
-      <LegalSection title="Payments">
+      <LegalArticle index="IV" title="Payments and subscriptions">
         <p>
-          All payments must be completed using the methods provided in the Purchase Panel or
-          Purchase Lane. Payments are manually reviewed and verified by staff before access is
-          granted.
+          Payments must use methods provided in the Purchase Panel or Purchase Lane and are manually
+          verified before access is granted.
         </p>
-      </LegalSection>
-
-      <LegalSection title="Subscriptions and cancellation">
         <p>
-          Certain services may be provided on a monthly subscription basis. You may cancel your
-          subscription at any time to prevent future billing. Cancellation does not entitle you to a
-          refund for the current billing period.
+          Subscriptions may renew monthly. Cancel anytime to stop future billing — cancellation does not
+          refund the current period.
         </p>
-      </LegalSection>
+      </LegalArticle>
 
-      <LegalSection title="Refund policy">
-        <p>All sales are final.</p>
+      <LegalArticle index="V" title="Refund policy">
+        <p><strong>All sales are final.</strong></p>
         <p>
-          Due to the nature of digital goods and services, refunds, partial refunds, and prorated
-          refunds are not provided once access has been delivered, except where required by
-          applicable law or in cases of verified billing errors at staff discretion.
+          Due to the nature of digital goods, refunds are not provided once access is delivered, except
+          where required by law or for verified billing errors at staff discretion.
         </p>
-      </LegalSection>
+      </LegalArticle>
 
-      <LegalSection title="Chargebacks and disputes">
-        <p>Users must contact staff before initiating a payment dispute or chargeback.</p>
-        <p>Unauthorized chargebacks or payment reversals may result in:</p>
+      <LegalArticle index="VI" title="Chargebacks and disputes">
+        <p>Contact staff before initiating a payment dispute or chargeback.</p>
+        <p>Unauthorized chargebacks may result in:</p>
         <ul>
           <li>Immediate termination of access</li>
           <li>Permanent removal from Virello services</li>
           <li>Restriction from future purchases</li>
         </ul>
-      </LegalSection>
+      </LegalArticle>
 
-      <LegalSection title="Limitation of liability">
+      <LegalArticle index="VII" title="Liability and termination">
         <p>
-          Virello services are provided &quot;as is&quot; and &quot;as available&quot; without warranties of any kind.
+          Services are provided &quot;as is&quot; without warranties. To the fullest extent permitted by law,
+          Virello is not liable for indirect, incidental, or consequential damages, including decisions
+          based on scan results.
         </p>
         <p>
-          To the fullest extent permitted by law, Virello shall not be liable for any indirect,
-          incidental, consequential, special, or punitive damages arising from the use of our
-          services, including decisions made based on scan results.
+          We may suspend or terminate access for violations, abuse, fraud, or behavior harmful to the
+          community. Terms may be updated at any time; continued use constitutes acceptance.
         </p>
-      </LegalSection>
-
-      <LegalSection title="Termination">
-        <p>
-          We reserve the right to suspend or terminate access to our services at any time for
-          violations of these Terms, abuse of our systems, fraudulent activity, or any behavior
-          deemed harmful to the community or service.
-        </p>
-      </LegalSection>
-
-      <LegalSection title="Changes to these terms">
-        <p>We may update these Terms at any time.</p>
-        <p>
-          Continued use of Virello services after changes are posted constitutes acceptance of the
-          revised Terms.
-        </p>
-      </LegalSection>
-    </LegalPage>
+      </LegalArticle>
+    </LegalDocument>
   );
 }

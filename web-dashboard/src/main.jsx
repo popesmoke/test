@@ -38,7 +38,10 @@ import { SimpleResults } from "./SimpleResults.jsx";
 import { TutorialGuide } from "./TutorialGuide.jsx";
 import { AppRouter } from "./App.jsx";
 import { API_URL, BRAND_FULL, BRAND_LOGO, DISCORD_INVITE_URL } from "./config/brand.js";
-import { authHeaders, DISCORD_ERROR_MESSAGES, setStoredToken, startDiscordLogin } from "./lib/auth.js";
+import { authHeaders, DISCORD_ERROR_MESSAGES, startDiscordLogin } from "./lib/auth.js";
+import { consumeAuthCallback } from "./lib/authCallback.js";
+
+const AUTH_CALLBACK = consumeAuthCallback();
 
 const BRAND_NAME = BRAND_FULL;
 
@@ -2898,7 +2901,14 @@ export function Dashboard({ token, onLogout }) {
 }
 
 function Root() {
-  const [loginError, setLoginError] = useState("");
+  const [loginError, setLoginError] = useState(() => {
+    if (AUTH_CALLBACK?.kind === "error") {
+      return AUTH_CALLBACK.message;
+    }
+    const params = new URLSearchParams(window.location.search);
+    const err = params.get("error");
+    return err ? (DISCORD_ERROR_MESSAGES[err] || "Discord login failed. Please try again.") : "";
+  });
 
   useEffect(() => {
     document.title = BRAND_FULL;
@@ -2906,26 +2916,10 @@ function Root() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const nextToken = params.get("token");
-    const discordError = params.get("discord_error");
-    if (!nextToken && !discordError) {
-      return;
-    }
-    const cleanUrl = `${window.location.origin}/workspace`;
-    window.history.replaceState({}, document.title, cleanUrl);
-    if (nextToken) {
-      setStoredToken(nextToken);
-      window.location.replace("/workspace");
-      return;
-    }
-    window.location.replace(`/login?error=${encodeURIComponent(discordError || "discord_auth_failed")}`);
-  }, []);
-
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const discordError = params.get("error");
-    if (discordError) {
-      setLoginError(DISCORD_ERROR_MESSAGES[discordError] || "Discord login failed. Please try again.");
+    const err = params.get("error");
+    if (err) {
+      setLoginError(DISCORD_ERROR_MESSAGES[err] || "Discord login failed. Please try again.");
+      window.history.replaceState({}, document.title, "/login");
     }
   }, []);
 

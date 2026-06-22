@@ -1,67 +1,56 @@
 import React from "react";
-import { MessageCircle, Shield, Target, Users } from "lucide-react";
-import { LegalPage, LegalSection } from "../components/LegalPage.jsx";
 import { DISCORD_INVITE_URL } from "../config/brand.js";
+import { IconDiscord, IconLock, IconTarget, IconUsers } from "../components/VirelloIcons.jsx";
+import { LegalArticle, LegalDocument } from "../components/LegalPage.jsx";
 
 export function AboutPage() {
   return (
-    <LegalPage title="About Virello" updated="June 2026">
-      <LegalSection title="Who we are">
-        <p>
-          Virello is a Roblox executor diagnostic platform built for reviewers who need fast checks,
-          clear evidence, and reliable protection — without noisy setup or ambiguous results.
-        </p>
-        <p>
-          We combine consent-first desktop scanning with a structured review console so support teams,
-          community moderators, and screenshare reviewers can make confident decisions backed by
-          forensic data.
-        </p>
-      </LegalSection>
+    <LegalDocument badge="About" title="Who" highlight="We Are" updated="June 2026">
+      <p className="legal-doc__lead">
+        Virello is a Roblox executor diagnostic platform for reviewers who need fast checks, clear
+        evidence, and steady protection — without noisy setup or ambiguous results.
+      </p>
 
-      <LegalSection title="What we focus on">
+      <LegalArticle index="I" title="What we focus on">
         <ul>
-          <li>Scanning and verifying Roblox executor-related risk signals across multiple artifact layers.</li>
-          <li>License-based access protection tied to verified Discord roles.</li>
-          <li>Continuous detection updates delivered through our Discord community.</li>
-          <li>Low false-positive scoring with evidence reliability tiers and cross-source correlation.</li>
+          <li>Scanning and verifying Roblox executor risk across multiple forensic layers</li>
+          <li>License-based access tied to verified Discord roles</li>
+          <li>Continuous detection updates through our community</li>
+          <li>Low false-positive scoring with evidence reliability tiers</li>
         </ul>
-      </LegalSection>
+      </LegalArticle>
 
-      <LegalSection title="How we work">
+      <LegalArticle index="II" title="How we work">
         <p>
-          Purchases, support, verification, and account help run through private Discord lanes so
-          every user can keep their case organized with staff. The review console on this site is
-          where verified reviewers manage PIN sessions and inspect completed scans.
+          Purchases, support, verification, and account help run through private Discord lanes. The
+          review console on this site is where verified reviewers manage PIN sessions and inspect scans.
         </p>
         <div className="about-cards">
           <div className="about-card">
-            <Shield size={20} />
+            <IconLock size={22} />
             <strong>Secure by design</strong>
-            <p>No passwords, .ROBLOSECURITY cookies, or message contents are collected during scans.</p>
+            <p>No passwords, .ROBLOSECURITY cookies, or message contents are collected.</p>
           </div>
           <div className="about-card">
-            <Target size={20} />
+            <IconTarget size={22} />
             <strong>Accuracy first</strong>
-            <p>Detection is calibrated for real-world screenshare — strong evidence only when corroborated.</p>
+            <p>Strong evidence only when corroborated across multiple artifact sources.</p>
           </div>
           <div className="about-card">
-            <Users size={20} />
+            <IconUsers size={22} />
             <strong>Community-driven</strong>
-            <p>Updates, support, and access verification flow through our Discord server.</p>
+            <p>Updates, support, and access verification flow through Discord.</p>
           </div>
         </div>
-      </LegalSection>
+      </LegalArticle>
 
-      <LegalSection title="Get in touch">
-        <p>
-          For support, access questions, or partnership inquiries, join our Discord community and open
-          a support lane.
-        </p>
-        <a className="about-discord" href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer">
-          <MessageCircle size={18} />
+      <LegalArticle index="III" title="Contact">
+        <p>For support or access questions, join our Discord and open a support lane.</p>
+        <a className="btn btn--discord" href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer">
+          <IconDiscord size={18} />
           Join Virello Discord
         </a>
-      </LegalSection>
-    </LegalPage>
+      </LegalArticle>
+    </LegalDocument>
   );
 }

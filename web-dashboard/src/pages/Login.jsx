@@ -1,15 +1,15 @@
-import React, { useEffect, useState } from "react";
+import React from "react";
 import { Navigate } from "react-router-dom";
-import { MessageCircle, Shield } from "lucide-react";
 import { BRAND_FULL, BRAND_LOGO, DISCORD_INVITE_URL } from "../config/brand.js";
+import { IconDiscord } from "../components/VirelloIcons.jsx";
 import { getStoredToken, startDiscordLogin } from "../lib/auth.js";
 
 export function LoginPage({ loginError }) {
   const token = getStoredToken();
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState(loginError || "");
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState(loginError || "");
 
-  useEffect(() => {
+  React.useEffect(() => {
     setError(loginError || "");
   }, [loginError]);
 
@@ -40,19 +40,18 @@ export function LoginPage({ loginError }) {
         <div className="auth-card__body">
           {error ? <p className="error">{error}</p> : null}
           <div className="auth-card__notice">
-            <Shield size={18} />
             <p>
               You need the <strong>Access</strong> role in our Discord server to generate PINs and
-              view completed scans. You can still sign in to see next steps.
+              view completed scans.
             </p>
           </div>
           <a className="auth-discord-link" href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer">
-            <MessageCircle size={16} />
-            Need access? Join the Discord server
+            <IconDiscord size={16} />
+            Need access? Join Discord
           </a>
-          <button className="primary discord-login-button" type="button" onClick={handleDiscordLogin} disabled={busy}>
-            <MessageCircle size={18} />
-            {busy ? "Connecting to Discord..." : "Continue with Discord"}
+          <button className="btn btn--discord btn--lg" type="button" onClick={handleDiscordLogin} disabled={busy}>
+            <IconDiscord size={18} />
+            {busy ? "Connecting..." : "Continue with Discord"}
           </button>
         </div>
       </div>
