@@ -1,20 +1,22 @@
 /* ─── Workspace console — distinct from sidebar-scanner UIs ─── */
 
 :root {
-  --ws-bg: #080b10;
-  --ws-surface: #0e1319;
-  --ws-surface-2: #141b24;
-  --ws-line: rgba(148, 163, 184, 0.12);
-  --ws-line-strong: rgba(148, 163, 184, 0.22);
-  --ws-text: #e8edf3;
-  --ws-muted: #8b9aab;
-  --ws-dim: #5c6b7a;
-  --ws-accent: #4d9fff;
-  --ws-accent-dim: rgba(77, 159, 255, 0.14);
-  --ws-ok: #34d399;
+  --ws-bg: #0a0809;
+  --ws-surface: #110d0f;
+  --ws-surface-2: #181214;
+  --ws-line: rgba(239, 35, 60, 0.1);
+  --ws-line-strong: rgba(239, 35, 60, 0.22);
+  --ws-text: #f3ecee;
+  --ws-muted: #b8a8ad;
+  --ws-dim: #7a656b;
+  --ws-accent: #ef233c;
+  --ws-accent-bright: #ff4d5f;
+  --ws-accent-dim: rgba(239, 35, 60, 0.14);
+  --ws-accent-glow: rgba(239, 35, 60, 0.28);
+  --ws-ok: #ff6b7a;
   --ws-warn: #fbbf24;
-  --ws-bad: #f87171;
-  --ws-radius: 3px;
+  --ws-bad: #ef233c;
+  --ws-radius: 6px;
   --ws-font-mono: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
 }
 
@@ -23,13 +25,13 @@
   display: flex;
   flex-direction: column;
   background:
-    linear-gradient(180deg, rgba(77, 159, 255, 0.04) 0%, transparent 28%),
+    linear-gradient(180deg, rgba(239, 35, 60, 0.05) 0%, transparent 28%),
     repeating-linear-gradient(
       90deg,
       transparent,
       transparent 79px,
-      rgba(148, 163, 184, 0.03) 79px,
-      rgba(148, 163, 184, 0.03) 80px
+      rgba(239, 35, 60, 0.025) 79px,
+      rgba(239, 35, 60, 0.025) 80px
     ),
     var(--ws-bg);
   color: var(--ws-text);
@@ -266,25 +268,45 @@
 }
 
 .ws-case-item__del {
+  flex-shrink: 0;
+  align-self: stretch;
   display: grid;
   place-items: center;
-  width: 28px;
+  width: 36px;
+  min-height: 44px;
   border: none;
   border-left: 1px solid transparent;
+  border-radius: 0 var(--ws-radius) var(--ws-radius) 0;
   background: transparent;
   color: var(--ws-dim);
   cursor: pointer;
   opacity: 0;
+  transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
 }
 
 .ws-case-item:hover .ws-case-item__del,
 .ws-case-item--active .ws-case-item__del {
   opacity: 1;
+  border-left-color: var(--ws-line);
 }
 
 .ws-case-item__del:hover {
-  color: var(--ws-bad);
-  background: rgba(248, 113, 113, 0.1);
+  color: var(--ws-accent-bright);
+  background: var(--ws-accent-dim);
+}
+
+.ws-case-item--flash {
+  animation: ws-case-flash 1.4s ease;
+}
+
+@keyframes ws-case-flash {
+  0%,
+  100% {
+    box-shadow: none;
+  }
+  35% {
+    box-shadow: inset 0 0 0 1px var(--ws-accent), 0 0 12px var(--ws-accent-glow);
+  }
 }
 
 /* ─── Workspace body ─── */
@@ -641,7 +663,68 @@
   line-height: 1.5;
 }
 
-/* ─── Data records (Roblox etc. — no avatar lists) ─── */
+/* ─── Account cards (Roblox, Discord) ─── */
+
+.ws-account-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+}
+
+.ws-account-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--ws-line);
+  border-radius: var(--ws-radius);
+  background: var(--ws-surface);
+  text-decoration: none;
+  color: inherit;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.ws-account-card:hover {
+  border-color: var(--ws-line-strong);
+  background: var(--ws-surface-2);
+}
+
+.ws-account-card__avatar {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+  border: 2px solid var(--ws-line-strong);
+  background: var(--ws-surface-2);
+}
+
+.ws-account-card__body {
+  min-width: 0;
+  flex: 1;
+}
+
+.ws-account-card__name {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ws-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ws-account-card__link {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--ws-accent);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ─── Data records (legacy table rows) ─── */
 
 .ws-records {
   display: grid;
@@ -769,7 +852,7 @@
 }
 
 .ws-bento__verdict--clean {
-  border-left: 3px solid var(--ws-ok);
+  border-left: 3px solid var(--ws-accent);
 }
 
 .ws-bento__verdict--watch {
@@ -1040,8 +1123,18 @@
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  background: rgba(248, 113, 113, 0.15);
-  color: var(--ws-bad);
+  background: var(--ws-accent-dim);
+  color: var(--ws-accent-bright);
+}
+
+.ws-tag--bad {
+  background: rgba(239, 35, 60, 0.2);
+  color: var(--ws-accent-bright);
+}
+
+.ws-tag--warn {
+  background: rgba(251, 191, 36, 0.15);
+  color: var(--ws-warn);
 }
 
 .ws-filter-row {
@@ -1171,8 +1264,37 @@
 }
 
 .workspace-toast {
-  padding: 0 20px;
-  margin: 12px 0 0;
+  position: fixed;
+  top: 60px;
+  right: 20px;
+  z-index: 50;
+  max-width: min(360px, calc(100vw - 40px));
+  padding: 10px 14px;
+  margin: 0;
+  border-radius: var(--ws-radius);
+  border: 1px solid var(--ws-line-strong);
+  background: var(--ws-surface-2);
+  color: var(--ws-text);
+  font-size: 13px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  animation: ws-toast-in 0.2s ease;
+}
+
+.workspace-toast.error-banner {
+  border-color: rgba(239, 35, 60, 0.45);
+  background: #1a0a0e;
+  color: #ffd5da;
+}
+
+@keyframes ws-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 /* ─── Responsive ─── */

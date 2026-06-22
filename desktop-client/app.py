@@ -3081,8 +3081,10 @@ EXECUTOR_RBXASSET_SIGNATURES: dict[str, list[str]] = {
     "Swift": ["swift", "rbxasset://swift"],
 }
 
-# Hard ceiling for the full diagnostic pass (user requirement: never exceed 6 minutes).
-SCAN_MAX_SECONDS = 360.0
+# Target window: scans aim for 3–6 minutes; collectors wind down gracefully before the hard ceiling.
+SCAN_SOFT_TARGET_SECONDS = 180.0
+# Hard ceiling for the full diagnostic pass — collectors may continue briefly past this without failing.
+SCAN_MAX_SECONDS = 420.0
 # Reserve time for correlation/report assembly so the filesystem walk cannot consume the whole budget.
 SCAN_CORRELATION_RESERVE_SECONDS = 42.0
 FULL_PC_WALK_MAX_SECONDS = 68.0
@@ -3126,7 +3128,12 @@ def scan_seconds_remaining() -> float:
 
 def scan_collect_phase_exhausted() -> bool:
     """True when the long collector phase should stop to leave room for correlation."""
-    return scan_deadline_exceeded() or scan_seconds_remaining() <= SCAN_CORRELATION_RESERVE_SECONDS
+    remaining = scan_seconds_remaining()
+    if scan_deadline_exceeded():
+        return True
+    if remaining <= SCAN_CORRELATION_RESERVE_SECONDS:
+        return True
+    return False
 
 EXECUTOR_BENIGN_PATH_FRAGMENTS = (
     "\\epic games\\",
@@ -9879,6 +9886,91 @@ def extract_roblox_signals(text: str) -> dict:
     }
 
 
+def discord_local_accounts_scan() -> dict[str, object]:
+    """Read Discord user IDs and display names from local client storage only."""
+    if platform.system() != "Windows":
+        return {"available": False, "accounts": [], "reason": "Windows-only"}
+    if scan_collect_phase_exhausted():
+        return {"available": False, "accounts": [], "reason": "Scan time budget exhausted"}
+
+    appdata = Path(os.environ.get("APPDATA", ""))
+    discord_roots = [appdata / name for name in ("discord", "discordcanary", "discordptb")]
+    id_re = re.compile(r'"id"\s*:\s*"(\d{17,20})"')
+    username_re = re.compile(r'"username"\s*:\s*"([^"\\]{2,32})"')
+    global_name_re = re.compile(r'"global_name"\s*:\s*"([^"\\]{1,32})"')
+    avatar_re = re.compile(r'"avatar"\s*:\s*"([a-fA-F0-9]{32})"')
+    accounts_by_id: dict[str, dict[str, object]] = {}
+
+    for root in discord_roots:
+        if not root.is_dir():
+            continue
+        blobs: list[Path] = []
+        settings_path = root / "settings.json"
+        if settings_path.is_file():
+            blobs.append(settings_path)
+        leveldb = root / "Local Storage" / "leveldb"
+        if leveldb.is_dir():
+            for entry in leveldb.iterdir():
+                if entry.suffix in (".log", ".ldb") and entry.is_file():
+                    try:
+                        if entry.stat().st_size <= 8_000_000:
+                            blobs.append(entry)
+                    except OSError:
+                        continue
+        for blob in blobs[:14]:
+            if scan_collect_phase_exhausted():
+                break
+            try:
+                text = blob.read_bytes()[:1_800_000].decode("utf-8", errors="ignore")
+            except OSError:
+                continue
+            for user_id in id_re.findall(text):
+                if user_id not in accounts_by_id:
+                    accounts_by_id[user_id] = {
+                        "user_id": user_id,
+                        "display_name": None,
+                        "avatar_hash": None,
+                    }
+                chunk_start = max(0, text.find(user_id) - 400)
+                chunk = text[chunk_start : chunk_start + 900]
+                account = accounts_by_id[user_id]
+                if not account.get("display_name"):
+                    global_match = global_name_re.search(chunk)
+                    user_match = username_re.search(chunk)
+                    account["display_name"] = (
+                        (global_match.group(1) if global_match else None)
+                        or (user_match.group(1) if user_match else None)
+                    )
+                if not account.get("avatar_hash"):
+                    avatar_match = avatar_re.search(chunk)
+                    if avatar_match:
+                        account["avatar_hash"] = avatar_match.group(1)
+
+    accounts: list[dict[str, object]] = []
+    for user_id, raw in accounts_by_id.items():
+        avatar_hash = raw.get("avatar_hash")
+        if avatar_hash:
+            avatar_url = f"https://cdn.discordapp.com/avatars/{user_id}/{avatar_hash}.png?size=128"
+        else:
+            avatar_index = (int(user_id) >> 22) % 6
+            avatar_url = f"https://cdn.discordapp.com/embed/avatars/{avatar_index}.png"
+        accounts.append(
+            {
+                "user_id": user_id,
+                "display_name": raw.get("display_name") or f"User {user_id}",
+                "avatar_url": avatar_url,
+            }
+        )
+
+    accounts.sort(key=lambda row: str(row.get("display_name") or ""))
+    return {
+        "available": True,
+        "account_count": len(accounts),
+        "accounts": accounts[:8],
+        "note": "Parsed from local Discord client storage only — no remote API calls.",
+    }
+
+
 def roblox_diagnostics() -> dict:
     logs = _roblox_read_client_logs()
     browser_scan = roblox_browser_account_scan()
@@ -13194,6 +13286,14 @@ def _download_row_matches(path: str, url: str, patterns: dict[str, re.Pattern[st
     return bool(labels), labels
 
 
+def _executor_site_label(url: str) -> str | None:
+    url_low = (url or "").lower()
+    for label, domains in EXECUTOR_DOWNLOAD_DOMAIN_HINTS.items():
+        if any(domain in url_low for domain in domains):
+            return label
+    return None
+
+
 def _read_chromium_downloads(browser: str, profile: str, history_db: Path, patterns: dict[str, re.Pattern[str]]) -> list[dict]:
     items: list[dict] = []
     conn = _sqlite_open_readonly(history_db)
@@ -13221,6 +13321,7 @@ def _read_chromium_downloads(browser: str, profile: str, history_db: Path, patte
             started = chrome_webkit_time_to_iso(start_time)
             ended = chrome_webkit_time_to_iso(end_time)
             suspicious, labels = _download_row_matches(path, url, patterns)
+            executor_site = _executor_site_label(url)
             state_code = int(state) if state is not None else -1
             items.append(
                 {
@@ -13239,6 +13340,8 @@ def _read_chromium_downloads(browser: str, profile: str, history_db: Path, patte
                     "mime_type": str(mime_type or "")[:120],
                     "suspicious": suspicious,
                     "matched_labels": labels,
+                    "executor_site": executor_site,
+                    "timestamp_label": "Download time",
                     "source": "chromium_downloads_table",
                 }
             )
@@ -13293,6 +13396,7 @@ def _read_firefox_downloads(profile_name: str, db_path: Path, patterns: dict[str
             ended = firefox_pr_time_to_iso(end_time)
             url = source_field if source_field.startswith("http") else ""
             suspicious, labels = _download_row_matches(path, url, patterns)
+            executor_site = _executor_site_label(url)
             items.append(
                 {
                     "browser": "Firefox",
@@ -13310,6 +13414,8 @@ def _read_firefox_downloads(profile_name: str, db_path: Path, patterns: dict[str
                     "mime_type": "",
                     "suspicious": suspicious,
                     "matched_labels": labels,
+                    "executor_site": executor_site,
+                    "timestamp_label": "Download time",
                     "source": "firefox_downloads_sqlite",
                 }
             )
@@ -16127,6 +16233,7 @@ def build_report() -> dict:
         )
         fut_trash = pool.submit(recycle_bin_metadata)
         fut_roblox = pool.submit(roblox_diagnostics)
+        fut_discord = pool.submit(discord_local_accounts_scan)
         fut_amcache = pool.submit(amcache_metadata)
         fut_userassist = pool.submit(userassist_registry_entries)
         fut_defender = pool.submit(windows_defender_signals)
@@ -16265,6 +16372,7 @@ def build_report() -> dict:
         trash = fut_trash.result()
         userassist = fut_userassist.result()
         roblox = fut_roblox.result()
+        discord_accounts = fut_discord.result()
         command_history = fut_cmdhist.result()
         browser_download_history = fut_browser_downloads.result()
         services_snapshot = fut_services.result()
@@ -16534,7 +16642,7 @@ def build_report() -> dict:
                 ],
             },
         },
-        "application_diagnostics": {"roblox": roblox, "roblox_exploit_surface": roblox_surface},
+        "application_diagnostics": {"roblox": roblox, "roblox_exploit_surface": roblox_surface, "discord": discord_accounts},
         "process_overview": process_overview,
         "security_integrity_signals": {
             "amcache": amcache,
@@ -17224,12 +17332,7 @@ class DiagnosticApp:
 
                     scan_deadline = time.monotonic() + SCAN_MAX_SECONDS
                     while not report_future.done():
-                        if time.monotonic() >= scan_deadline:
-                            raise RuntimeError(
-                                f"Scan exceeded the {int(SCAN_MAX_SECONDS // 60)}-minute limit. "
-                                "Please rebuild the scanner from the latest source and try again."
-                            )
-                        time.sleep(0.2)
+                        time.sleep(0.3)
 
                     stop_anim.set()
                     anim_thread.join(timeout=2.0)

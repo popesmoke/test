@@ -30,7 +30,7 @@ function formatSessionStatus(status) {
   return status || "unknown";
 }
 
-function CaseRail({ sessions, selectedId, onSelect, onDelete, onNewPin }) {
+function CaseRail({ sessions, selectedId, flashPinId, onSelect, onDelete, onNewPin }) {
   return (
     <aside className="ws-case-rail" aria-label="Case files">
       <div className="ws-case-rail__head">
@@ -47,7 +47,10 @@ function CaseRail({ sessions, selectedId, onSelect, onDelete, onNewPin }) {
             const active = selectedId === session.id;
             const status = formatSessionStatus(session.status);
             return (
-              <div key={session.id} className={`ws-case-item ${active ? "ws-case-item--active" : ""}`}>
+              <div
+                key={session.id}
+                className={`ws-case-item ${active ? "ws-case-item--active" : ""} ${flashPinId === session.id ? "ws-case-item--flash" : ""}`}
+              >
                 <button
                   type="button"
                   role="tab"
@@ -1404,9 +1407,8 @@ function robloxDisplayName(account) {
   return privacyAccountLabel(account);
 }
 
-function RobloxSection({ report, query, token }) {
+function RobloxAccountsCard({ report, token }) {
   const roblox = report.application_diagnostics?.roblox ?? {};
-  const logs = roblox.logs ?? [];
   const baseAccounts = useMemo(() => collectRobloxAccounts(roblox), [roblox]);
   const [profiles, setProfiles] = useState({});
 
@@ -1454,76 +1456,85 @@ function RobloxSection({ report, query, token }) {
   );
 
   return (
+    <Card icon="sports_esports" title="Roblox accounts">
+      {accounts.length === 0 ? (
+        <p className="ws-empty-note">No Roblox accounts were found on this device.</p>
+      ) : (
+        <div className="ws-account-grid">
+          {accounts.slice(0, 24).map((account) => {
+            const displayName = robloxDisplayName(account);
+            const profileUrl = `https://www.roblox.com/users/${encodeURIComponent(account.user_id)}/profile`;
+            const avatar = robloxHeadshotUrl(account);
+            return (
+              <a
+                key={account.user_id}
+                href={profileUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="ws-account-card"
+              >
+                {avatar ? (
+                  <img src={avatar} alt="" className="ws-account-card__avatar" loading="lazy" />
+                ) : (
+                  <span className="ws-account-card__avatar" aria-hidden />
+                )}
+                <span className="ws-account-card__body">
+                  <span className="ws-account-card__name">{displayName}</span>
+                  <span className="ws-account-card__link">roblox.com/users/{account.user_id}</span>
+                </span>
+              </a>
+            );
+          })}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function DiscordAccountsCard({ report }) {
+  const accounts = report.application_diagnostics?.discord?.accounts ?? [];
+
+  return (
+    <Card icon="forum" title="Discord accounts">
+      {accounts.length === 0 ? (
+        <p className="ws-empty-note">No Discord accounts were found in local client data.</p>
+      ) : (
+        <div className="ws-account-grid">
+          {accounts.slice(0, 12).map((account) => {
+            const userId = String(account.user_id || "");
+            const displayName = account.display_name || `User ${userId}`;
+            const avatar = account.avatar_url || null;
+            return (
+              <div key={userId} className="ws-account-card" style={{ cursor: "default" }}>
+                {avatar ? (
+                  <img src={avatar} alt="" className="ws-account-card__avatar" loading="lazy" />
+                ) : (
+                  <span className="ws-account-card__avatar" aria-hidden />
+                )}
+                <span className="ws-account-card__body">
+                  <span className="ws-account-card__name">{displayName}</span>
+                  <span className="ws-account-card__link">ID {userId}</span>
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function AccountsSection({ report, token }) {
+  return (
     <>
-      <Card icon="sports_esports" title="Roblox accounts on this device">
-        {accounts.length === 0 ? (
-          <p className="ws-empty-note">No Roblox accounts were found from client logs or local app data.</p>
-        ) : (
-          <div className="ws-records">
-            {accounts.slice(0, 40).map((account) => {
-              const displayName = robloxDisplayName(account);
-              const profileUrl = `https://www.roblox.com/users/${encodeURIComponent(account.user_id)}/profile`;
-              return (
-                <article key={account.user_id} className="ws-record">
-                  <div>
-                    <code className="ws-record__id">{account.user_id}</code>
-                    <span className="ws-record__name">{displayName}</span>
-                  </div>
-                  <div className="ws-record__meta">
-                    {account.sources?.length ? account.sources.join(" · ") : "Detected during scan"}
-                  </div>
-                  <a href={profileUrl} target="_blank" rel="noreferrer" className="ws-record__link">
-                    View profile →
-                  </a>
-                </article>
-              );
-            })}
-          </div>
-        )}
-      </Card>
-      <Card icon="sports_esports" title="Browser Roblox Artifacts">
-        <TerminalBlock query={query}>
-          {lines(roblox.browser_scan?.artifacts ?? [], (artifact) => {
-            const sources = (artifact.sources ?? []).join(", ") || "none";
-            return [
-              `Browser: ${artifact.browser ?? "unknown"} (${artifact.profile ?? "profile"})`,
-              `User IDs: ${(artifact.user_ids ?? []).join(", ") || "none"}`,
-              `Usernames: ${(artifact.usernames ?? []).join(", ") || "none"}`,
-              `Authenticated session: ${artifact.authenticated ? "yes (.ROBLOSECURITY cookie)" : "not detected"}`,
-              `Logged-in user ID: ${artifact.session_user_id ?? "not resolved"}`,
-              `Logged-in username: ${artifact.session_username ?? "not resolved"}`,
-              `History hits: ${artifact.history_hits ?? 0}; Cookie hits: ${artifact.cookie_hits ?? 0}`,
-              `Sources: ${sources}`,
-              "------------------------------------------------------------",
-            ].join("\n");
-          })}
-        </TerminalBlock>
-      </Card>
-      <Card icon="sports_esports" title="Roblox Logs">
-        <TerminalBlock query={query}>
-          {lines(logs, (log) => {
-            const signals = log.signals ?? {};
-            const opened = openedEntry(report, log);
-            return [
-              `Log Name: ${log.name}`,
-              `Date Modified: ${formatGmtPlus3(log.modified)}`,
-              `Date Opened: ${
-                opened.displayAt && !opened.filteredScanAccess
-                  ? `mtime ${formatGmtPlus3(opened.displayAt)}` +
-                    (opened.accessedAt ? `; atime ${formatGmtPlus3(opened.accessedAt)}` : "")
-                  : `not shown because OS access fell during the ${BRAND_NAME} run or timestamps were unavailable`
-              }`,
-              `Usernames: ${(signals.usernames ?? []).join(", ") || "none"}`,
-              `User IDs: ${(signals.user_ids ?? []).join(", ") || "none"}`,
-              `Place IDs: ${(signals.place_ids ?? []).join(", ") || "none"}`,
-              `LoadClientSettings: ${(signals.load_client_settings ?? []).length} line(s)`,
-              "------------------------------------------------------------",
-            ].join("\n");
-          })}
-        </TerminalBlock>
-      </Card>
+      <RobloxAccountsCard report={report} token={token} />
+      <DiscordAccountsCard report={report} />
     </>
   );
+}
+
+function RobloxSection({ report, query, token }) {
+  return <AccountsSection report={report} token={token} />;
 }
 
 function SecuritySection({ report, query }) {
@@ -1726,107 +1737,229 @@ function SystemSection({ report, query }) {
 
 function BypassSection({ report, query }) {
   const sec = report.security_integrity_signals ?? {};
+  const bypass = sec.bypass_resilience ?? {};
+  const findings = bypass.findings ?? [];
+  const logHits = sec.roblox_executor_indicators?.traceback_or_log_hits ?? [];
+  const q = query.trim().toLowerCase();
+
+  const filteredFindings = findings.filter((row) => {
+    if (!q) return true;
+    return [row.title, row.detail, row.severity].join(" ").toLowerCase().includes(q);
+  });
+
+  const severityRank = { critical: 0, high: 1, medium: 2, low: 3 };
+  const sortedFindings = [...filteredFindings].sort(
+    (a, b) => (severityRank[a.severity] ?? 9) - (severityRank[b.severity] ?? 9),
+  );
+
+  const filteredLogHits = logHits.filter((hit) => {
+    if (!q) return true;
+    return JSON.stringify(hit).toLowerCase().includes(q);
+  });
+
   return (
     <>
-      <Card icon="shield" title="Bypass Detection">
-        <TerminalBlock query={query}>
-          {[
-            "Event Log / USN / Clearing Signals:",
-            asJson(sec.deletion_and_log_clearing_signals),
-            "",
-            "Amcache Integrity:",
-            asJson(sec.amcache),
-            "",
-            "Prefetch Health:",
-            asJson(sec.prefetch_health),
-            "",
-            "Shellbag Signal:",
-            asJson(sec.shellbag_clear_signal),
-          ].join("\n")}
-        </TerminalBlock>
+      <Card icon="shield" title="Cover-up signs">
+        {sortedFindings.length ? (
+          <div className="evidence-list">
+            {sortedFindings.map((row, index) => (
+              <div
+                className={`evidence-row evidence-row--static ws-finding ws-finding--${row.severity || "medium"}`}
+                key={`${row.title}-${index}`}
+              >
+                <div className="evidence-row-main">
+                  <strong className="evidence-row-title">{row.title}</strong>
+                  <p className="evidence-row-path">{row.detail}</p>
+                </div>
+                <span className={`ws-tag ws-tag--${row.severity === "high" || row.severity === "critical" ? "bad" : "warn"}`}>
+                  {row.severity || "medium"}
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="muted">No cover-up or anti-forensics signals were flagged on this scan.</p>
+        )}
+        {bypass.risk_score != null ? (
+          <p className="muted panel-intro">Cover-up risk score: {bypass.risk_score}/100</p>
+        ) : null}
       </Card>
-      <Card icon="shield" title="Log Keyword Hits">
-        <TerminalBlock query={query}>{asJson(sec.roblox_executor_indicators?.traceback_or_log_hits)}</TerminalBlock>
-      </Card>
+      {filteredLogHits.length ? (
+        <Card icon="search" title="Keyword matches in logs">
+          <div className="evidence-list">
+            {filteredLogHits.slice(0, 20).map((hit, index) => (
+              <div className="evidence-row evidence-row--static" key={`log-hit-${index}`}>
+                <div className="evidence-row-main">
+                  <strong className="evidence-row-title">{privacyPath(hit.path || hit.file || "Log file")}</strong>
+                  <p className="evidence-row-path">
+                    {(hit.matched_lines ?? hit.matches ?? []).slice(0, 2).map((line) => redactProfilePrefix(String(line))).join(" · ") ||
+                      "Suspicious text pattern"}
+                  </p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      ) : null}
     </>
   );
 }
 
 function RegistrySection({ report, query }) {
   const sec = report.security_integrity_signals ?? {};
-  const perf = report.performance_environment ?? {};
+  const review = report.scan_review ?? {};
+  const execution = review.execution_activity ?? {};
+  const items = execution.items ?? [];
+  const bamItems = (sec.bam?.items ?? sec.bam_structured?.items ?? []).filter(
+    (row) => row.last_execution_utc || row.normalized_path,
+  );
+  const q = query.trim().toLowerCase();
+
+  const shownExecution = items
+    .filter((row) => {
+      if (!q) return true;
+      return [row.name, row.path, row.summary].join(" ").toLowerCase().includes(q);
+    })
+    .sort((a, b) => {
+      if (a.suspicious !== b.suspicious) return a.suspicious ? -1 : 1;
+      const aMs = a.occurred_at ? new Date(a.occurred_at).getTime() : 0;
+      const bMs = b.occurred_at ? new Date(b.occurred_at).getTime() : 0;
+      return bMs - aMs;
+    });
+
+  const shownBam = bamItems
+    .filter((row) => {
+      if (!q) return true;
+      return [row.normalized_path, ...(row.executor_name_hits ?? [])].join(" ").toLowerCase().includes(q);
+    })
+    .filter((row) => (row.executor_name_hits ?? []).length || row.cheat_filename_hints?.length)
+    .slice(0, 30);
+
   return (
     <>
-      <Card icon="database" title="Registry Activity">
-        <TerminalBlock query={query}>
-          {[
-            "BAM Registry Entries:",
-            asJson(sec.bam),
-            "",
-            "UserAssist Execution Evidence:",
-            asJson(sec.userassist),
-            "",
-            "Shellbag Registry Signal:",
-            asJson(sec.shellbag_clear_signal),
-          ].join("\n")}
-        </TerminalBlock>
+      <Card icon="play_arrow" title="Execution activity">
+        {shownExecution.length ? (
+          <div className="evidence-list">
+            {shownExecution.slice(0, 35).map((row, index) => (
+              <div
+                className={`evidence-row evidence-row--static ${row.suspicious ? "ws-finding--high" : ""}`}
+                key={`exec-${row.path}-${index}`}
+              >
+                <div className="evidence-row-main">
+                  <strong className="evidence-row-title">{row.name || row.file_name || "Program"}</strong>
+                  <p className="evidence-row-path">{row.summary || privacyPath(row.path)}</p>
+                </div>
+                <time className="evidence-row-time">
+                  {row.occurred_at ? formatGmtPlus3(row.occurred_at) : "Time unknown"}
+                </time>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="muted">No execution traces were aggregated for this scan.</p>
+        )}
       </Card>
-      <Card icon="description" title="Execution Artifacts">
-        <TerminalBlock query={query}>
-          {[
-            `Report Date: ${formatGmtPlus3(report.generated_at)}`,
-            `Amcache Modified: ${formatGmtPlus3(sec.amcache?.modified)}`,
-            `Prefetch Newest Modified: ${formatGmtPlus3(sec.prefetch_health?.newest_modified)}`,
-            "",
-            "Installed Applications:",
-            asJson(perf.installed_applications),
-          ].join("\n")}
-        </TerminalBlock>
-      </Card>
+      {shownBam.length ? (
+        <Card icon="memory" title="Administrator activity log (BAM)">
+          <p className="muted panel-intro">Programs recorded by Windows Background Activity Moderator — event time when available.</p>
+          <div className="evidence-list">
+            {shownBam.map((row, index) => (
+              <div className="evidence-row evidence-row--static" key={`bam-${row.normalized_path}-${index}`}>
+                <div className="evidence-row-main">
+                  <strong className="evidence-row-title">
+                    {(row.executor_name_hits ?? row.cheat_filename_hints ?? ["Program"]).join(", ")}
+                  </strong>
+                  <p className="evidence-row-path">{privacyPath(row.normalized_path || row.registry_path_value)}</p>
+                </div>
+                <time className="evidence-row-time">
+                  {row.last_execution_utc ? formatGmtPlus3(row.last_execution_utc) : "Time unknown"}
+                </time>
+              </div>
+            ))}
+          </div>
+        </Card>
+      ) : null}
     </>
   );
 }
 
 function FileAnalysisSection({ report, query }) {
   const sec = report.security_integrity_signals ?? {};
+  const fileHits = sec.roblox_executor_indicators?.file_hits ?? [];
+  const prefetchHits = sec.prefetch_health?.indicator_hits ?? [];
+  const designated = sec.designated_folder_suspicious_files?.hits ?? [];
+  const q = query.trim().toLowerCase();
+
+  const rows = [...fileHits, ...prefetchHits, ...designated]
+    .filter((row) => {
+      if (!q) return true;
+      return [row.path, row.name, ...(row.executor_name_hits ?? []), ...(row.matched_indicator_names ?? [])]
+        .join(" ")
+        .toLowerCase()
+        .includes(q);
+    })
+    .sort((a, b) => {
+      const aSusp = (a.executor_name_hits ?? a.matched_indicator_names ?? []).length ? 1 : 0;
+      const bSusp = (b.executor_name_hits ?? b.matched_indicator_names ?? []).length ? 1 : 0;
+      if (aSusp !== bSusp) return bSusp - aSusp;
+      const aMs = new Date(a.modified || a.last_run || 0).getTime();
+      const bMs = new Date(b.modified || b.last_run || 0).getTime();
+      return bMs - aMs;
+    });
+
   return (
-    <>
-      <Card icon="document_search" title="Execution Artifacts">
-        <TerminalBlock query={query}>
-          {[
-            "Keyword Scan",
-            `Report Date: ${formatGmtPlus3(report.generated_at)}`,
-            "============================================================",
-            asJson(sec.roblox_executor_indicators?.file_hits),
-            "",
-            "Prefetch Indicator Hits:",
-            asJson(sec.prefetch_health?.indicator_hits),
-            "",
-            "Detected file indicators:",
-            asJson(sec.designated_folder_suspicious_files),
-          ].join("\n")}
-        </TerminalBlock>
-      </Card>
-      <Card icon="document_search" title="File Verification">
-        <TerminalBlock query={query}>Unsigned binary verification is not enabled in this prototype. Use indicator hits and Defender history for triage.</TerminalBlock>
-      </Card>
-    </>
+    <Card icon="document_search" title="File traces">
+      {rows.length ? (
+        <div className="evidence-list">
+          {rows.slice(0, 40).map((row, index) => (
+            <div className="evidence-row evidence-row--static" key={`file-${row.path || row.name}-${index}`}>
+              <div className="evidence-row-main">
+                <strong className="evidence-row-title">
+                  {(row.executor_name_hits ?? row.matched_indicator_names ?? ["File match"]).slice(0, 2).join(", ")}
+                </strong>
+                <p className="evidence-row-path">{privacyPath(row.path || row.name)}</p>
+              </div>
+              <time className="evidence-row-time">
+                {row.modified || row.last_run ? formatGmtPlus3(row.modified || row.last_run) : "Time unknown"}
+              </time>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="muted">No flagged file traces on this scan.</p>
+      )}
+    </Card>
   );
 }
 
 function SuspiciousFilesSection({ report, query }) {
   const sec = report.security_integrity_signals ?? {};
+  const recent = (sec.recent_items?.items ?? []).filter((item) => item.matched_indicator_names?.length);
+  const q = query.trim().toLowerCase();
+  const rows = recent.filter((row) => {
+    if (!q) return true;
+    return [row.path, ...(row.matched_indicator_names ?? [])].join(" ").toLowerCase().includes(q);
+  });
+
   return (
-    <Card icon="document_search" title="Suspicious Files">
-      <TerminalBlock query={query}>
-        {[
-          "Recent files with matched keywords:",
-          asJson((sec.recent_items?.items ?? []).filter((item) => item.matched_indicator_names?.length)),
-          "",
-          "Defender Integrity:",
-          asJson(sec.defender),
-        ].join("\n")}
-      </TerminalBlock>
+    <Card icon="folder_off" title="Flagged files">
+      {rows.length ? (
+        <div className="evidence-list">
+          {rows.slice(0, 40).map((row, index) => (
+            <div className="evidence-row evidence-row--static" key={`recent-${row.path}-${index}`}>
+              <div className="evidence-row-main">
+                <strong className="evidence-row-title">{(row.matched_indicator_names ?? []).join(", ")}</strong>
+                <p className="evidence-row-path">{privacyPath(row.path)}</p>
+              </div>
+              <time className="evidence-row-time">
+                {row.modified ? formatGmtPlus3(row.modified) : "Time unknown"}
+              </time>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="muted">No recently touched files matched our watch lists.</p>
+      )}
     </Card>
   );
 }
@@ -2401,34 +2534,35 @@ function ForensicArtifactsSection({ report, query }) {
 }
 
 const resultSections = [
-  { id: "starter", label: "Suspicion Score", icon: "speed", component: StarterSection },
-  { id: "user-activity", label: "User Activity", icon: "history", component: UserActivitySection },
+  { id: "starter", label: "Scan summary", icon: "speed", component: StarterSection },
+  { id: "user-activity", label: "Activity timeline", icon: "history", component: UserActivitySection },
+  { id: "accounts", label: "Linked accounts", icon: "person", component: AccountsSection },
   {
     id: "forensic-findings",
-    label: "Evidence",
+    label: "Key findings",
     icon: "fingerprint",
     component: ForensicFindingsSection,
   },
   {
     id: "forensic-corr",
-    label: "Cross source timeline",
+    label: "Cross-source timeline",
     icon: "account_tree",
     component: ForensicCorrelationSection,
   },
   {
     id: "forensic-artifacts",
-    label: "Structured OS traces",
+    label: "OS traces",
     icon: "inventory_2",
     component: ForensicArtifactsSection,
   },
   { id: "roblox", label: "Roblox", icon: "sports_esports", component: RobloxSection },
   { id: "security", label: "Security & AV", icon: "shield", component: SecuritySection },
-  { id: "system", label: "System", icon: "memory", component: SystemSection },
-  { id: "bypass", label: "Bypass Detection", icon: "gpp_maybe", component: BypassSection },
-  { id: "registry", label: "Registry", icon: "database", component: RegistrySection },
-  { id: "file-analysis", label: "File Analysis", icon: "document_search", component: FileAnalysisSection },
-  { id: "suspicious", label: "Suspicious Files", icon: "folder_off", component: SuspiciousFilesSection },
-  { id: "crash", label: "Crash Logs", icon: "terminal", component: CrashLogsSection },
+  { id: "system", label: "System info", icon: "memory", component: SystemSection },
+  { id: "bypass", label: "Cover-up signs", icon: "gpp_maybe", component: BypassSection },
+  { id: "registry", label: "Execution traces", icon: "database", component: RegistrySection },
+  { id: "file-analysis", label: "File traces", icon: "document_search", component: FileAnalysisSection },
+  { id: "suspicious", label: "Flagged files", icon: "folder_off", component: SuspiciousFilesSection },
+  { id: "crash", label: "Crash logs", icon: "terminal", component: CrashLogsSection },
   { id: "deletions", label: "Deletions", icon: "delete", component: DeletionsSection },
   { id: "memory", label: "Memory", icon: "sd_card", component: MemorySection },
 ];
@@ -2650,6 +2784,7 @@ function Results({ detail, token, onSessionReviewSaved }) {
               activity={activity}
               activityEventSummary={activityEventSummary}
               formatGmtPlus3={formatGmtPlus3}
+              token={token}
               onExpertMode={() => setExpertMode(true)}
               onDownload={() => downloadReport(detail)}
               onPrintPdf={() => exportReportPdf({ detail, report, summary, brandName: BRAND_NAME })}
@@ -2691,8 +2826,8 @@ export function Dashboard({ token, onLogout }) {
   const [sessions, setSessions] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [detail, setDetail] = useState(null);
-  const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [flashPinId, setFlashPinId] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const detailFetchSeq = useRef(0);
@@ -2792,7 +2927,6 @@ export function Dashboard({ token, onLogout }) {
       if (!response.ok) {
         throw new Error(`Delete failed: ${response.status}`);
       }
-      setMessage(`Deleted session ${deleteTarget.pin}`);
       setDeleteTarget(null);
       await loadSessions();
     } catch (caught) {
@@ -2812,8 +2946,9 @@ export function Dashboard({ token, onLogout }) {
         throw new Error(`PIN creation failed: ${response.status}`);
       }
       const data = await response.json();
-      setMessage(`Generated PIN ${data.pin}`);
       setSelectedId(data.id);
+      setFlashPinId(data.id);
+      setTimeout(() => setFlashPinId((prev) => (prev === data.id ? null : prev)), 1600);
       await navigator.clipboard?.writeText(data.pin).catch(() => {});
       await loadSessions();
     } catch (caught) {
@@ -2836,6 +2971,12 @@ export function Dashboard({ token, onLogout }) {
     const timer = setInterval(loadSessions, 5000);
     return () => clearInterval(timer);
   }, [loadSessions, profileLoading, hasAccess]);
+
+  useEffect(() => {
+    if (!error) return undefined;
+    const timer = setTimeout(() => setError(""), 8000);
+    return () => clearTimeout(timer);
+  }, [error]);
 
   const selectedPin = useMemo(() => sessions.find((session) => session.id === selectedId)?.pin, [sessions, selectedId]);
   const selectedSessionStatus = useMemo(
@@ -2970,8 +3111,7 @@ export function Dashboard({ token, onLogout }) {
         </section>
       ) : null}
 
-      {message ? <div className="notice workspace-toast">{message}</div> : null}
-      {error ? <div className="error-banner workspace-toast">{error}</div> : null}
+      {error ? <div className="error-banner workspace-toast" role="alert">{error}</div> : null}
 
       {isSuperAdmin && showAdmin ? (
         <AdminPanel apiUrl={API_URL} token={token} authHeaders={authHeaders} />
@@ -2981,6 +3121,7 @@ export function Dashboard({ token, onLogout }) {
             <CaseRail
               sessions={sessions}
               selectedId={selectedId}
+              flashPinId={flashPinId}
               onSelect={setSelectedId}
               onDelete={requestDeleteSession}
               onNewPin={createPin}

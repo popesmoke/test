@@ -16,6 +16,7 @@ import {
   ShieldAlert,
   Sparkles,
   GitBranch,
+  Users,
 } from "lucide-react";
 import { defenderSummary } from "./defenderSignals.js";
 import { scanReviewFromReport } from "./reportDigest.js";
@@ -44,13 +45,14 @@ const VERDICT_META = {
 
 const TABS = [
   { id: "overview", label: "Summary", icon: Sparkles },
+  { id: "accounts", label: "Accounts", icon: Users },
   { id: "chains", label: "Evidence chains", icon: GitBranch },
-  { id: "activity", label: "Last activity", icon: Clock3 },
-  { id: "downloads", label: "Download history", icon: FileDown },
+  { id: "activity", label: "Activity", icon: Clock3 },
+  { id: "downloads", label: "Downloads", icon: FileDown },
   { id: "execution", label: "Programs run", icon: Play },
   { id: "programs", label: "Program list", icon: FileCode2 },
-  { id: "strings", label: "Word matches", icon: Search },
-  { id: "security", label: "Security & AV", icon: Shield },
+  { id: "strings", label: "Keywords", icon: Search },
+  { id: "security", label: "Security", icon: Shield },
 ];
 
 const ACTIVITY_FILTERS = [
@@ -314,6 +316,9 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
       ? events
       : events.filter((event) => classifyActivityFilter(event) === activityFilter);
   shown.sort((a, b) => {
+    const aSusp = classifyActivityFilter(a) === "executors" || a.suspicious ? 1 : 0;
+    const bSusp = classifyActivityFilter(b) === "executors" || b.suspicious ? 1 : 0;
+    if (aSusp !== bSusp) return bSusp - aSusp;
     const aMs = a.occurred_at ? new Date(a.occurred_at).getTime() : 0;
     const bMs = b.occurred_at ? new Date(b.occurred_at).getTime() : 0;
     return bMs - aMs;
@@ -460,11 +465,57 @@ function EvidenceChainsTab({ review, formatGmtPlus3 }) {
   );
 }
 
+function AccountsTab({ report, token, formatGmtPlus3 }) {
+  const roblox = report.application_diagnostics?.roblox ?? {};
+  const discord = report.application_diagnostics?.discord ?? {};
+  const robloxIds = roblox.aggregate_user_ids ?? (roblox.accounts ?? []).map((a) => a.user_id).filter(Boolean);
+  const discordAccounts = discord.accounts ?? [];
+
+  return (
+    <section className="simple-panel">
+      <header className="simple-panel-head">
+        <Users size={22} />
+        <div>
+          <h4>Linked accounts</h4>
+          <p>Roblox and Discord accounts found on this device — usernames and profile links only.</p>
+        </div>
+      </header>
+      <h5 className="simple-subhead">Roblox</h5>
+      {robloxIds.length ? (
+        <p className="muted panel-intro">{robloxIds.length} account(s) detected. Open forensic view for avatars and profile links.</p>
+      ) : (
+        <p className="muted">No Roblox accounts were found.</p>
+      )}
+      <h5 className="simple-subhead">Discord</h5>
+      {discordAccounts.length ? (
+        <ul className="simple-program-list">
+          {discordAccounts.map((account) => (
+            <li key={account.user_id}>
+              <div>
+                <strong>{account.display_name || `User ${account.user_id}`}</strong>
+                <p className="muted">Discord ID {account.user_id}</p>
+              </div>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="muted">No Discord accounts were found in local client data.</p>
+      )}
+    </section>
+  );
+}
+
 function DownloadsTab({ review, formatGmtPlus3 }) {
   const block = review.download_history ?? {};
   const items = block.items ?? [];
   const [onlyFlagged, setOnlyFlagged] = useState(false);
-  const shown = onlyFlagged ? items.filter((i) => i.suspicious) : items;
+  let shown = onlyFlagged ? items.filter((i) => i.suspicious) : items;
+  shown = [...shown].sort((a, b) => {
+    if (a.suspicious !== b.suspicious) return a.suspicious ? -1 : 1;
+    const aMs = a.started_at ? new Date(a.started_at).getTime() : 0;
+    const bMs = b.started_at ? new Date(b.started_at).getTime() : 0;
+    return bMs - aMs;
+  });
 
   return (
     <section className="simple-panel">
@@ -490,15 +541,22 @@ function DownloadsTab({ review, formatGmtPlus3 }) {
               key={`${row.target_path}-${row.started_at}-${index}`}
               className={row.suspicious ? "simple-timeline--warn" : ""}
             >
-              <time>{row.started_at ? formatGmtPlus3(row.started_at) : "Time unknown"}</time>
+              <time title={row.timestamp_label || "Download time"}>
+                {row.started_at ? formatGmtPlus3(row.started_at) : "Time unknown"}
+              </time>
               <p>
                 <strong>{row.file_name || "Download"}</strong> — via {row.browser || "browser"}
                 {row.state ? ` (${row.state})` : ""}
               </p>
+              {row.executor_site ? (
+                <p className="muted">
+                  Downloaded from a site associated with <strong>{row.executor_site}</strong>
+                </p>
+              ) : null}
               {row.matched_labels?.length ? (
                 <p className="muted">Matched: {row.matched_labels.join(", ")}</p>
               ) : null}
-              {row.url ? (
+              {row.url && row.suspicious ? (
                 <details className="simple-path-fold">
                   <summary>Show download page link</summary>
                   <code>{row.url}</code>
@@ -717,6 +775,7 @@ export function SimpleResults({
   activity,
   activityEventSummary,
   formatGmtPlus3,
+  token,
   onExpertMode,
   onDownload,
   onPrintPdf,
@@ -736,6 +795,9 @@ export function SimpleResults({
       <div className="ws-simple__content">
         {tab === "overview" ? (
           <OverviewTab verdict={verdict} problems={problems} review={review} formatGmtPlus3={formatGmtPlus3} />
+        ) : null}
+        {tab === "accounts" ? (
+          <AccountsTab report={report} token={token} formatGmtPlus3={formatGmtPlus3} />
         ) : null}
         {tab === "chains" ? <EvidenceChainsTab review={review} formatGmtPlus3={formatGmtPlus3} /> : null}
         {tab === "activity" ? (

@@ -157,6 +157,7 @@ def init_db() -> None:
             ("reviewer_note", "TEXT"),
             ("reviewed_at", "TEXT"),
             ("reviewed_by", "TEXT"),
+            ("created_by", "TEXT"),
         ):
             ensure_column(conn, "sessions", column, definition)
         db_execute(
@@ -782,6 +783,23 @@ def fetch_roblox_profiles(user_ids: list[str]) -> list[dict]:
     return [profiles[user_id] for user_id in normalized]
 
 
+def is_super_admin_subject(subject: str) -> bool:
+    if is_checker_subject(subject):
+        return True
+    discord_id = discord_id_from_subject(subject)
+    return bool(discord_id and is_super_admin_discord_id(discord_id))
+
+
+def session_accessible_by(row, subject: str) -> bool:
+    if is_super_admin_subject(subject):
+        return True
+    keys = row.keys() if hasattr(row, "keys") else ()
+    created_by = row["created_by"] if "created_by" in keys else None
+    if not created_by:
+        return False
+    return created_by == subject
+
+
 def row_to_summary(row: sqlite3.Row) -> dict:
     keys = row.keys()
     return {
@@ -795,6 +813,7 @@ def row_to_summary(row: sqlite3.Row) -> dict:
         "reviewer_note": row["reviewer_note"] if "reviewer_note" in keys else None,
         "reviewed_at": row["reviewed_at"] if "reviewed_at" in keys else None,
         "reviewed_by": row["reviewed_by"] if "reviewed_by" in keys else None,
+        "created_by": row["created_by"] if "created_by" in keys else None,
     }
 
 
@@ -833,7 +852,8 @@ class Handler(BaseHTTPRequestHandler):
         if not path.startswith("/sessions/"):
             self.send_json(HTTPStatus.NOT_FOUND, {"detail": "Not found"})
             return
-        if not self.require_checker():
+        subject = self.require_checker()
+        if not subject:
             return
         try:
             session_id = int(path.split("/")[-1])
@@ -841,6 +861,13 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Invalid session id"})
             return
         with connect() as conn:
+            row = db_execute(conn, "SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            if row is None:
+                self.send_json(HTTPStatus.NOT_FOUND, {"detail": "Session not found"})
+                return
+            if not session_accessible_by(row, subject):
+                self.send_json(HTTPStatus.FORBIDDEN, {"detail": "Session not found"})
+                return
             cursor = db_execute(conn, "DELETE FROM sessions WHERE id = ?", (session_id,))
             deleted = cursor.rowcount
         if deleted == 0:
@@ -874,17 +901,17 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(HTTPStatus.UNAUTHORIZED, {"detail": "Missing or invalid bearer token"})
         return None
 
-    def require_checker(self) -> bool:
+    def require_checker(self) -> str | None:
         subject = self.require_auth_subject()
         if not subject:
-            return False
+            return None
         if not subject_has_dashboard_access(subject):
             self.send_json(
                 HTTPStatus.FORBIDDEN,
                 {"detail": "access_required", "has_access": False},
             )
-            return False
-        return True
+            return None
+        return subject
 
     def require_super_admin(self) -> bool:
         subject = self.require_auth_subject()
@@ -1031,16 +1058,25 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/sessions":
-            if not self.require_checker():
+            subject = self.require_checker()
+            if not subject:
                 return
             with connect() as conn:
                 expire_stale_pending_sessions(conn)
-                rows = db_execute(conn, "SELECT * FROM sessions ORDER BY id DESC").fetchall()
+                if is_super_admin_subject(subject):
+                    rows = db_execute(conn, "SELECT * FROM sessions ORDER BY id DESC").fetchall()
+                else:
+                    rows = db_execute(
+                        conn,
+                        "SELECT * FROM sessions WHERE created_by = ? ORDER BY id DESC",
+                        (subject,),
+                    ).fetchall()
             self.send_json(HTTPStatus.OK, [row_to_summary(row) for row in rows])
             return
 
         if path.startswith("/sessions/"):
-            if not self.require_checker():
+            subject = self.require_checker()
+            if not subject:
                 return
             try:
                 session_id = int(path.split("/")[-1])
@@ -1050,7 +1086,7 @@ class Handler(BaseHTTPRequestHandler):
             with connect() as conn:
                 expire_stale_pending_sessions(conn)
                 row = db_execute(conn, "SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
-            if row is None:
+            if row is None or not session_accessible_by(row, subject):
                 self.send_json(HTTPStatus.NOT_FOUND, {"detail": "Session not found"})
                 return
             result = dict(row)
@@ -1075,7 +1111,8 @@ class Handler(BaseHTTPRequestHandler):
 
         parts = [part for part in path.split("/") if part]
         if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "review":
-            if not self.require_checker():
+            subject = self.require_checker()
+            if not subject:
                 return
             try:
                 session_id = int(parts[1])
@@ -1088,11 +1125,11 @@ class Handler(BaseHTTPRequestHandler):
             if verdict not in allowed_verdicts:
                 self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Invalid verdict"})
                 return
-            subject = validate_token(self.headers.get("Authorization"))
-            if not subject:
-                self.send_json(HTTPStatus.UNAUTHORIZED, {"detail": "Missing or invalid bearer token"})
-                return
             with connect() as conn:
+                row = db_execute(conn, "SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+                if row is None or not session_accessible_by(row, subject):
+                    self.send_json(HTTPStatus.NOT_FOUND, {"detail": "Session not found"})
+                    return
                 cursor = db_execute(
                     conn,
                     """
@@ -1127,7 +1164,8 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/sessions":
-            if not self.require_checker():
+            subject = self.require_checker()
+            if not subject:
                 return
             if not rate_limit.allow_pin_creation(self.client_key()):
                 self.send_json(HTTPStatus.TOO_MANY_REQUESTS, {"detail": "PIN creation rate limit exceeded"})
@@ -1139,10 +1177,10 @@ class Handler(BaseHTTPRequestHandler):
                 db_execute(
                     conn,
                     """
-                    INSERT INTO sessions (pin, status, created_at, expires_at)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO sessions (pin, status, created_at, expires_at, created_by)
+                    VALUES (?, ?, ?, ?, ?)
                     """,
-                    (pin, "pending", to_iso(now), to_iso(expires_at)),
+                    (pin, "pending", to_iso(now), to_iso(expires_at), subject),
                 )
                 row = db_execute(conn, "SELECT * FROM sessions WHERE pin = ?", (pin,)).fetchone()
             self.send_json(HTTPStatus.OK, row_to_summary(row))
