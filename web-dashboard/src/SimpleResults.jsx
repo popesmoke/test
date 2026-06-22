@@ -20,6 +20,7 @@ import {
 import { defenderSummary } from "./defenderSignals.js";
 import { scanReviewFromReport } from "./reportDigest.js";
 import { formatDisplayLocation, privacyPath } from "./resultPrivacy.js";
+import { sortBySuspicion } from "./reviewerCopy.js";
 
 const VERDICT_META = {
   clean: {
@@ -97,7 +98,7 @@ function friendlyReason(label, detail) {
     "Defender signal": "Windows security settings or history looked unusual.",
     "Deletion or log clearing": "Signs appeared that logs or traces may have been cleaned up.",
     "Deleted cheat/executor traces recovered": "Cheat or executor files were deleted, but Windows still had traces of them.",
-    "Executor artifact evidence": "Windows still has traces of a known executor (Prefetch, BAM, USN, etc.) even if the folder was deleted.",
+    "Executor artifact evidence": "Windows still has traces of a known executor even if the folder was deleted.",
     "Suspicious Recycle Bin items": "The Recycle Bin still holds files whose names look like cheats or loaders.",
     "Bypass / cover-up signals": "Signs appeared that someone may have tried to hide activity.",
     "No matched indicators": "Nothing major matched our watch lists on this scan.",
@@ -130,11 +131,14 @@ function buildSimpleProblems(report, summary) {
   }
 
   const seen = new Set();
-  return problems.filter((p) => {
+  const ranked = problems.filter((p) => {
     if (seen.has(p.title)) return false;
     seen.add(p.title);
     return true;
   });
+  const severityRank = { critical: 0, high: 1, medium: 2, low: 3 };
+  ranked.sort((a, b) => (severityRank[a.severity] ?? 9) - (severityRank[b.severity] ?? 9));
+  return ranked;
 }
 
 function SimpleStat({ label, value, hint }) {

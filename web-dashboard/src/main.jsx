@@ -17,7 +17,7 @@ import { authHeaders, DISCORD_ERROR_MESSAGES, startDiscordLogin } from "./lib/au
 import { consumeAuthCallback } from "./lib/authCallback.js";
 import { MaterialIcon, renderIcon } from "./components/MaterialIcon.jsx";
 import { ConfirmModal } from "./components/ConfirmModal.jsx";
-import { EXPERT_NAV_GROUPS } from "./dashboardNav.js";
+import { reviewerSafeText, sortBySuspicion } from "./reviewerCopy.js";
 
 const AUTH_CALLBACK = consumeAuthCallback();
 
@@ -1080,6 +1080,7 @@ function UserActivitySection({ report, query }) {
       .includes(q);
   });
   const categories = Object.keys(activity.by_category ?? {});
+  const sorted = sortBySuspicion(filtered);
 
   return (
     <>
@@ -1103,9 +1104,9 @@ function UserActivitySection({ report, query }) {
             </button>
           ))}
         </div>
-        {filtered.length ? (
+        {sorted.length ? (
           <div className="executor-event-list activity-event-list">
-            {filtered.slice(0, 80).map((event, index) => (
+            {sorted.slice(0, 80).map((event, index) => (
               <div className="executor-event-row activity-event-row" key={`${event.path}-${event.kind}-${index}`}>
                 <div>
                   <span className={`recency-pill ${event.recency ?? "unknown"}`}>
@@ -1471,7 +1472,7 @@ function DiscordAccountsCard({ report }) {
         <p className="ws-empty-note">No Discord accounts found.</p>
       ) : (
         <div className="ws-account-grid">
-          {accounts.slice(0, 16).map((account) => {
+          {accounts.slice(0, 24).map((account) => {
             const userId = String(account.user_id || "");
             const displayName = account.display_name || `User ${userId}`;
             const avatar = account.avatar_url || discordAvatarUrl(account);
@@ -1957,56 +1958,13 @@ function DeletionsSection({ report, query }) {
   const trash = report.performance_environment?.trash ?? {};
   const activity = userActivityFromReport(report);
   const cleanup = sec.deletion_cleanup_analysis ?? {};
-  const integrity = sec.filesystem_evidence_integrity ?? {};
-  const deletionEvents = (activity.events ?? []).filter((e) => e.category === "deletions");
+  const deletionEvents = sortBySuspicion((activity.events ?? []).filter((e) => e.category === "deletions"));
   const cleanupRows = cleanup.correlations ?? [];
   const trashItems = (trash.items ?? []).filter((item) => item.original_path || item.name?.startsWith?.("$I"));
 
   return (
     <>
-      <Card icon="shield" title="Filesystem evidence integrity">
-        <p className="muted opened-files-intro">
-          Dates use <strong>MM/DD/YY</strong> (GMT+3). This section records whether USN journaling, event logs, and
-          related services look intact — or were disabled, cleared, deleted, or recreated.
-        </p>
-        {integrity.available ? (
-          <>
-            <p className="plain-summary">
-              Reconstruction confidence: <strong>{integrity.reconstruction_confidence ?? "unknown"}</strong>
-            </p>
-            {integrity.impact_summary ? <p className="muted">{integrity.impact_summary}</p> : null}
-            {(integrity.findings ?? []).length ? (
-              <div className="executor-event-list">
-                {integrity.findings.slice(0, 12).map((finding, index) => (
-                  <div className="executor-event-row" key={`integrity-${finding.category}-${index}`}>
-                    <div>
-                      <span className={`recency-pill ${finding.severity ?? "medium"}`}>
-                        {finding.category ?? "signal"} · {finding.action ?? "changed"}
-                      </span>
-                      <p className="plain-summary">{finding.detail}</p>
-                      <small className="muted">{finding.impact}</small>
-                      {finding.evidence_source ? (
-                        <small className="timestamp-source">Source: {formatTimestampSource(finding.evidence_source)}</small>
-                      ) : null}
-                    </div>
-                    <time>{finding.occurred_at ? formatGmtPlus3(finding.occurred_at) : "—"}</time>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="muted">No USN, event-log, or service tamper signals were detected in this scan.</p>
-            )}
-          </>
-        ) : (
-          <p className="muted">Filesystem evidence integrity was not collected on this report.</p>
-        )}
-      </Card>
-
       <Card icon="schedule" title="Delete-to-cleanup timing">
-        <p className="muted opened-files-intro">
-          Measures the gap between when a file was deleted (Recycle Bin $I metadata or USN FILE_DELETE) and when the
-          Recycle Bin was emptied or items were permanently removed.
-        </p>
         {(cleanupRows.length ? cleanupRows : deletionEvents).length ? (
           <div className="executor-event-list">
             {(cleanupRows.length ? cleanupRows : deletionEvents).slice(0, 40).map((row, index) => (
@@ -2040,20 +1998,21 @@ function DeletionsSection({ report, query }) {
         ) : (
           <p className="muted">No delete-to-cleanup timing could be calculated for this scan.</p>
         )}
-        {(cleanup.insights ?? []).length ? (
+        {(cleanup.insights ?? [])
+          .map((line) => reviewerSafeText(line))
+          .filter(Boolean).length ? (
           <ul className="simple-tips">
-            {cleanup.insights.map((line) => (
+            {cleanup.insights
+              .map((line) => reviewerSafeText(line))
+              .filter(Boolean)
+              .map((line) => (
               <li key={line}>{line}</li>
             ))}
           </ul>
         ) : null}
       </Card>
 
-      <Card icon="delete" title="Deleted files (resolved timestamps)">
-        <p className="muted opened-files-intro">
-          Times use <strong>MM/DD/YY</strong> (GMT+3). When Recycle Bin $I metadata is missing or zeroed, {BRAND_NAME}{" "}
-          falls back to metadata file mtime, USN delete rows, or companion $R data file mtime.
-        </p>
+      <Card icon="delete" title="Deleted files">
         {deletionEvents.length ? (
           <div className="executor-event-list">
             {deletionEvents.slice(0, 40).map((event, index) => (

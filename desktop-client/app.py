@@ -7867,68 +7867,26 @@ def build_filesystem_evidence_integrity(
         "findings": findings[:40],
         "reconstruction_confidence": confidence,
         "impact_summary": _filesystem_reconstruction_summary(findings, usn_health),
-        "note": "Summarizes whether USN journaling, event logs, and related services appear intact for delete reconstruction.",
+        "note": "Internal integrity summary for scoring only.",
     }
 
 
 def _filesystem_tamper_impact(category: str, action: str) -> str:
-    impacts = {
-        ("usn_journal", "disabled"): (
-            "With USN journaling disabled, NTFS no longer records a durable change history on that volume. "
-            "Delete and rename timelines must be rebuilt from Recycle Bin metadata, BAM, Prefetch, PCA, registry, "
-            "and Windows event logs only."
-        ),
-        ("usn_journal", "deleted"): (
-            "Deleting the USN journal erases prior NTFS change history on that volume. Deletes that happened before "
-            "the wipe cannot be reconstructed from USN."
-        ),
-        ("usn_journal", "recreated"): (
-            "A recreated USN journal starts history from scratch. Only filesystem activity after recreation remains "
-            "visible in USN samples."
-        ),
-        ("event_log", "cleared"): (
-            "Cleared event logs remove Recycle Bin emptying records, audit delete entries, and USN deletion events "
-            "that reviewers would normally use to time cover-up activity."
-        ),
-        ("event_log", "service_stopped"): (
-            "While the Event Log service is stopped, new delete and cleanup events may never be written."
-        ),
-        ("volume_shadow_copy", "deleted"): (
-            "Deleted shadow copies can remove volume snapshots that might otherwise preserve older file metadata."
-        ),
-        ("recycle_bin", "emptied"): (
-            "Manual Recycle Bin emptying is normal, but when paired with suspicious deletes it shortens the window "
-            "where $I metadata is still available."
-        ),
-        ("sysmon", "unavailable"): (
-            "Without Sysmon delete telemetry, reviewers depend more heavily on USN, Security audit, and artifact traces."
-        ),
-    }
-    return impacts.get(
-        (category, action),
-        "This change can reduce how completely file deletion and cleanup activity can be reconstructed.",
-    )
+    return _filesystem_integrity_impact_text(category, action)
 
 
 def _filesystem_reconstruction_summary(findings: list[dict], usn_health: dict) -> str:
     if not findings and not (usn_health.get("disabled_drives") or []):
-        return (
-            "USN journaling and sampled event-log sources look intact. Delete reconstruction can use Recycle Bin "
-            "metadata, USN delete rows, BAM, Prefetch, and audit events together."
-        )
-    parts: list[str] = []
-    if usn_health.get("disabled_drives"):
-        parts.append(
-            f"USN journaling is disabled or unreadable on {', '.join(usn_health['disabled_drives'])}."
-        )
-    categories = sorted({str(item.get("category") or "") for item in findings if item.get("category")})
-    if categories:
-        parts.append(f"Tamper or integrity alerts were recorded for: {', '.join(categories)}.")
-    parts.append(
-        "When USN or event logs are disabled, cleared, or recreated, delete timelines fall back to surviving artifacts "
-        "such as Recycle Bin $I metadata (while items remain), BAM, Prefetch, PCA, and registry traces."
-    )
-    return " ".join(parts)
+        return ""
+    if findings or usn_health.get("disabled_drives"):
+        return "Some system logging was limited on this PC. Delete and activity timestamps may be incomplete."
+    return ""
+
+
+def _filesystem_integrity_impact_text(category: str, action: str) -> str:
+    if action in {"disabled", "cleared", "recreated", "unreadable"}:
+        return "Timeline accuracy for file changes may be reduced."
+    return "Review related rows with extra caution."
 
 
 def build_deletion_cleanup_analysis(
@@ -9846,6 +9804,111 @@ def _close_browsers_for_roblox_scan() -> dict:
     return {"closed": closed, "failed": failed}
 
 
+def _roblox_browser_profile_account_hints() -> list[dict]:
+    """Collect Roblox user IDs from browser history and local storage — no cookie decryption."""
+    if platform.system() != "Windows":
+        return []
+    local = os.getenv("LOCALAPPDATA", "")
+    if not local:
+        return []
+    hints: list[dict] = []
+    seen: set[str] = set()
+    browser_roots = [
+        ("Chrome", Path(local) / "Google" / "Chrome" / "User Data"),
+        ("Edge", Path(local) / "Microsoft" / "Edge" / "User Data"),
+        ("Brave", Path(local) / "BraveSoftware" / "Brave-Browser" / "User Data"),
+        ("Opera", Path(local) / "Opera Software" / "Opera Stable"),
+    ]
+    for browser, base in browser_roots:
+        if not base.is_dir():
+            continue
+        for profile in _chromium_profile_names(base)[:8]:
+            profile_dir = base / profile
+            source = f"{browser} {profile}"
+            storage_uid = _roblox_rbxid_from_profile_storage(profile_dir)
+            if storage_uid and _roblox_valid_user_id(storage_uid) and storage_uid not in seen:
+                seen.add(storage_uid)
+                hints.append(
+                    {
+                        "user_id": storage_uid,
+                        "username": None,
+                        "sources": [source],
+                        "authenticated": False,
+                    }
+                )
+            history_db = profile_dir / "History"
+            conn = _sqlite_open_readonly(history_db)
+            if not conn:
+                continue
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    SELECT url FROM urls
+                    WHERE url LIKE '%roblox.com/users/%'
+                    ORDER BY last_visit_time DESC
+                    LIMIT 80
+                    """
+                )
+                for (url,) in cur.fetchall():
+                    for user_id in _roblox_user_ids_from_text(str(url or "")):
+                        if not _roblox_valid_user_id(user_id) or user_id in seen:
+                            continue
+                        seen.add(user_id)
+                        hints.append(
+                            {
+                                "user_id": str(user_id),
+                                "username": None,
+                                "sources": [f"{source} history"],
+                                "authenticated": False,
+                            }
+                        )
+            except sqlite3.Error:
+                pass
+            finally:
+                conn.close()
+    firefox_root = Path(os.getenv("APPDATA", "")) / "Mozilla" / "Firefox" / "Profiles"
+    if firefox_root.is_dir():
+        try:
+            for profile_dir in sorted(firefox_root.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)[:6]:
+                if not profile_dir.is_dir():
+                    continue
+                places_db = profile_dir / "places.sqlite"
+                conn = _sqlite_open_readonly(places_db)
+                if not conn:
+                    continue
+                try:
+                    cur = conn.cursor()
+                    cur.execute(
+                        """
+                        SELECT url FROM moz_places
+                        WHERE url LIKE '%roblox.com/users/%'
+                        ORDER BY last_visit_date DESC
+                        LIMIT 80
+                        """
+                    )
+                    for (url,) in cur.fetchall():
+                        for user_id in _roblox_user_ids_from_text(str(url or "")):
+                            if not _roblox_valid_user_id(user_id) or user_id in seen:
+                                continue
+                            seen.add(user_id)
+                            hints.append(
+                                {
+                                    "user_id": str(user_id),
+                                    "username": None,
+                                    "sources": [f"Firefox {profile_dir.name} history"],
+                                    "authenticated": False,
+                                }
+                            )
+                except sqlite3.Error:
+                    pass
+                finally:
+                    conn.close()
+        except OSError:
+            pass
+    return hints
+
+
 def roblox_browser_account_scan() -> dict:
     """Privacy-safe account hints — Roblox client logs/storage only (no browser cookies)."""
     accounts: list[dict] = []
@@ -9885,6 +9948,8 @@ def roblox_browser_account_scan() -> dict:
         )
     for user_id in _roblox_all_user_ids_from_appdata():
         _append_account(user_id, None, ["Roblox client storage"])
+    for hint in _roblox_browser_profile_account_hints():
+        _append_account(hint.get("user_id"), hint.get("username"), list(hint.get("sources") or ["Browser profile"]))
     for log in _roblox_read_client_logs():
         signals = log.get("signals") or extract_roblox_signals(str(log.get("tail") or ""))
         source = f"Roblox client log:{log.get('name', 'unknown')}"
@@ -9906,10 +9971,7 @@ def roblox_browser_account_scan() -> dict:
         "aggregate_usernames": sorted(
             {str(acct.get("username")) for acct in enriched if acct.get("username")}
         ),
-        "note": (
-            "Browser cookie/session collection is disabled for privacy. "
-            "Account hints come from Roblox client logs and local Roblox app storage only."
-        ),
+        "note": "Client logs, local app data, and browser profile hints only.",
     }
 
 
@@ -9964,6 +10026,15 @@ def _discord_extract_user_profiles(text: str) -> list[dict[str, str | None]]:
             re.IGNORECASE,
         ),
         re.compile(r'"user_id_cache"\s*:\s*\{[^}]{0,400}?"id"\s*:\s*"(\d{17,20})"', re.IGNORECASE),
+        re.compile(
+            r'"id"\s*:\s*"(\d{17,20})"[^}]{0,800}?(?:"premium_type"|"public_flags"|"discriminator"|"avatar_decoration"|"clan"|"nsfw_allowed")',
+            re.IGNORECASE | re.DOTALL,
+        ),
+        re.compile(
+            r'(?:"premium_type"|"public_flags"|"discriminator"|"avatar")[^}]{0,800}?"id"\s*:\s*"(\d{17,20})"',
+            re.IGNORECASE | re.DOTALL,
+        ),
+        re.compile(r'"MultiAccountStore"[^[]{0,200}\[[^\]]{0,2000}?"id"\s*:\s*"(\d{17,20})"', re.IGNORECASE | re.DOTALL),
     )
     for pattern in profile_patterns:
         for user_id in pattern.findall(text):
@@ -9986,6 +10057,35 @@ def _discord_extract_user_profiles(text: str) -> list[dict[str, str | None]]:
     return profiles
 
 
+def _discord_collect_storage_blobs(root: Path) -> list[Path]:
+    blobs: list[Path] = []
+    for name in ("settings.json", "Local State", "Preferences"):
+        candidate = root / name
+        if candidate.is_file():
+            blobs.append(candidate)
+    leveldb = root / "Local Storage" / "leveldb"
+    if leveldb.is_dir():
+        try:
+            blobs.extend(
+                sorted(
+                    (entry for entry in leveldb.iterdir() if entry.suffix in (".log", ".ldb") and entry.is_file()),
+                    key=lambda path: path.stat().st_mtime,
+                    reverse=True,
+                )
+            )
+        except OSError:
+            pass
+    indexeddb = root / "IndexedDB"
+    if indexeddb.is_dir():
+        try:
+            for entry in indexeddb.rglob("*"):
+                if entry.is_file() and entry.suffix in (".log", ".ldb") and entry.stat().st_size <= 12_000_000:
+                    blobs.append(entry)
+        except OSError:
+            pass
+    return blobs
+
+
 def discord_local_accounts_scan() -> dict[str, object]:
     """Read Discord user IDs and display names from local client storage only."""
     if platform.system() != "Windows":
@@ -10000,48 +10100,34 @@ def discord_local_accounts_scan() -> dict[str, object]:
     for root in discord_roots:
         if not root.is_dir():
             continue
-        blobs: list[Path] = []
-        settings_path = root / "settings.json"
-        if settings_path.is_file():
-            blobs.append(settings_path)
-        for extra_name in ("Local State", "Preferences"):
-            extra_path = root / extra_name
-            if extra_path.is_file():
-                blobs.append(extra_path)
-        leveldb = root / "Local Storage" / "leveldb"
-        if leveldb.is_dir():
-            try:
-                leveldb_files = sorted(
-                    (entry for entry in leveldb.iterdir() if entry.suffix in (".log", ".ldb") and entry.is_file()),
-                    key=lambda path: path.stat().st_mtime,
-                    reverse=True,
-                )
-            except OSError:
-                leveldb_files = []
-            blobs.extend(leveldb_files[:28])
-        for blob in blobs[:32]:
+        blobs = _discord_collect_storage_blobs(root)
+        for blob in blobs[:48]:
             if scan_collect_phase_exhausted():
                 break
             try:
-                text = blob.read_bytes()[:2_400_000].decode("utf-8", errors="ignore")
+                raw = blob.read_bytes()[:3_200_000]
             except OSError:
                 continue
-            for profile in _discord_extract_user_profiles(text):
-                user_id = str(profile.get("user_id") or "")
-                if not user_id:
-                    continue
-                account = accounts_by_id.setdefault(
-                    user_id,
-                    {
-                        "user_id": user_id,
-                        "display_name": None,
-                        "avatar_hash": None,
-                    },
-                )
-                if profile.get("display_name") and not account.get("display_name"):
-                    account["display_name"] = profile["display_name"]
-                if profile.get("avatar_hash") and not account.get("avatar_hash"):
-                    account["avatar_hash"] = profile["avatar_hash"]
+            for text in (
+                raw.decode("utf-8", errors="ignore"),
+                raw.decode("latin-1", errors="ignore"),
+            ):
+                for profile in _discord_extract_user_profiles(text):
+                    user_id = str(profile.get("user_id") or "")
+                    if not user_id:
+                        continue
+                    account = accounts_by_id.setdefault(
+                        user_id,
+                        {
+                            "user_id": user_id,
+                            "display_name": None,
+                            "avatar_hash": None,
+                        },
+                    )
+                    if profile.get("display_name") and not account.get("display_name"):
+                        account["display_name"] = profile["display_name"]
+                    if profile.get("avatar_hash") and not account.get("avatar_hash"):
+                        account["avatar_hash"] = profile["avatar_hash"]
 
     accounts: list[dict[str, object]] = []
     for user_id, raw in accounts_by_id.items():
@@ -10057,8 +10143,8 @@ def discord_local_accounts_scan() -> dict[str, object]:
     return {
         "available": True,
         "account_count": len(accounts),
-        "accounts": accounts[:16],
-        "note": "Parsed from local Discord client storage only — no remote API calls.",
+        "accounts": accounts[:24],
+        "note": "Local client storage only.",
     }
 
 
