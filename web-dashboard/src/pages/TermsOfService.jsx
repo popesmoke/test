@@ -21,7 +21,7 @@ export function TermsOfServicePage() {
           this review platform. Features, pricing, and availability may change without prior notice.
         </p>
         <p className="legal-doc__callout">
-          Scan results are forensic indicators to assist human reviewers — not definitive proof of
+          Scan results are forensic indicators to assist human reviewers, not definitive proof of
           cheating. Interpret results in context.
         </p>
       </LegalArticle>
@@ -51,7 +51,7 @@ export function TermsOfServicePage() {
           verified before access is granted.
         </p>
         <p>
-          Subscriptions may renew monthly. Cancel anytime to stop future billing — cancellation does not
+          Subscriptions may renew monthly. Cancel anytime to stop future billing. Cancellation does not
           refund the current period.
         </p>
       </LegalArticle>

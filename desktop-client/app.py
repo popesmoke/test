@@ -17200,14 +17200,37 @@ class DiagnosticApp:
         os._exit(0)
 
     def complete(self) -> None:
-        self.status.set("Scan complete. Your results have been submitted.")
-        self.root.update_idletasks()
-        messagebox.showinfo(
-            "Submitted",
-            "Scan complete. Your results have been submitted.",
-            parent=self.root,
-        )
-        self._exit_after_success()
+        self.status.set("Scan completed. Your results have been submitted.")
+        self._show_completion_overlay()
+
+    def _show_completion_overlay(self) -> None:
+        overlay = Frame(self.root, bg="#000000")
+        overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
+
+        card = Frame(overlay, bg=self.UI_SURFACE, padx=28, pady=24)
+        card.place(relx=0.5, rely=0.5, anchor="center")
+
+        ttk.Label(card, text="Scan completed", style="Title.TLabel").pack(anchor="w", pady=(0, 8))
+        countdown = ttk.Label(card, text="Closing in 5 seconds…", style="Muted.TLabel")
+        countdown.pack(anchor="w", pady=(0, 4))
+        ttk.Label(
+            card,
+            text="Your results were submitted successfully.",
+            style="Muted.TLabel",
+            wraplength=320,
+        ).pack(anchor="w")
+
+        remaining = {"seconds": 5}
+
+        def tick() -> None:
+            remaining["seconds"] -= 1
+            if remaining["seconds"] <= 0:
+                self._exit_after_success()
+                return
+            countdown.configure(text=f"Closing in {remaining['seconds']} second{'s' if remaining['seconds'] != 1 else ''}…")
+            self.root.after(1000, tick)
+
+        self.root.after(1000, tick)
 
     def fail(self, error: str) -> None:
         self.status.set("Scan failed. No further collection is running.")

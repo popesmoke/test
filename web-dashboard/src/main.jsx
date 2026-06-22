@@ -1,31 +1,5 @@
 import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import {
-  AlertTriangle,
-  Boxes,
-  ChevronUp,
-  Clock3,
-  Clipboard,
-  Cpu,
-  Database,
-  Download,
-  FileText,
-  Fingerprint,
-  Gauge,
-  Gamepad2,
-  GitBranch,
-  BookOpen,
-  History,
-  KeyRound,
-  LogOut,
-  MessageCircle,
-  MemoryStick,
-  RefreshCw,
-  ScanSearch,
-  Shield,
-  Terminal,
-  Trash2,
-} from "lucide-react";
 import "./styles.css";
 import { formatDisplayDate, normalizeIsoDateString } from "./dateFormat.js";
 import { sanitizeEventTimestamp } from "./activityTime.js";
@@ -40,6 +14,8 @@ import { AppRouter } from "./App.jsx";
 import { API_URL, BRAND_FULL, BRAND_LOGO, DISCORD_INVITE_URL } from "./config/brand.js";
 import { authHeaders, DISCORD_ERROR_MESSAGES, startDiscordLogin } from "./lib/auth.js";
 import { consumeAuthCallback } from "./lib/authCallback.js";
+import { MaterialIcon, renderIcon } from "./components/MaterialIcon.jsx";
+import { ConfirmModal } from "./components/ConfirmModal.jsx";
 
 const AUTH_CALLBACK = consumeAuthCallback();
 
@@ -52,54 +28,50 @@ function formatSessionStatus(status) {
   return status || "unknown";
 }
 
-function SessionList({ sessions, selectedId, onSelect, onDelete }) {
-  return (
-    <aside className="sidebar">
-      <div className="sidebar-brand">
-        <img src={BRAND_LOGO} alt="" />
-        <div>
-          <h2>Review Console</h2>
-          <span>PIN Sessions</span>
-        </div>
+function SessionRail({ sessions, selectedId, onSelect, onDelete }) {
+  if (!sessions.length) {
+    return (
+      <div className="session-rail session-rail--empty">
+        <p>No PIN sessions yet. Generate one to start a review.</p>
       </div>
-      <div className="session-list">
-        {sessions.map((session) => (
-          <div
-            key={session.id}
-            className={`session-row-wrap ${selectedId === session.id ? "active" : ""}`}
-          >
-            <button type="button" className="session-row" onClick={() => onSelect(session.id)}>
-              <span className="pin">{session.pin}</span>
-              <span className={`status ${formatSessionStatus(session.status)}`}>
+    );
+  }
+
+  return (
+    <div className="session-rail" role="tablist" aria-label="PIN sessions">
+      {sessions.map((session) => {
+        const active = selectedId === session.id;
+        return (
+          <div key={session.id} className={`session-chip-wrap ${active ? "active" : ""}`}>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={active}
+              className="session-chip"
+              onClick={() => onSelect(session.id)}
+            >
+              <span className="session-chip__pin">{session.pin}</span>
+              <span className={`session-chip__status status ${formatSessionStatus(session.status)}`}>
                 {formatSessionStatus(session.status)}
               </span>
-              {session.status === "pending" && session.expires_at ? (
-                <small className="session-expires">until {formatGmtPlus3(session.expires_at)}</small>
-              ) : null}
-              {session.status === "expired" && session.expires_at ? (
-                <small className="session-expires">expired {formatGmtPlus3(session.expires_at)}</small>
-              ) : null}
               {session.reviewer_verdict ? (
                 <span className={`verdict-tag verdict-tag--${session.reviewer_verdict}`}>{session.reviewer_verdict}</span>
               ) : null}
-              <small>{formatGmtPlus3(session.created_at)}</small>
+              <span className="session-chip__time">{formatGmtPlus3(session.created_at)}</span>
             </button>
             <button
               type="button"
-              className="session-delete"
-              title="Delete this session"
+              className="session-chip__delete"
+              title="Delete session"
               aria-label={`Delete session ${session.pin}`}
-              onClick={(event) => {
-                event.stopPropagation();
-                onDelete(session);
-              }}
+              onClick={() => onDelete(session)}
             >
-              <Trash2 size={18} />
+              <MaterialIcon name="close" size={16} />
             </button>
           </div>
-        ))}
-      </div>
-    </aside>
+        );
+      })}
+    </div>
   );
 }
 
@@ -612,7 +584,7 @@ function buildSuspicionSummary(report) {
         evidenceVerdict.runtime_signal_count
           ? `${evidenceVerdict.runtime_signal_count} Roblox runtime provenance signal(s).`
           : null,
-        evidenceVerdict.scan_complete === false ? "Scan ended incomplete — treat as inconclusive." : null,
+        evidenceVerdict.scan_complete === false ? "Scan ended incomplete. Treat as inconclusive." : null,
         ...(evidenceVerdict.runtime_reasons ?? []),
       ]
         .filter(Boolean)
@@ -639,13 +611,13 @@ function buildSuspicionSummary(report) {
   };
 }
 
-function Card({ icon: Icon, title, children }) {
+function Card({ icon, title, children }) {
   return (
     <article className="result-card">
       <header className="card-title">
-        <span className="icon-box"><Icon size={20} /></span>
+        <span className="icon-box">{renderIcon(icon, 20)}</span>
         <h3>{title}</h3>
-        <ChevronUp size={18} className="chevron" />
+        <MaterialIcon name="expand_less" size={18} className="chevron" />
       </header>
       {children}
     </article>
@@ -1099,7 +1071,7 @@ function UserActivitySection({ report, query }) {
 
   return (
     <>
-      <Card icon={History} title="User activity timeline">
+      <Card icon="history" title="User activity timeline">
         <div className="activity-analytics">
           <div className="activity-stat-grid">
             <div className="activity-stat">
@@ -1241,7 +1213,7 @@ function ExecutorActivityCard({ report }) {
         : "low";
 
   return (
-    <Card icon={ScanSearch} title="Executor activity (recent first)">
+    <Card icon="document_search" title="Executor activity (recent first)">
       <div className="executor-activity-panel">
         <div className={`executor-verdict ${verdictClass}`}>
           <strong>{verdictLabel}</strong>
@@ -1287,7 +1259,7 @@ function StarterSection({ report }) {
   return (
     <>
       <ExecutorActivityCard report={report} />
-      <Card icon={Gauge} title="Suspicion Score">
+      <Card icon="speed" title="Suspicion Score">
         <div className="score-panel">
           <div className="score-ring" aria-label={`Suspicion score ${summary.score} out of 100`}>
             <strong>{summary.score}</strong>
@@ -1305,7 +1277,7 @@ function StarterSection({ report }) {
           <span>Runtime modules <strong>{summary.counts.runtimeModules}</strong></span>
         </div>
       </Card>
-      <Card icon={AlertTriangle} title="Why It Scored This Way">
+      <Card icon="warning" title="Why It Scored This Way">
         <div className="reason-list">
           {summary.reasons.map((reason) => (
             <div className="reason-row" key={reason.label}>
@@ -1318,7 +1290,7 @@ function StarterSection({ report }) {
           ))}
         </div>
       </Card>
-      <Card icon={Clock3} title="Tracked files (modified + OS access, MM/DD/YY)">
+      <Card icon="schedule" title="Tracked files (modified + OS access, MM/DD/YY)">
         <p className="muted opened-files-intro">
           Primary time is <strong>file modified (mtime)</strong> — when the file last changed on disk. Secondary line is{" "}
           <strong>OS last access (atime)</strong>; Windows updates this when <em>any</em> program reads the file (games,
@@ -1366,30 +1338,68 @@ function robloxHeadshotUrl(account) {
 
 function collectRobloxAccounts(roblox) {
   const byId = new Map();
-  for (const account of roblox.accounts ?? []) {
-    const userId = account.user_id ? String(account.user_id) : "";
-    if (!userId) continue;
-    if (account.authenticated !== true) continue;
+
+  const mergeAccount = (account, sourceLabel) => {
+    const userId = account?.user_id ? String(account.user_id) : "";
+    if (!userId) return;
     const existing = byId.get(userId) ?? {
       user_id: userId,
       username: null,
       headshot_url: null,
       sources: [],
-      authenticated: true,
+      authenticated: false,
     };
     if (account.username) existing.username = account.username;
     if (account.headshot_url) existing.headshot_url = account.headshot_url;
-    if (account.sources?.length) {
-      existing.sources = [...new Set([...existing.sources, ...account.sources])];
+    if (account.authenticated) existing.authenticated = true;
+    const sources = account.sources?.length ? account.sources : sourceLabel ? [sourceLabel] : [];
+    if (sources.length) {
+      existing.sources = [...new Set([...existing.sources, ...sources])];
     }
     byId.set(userId, existing);
+  };
+
+  for (const account of roblox.accounts ?? []) {
+    mergeAccount(account);
   }
+
+  for (const userId of roblox.aggregate_user_ids ?? []) {
+    mergeAccount({ user_id: String(userId), sources: ["Scan summary"] });
+  }
+
+  for (const artifact of roblox.browser_scan?.artifacts ?? []) {
+    for (const userId of artifact.user_ids ?? []) {
+      mergeAccount(
+        {
+          user_id: String(userId),
+          username: artifact.session_username,
+          authenticated: Boolean(artifact.authenticated),
+          sources: artifact.sources,
+        },
+        `Browser: ${artifact.browser ?? "unknown"}`,
+      );
+    }
+    if (artifact.session_user_id) {
+      mergeAccount({
+        user_id: String(artifact.session_user_id),
+        username: artifact.session_username,
+        authenticated: Boolean(artifact.authenticated),
+        sources: artifact.sources,
+      });
+    }
+  }
+
   return [...byId.values()].sort((left, right) => {
     const leftId = Number(left.user_id);
     const rightId = Number(right.user_id);
     if (Number.isFinite(leftId) && Number.isFinite(rightId)) return leftId - rightId;
     return String(left.user_id).localeCompare(String(right.user_id));
   });
+}
+
+function robloxDisplayName(account) {
+  if (account.username) return account.username;
+  return privacyAccountLabel(account);
 }
 
 function RobloxSection({ report, query, token }) {
@@ -1443,14 +1453,15 @@ function RobloxSection({ report, query, token }) {
 
   return (
     <>
-      <Card icon={Gamepad2} title="Roblox Accounts">
+      <Card icon="sports_esports" title="Roblox Accounts">
         <div className="account-list">
           {accounts.length === 0 ? (
-            <p className="muted">No logged-in Roblox accounts were detected in browser sessions or the Roblox client.</p>
+            <p className="muted">No Roblox accounts were found on this device from client logs or local app data.</p>
           ) : (
             accounts.slice(0, 40).map((account) => {
               const headshot = robloxHeadshotUrl(account);
-              const displayName = privacyAccountLabel(account);
+              const displayName = robloxDisplayName(account);
+              const profileUrl = `https://www.roblox.com/users/${encodeURIComponent(account.user_id)}/profile`;
               return (
                 <div className="account-row" key={account.user_id}>
                   <div className="avatar">
@@ -1462,9 +1473,12 @@ function RobloxSection({ report, query, token }) {
                   </div>
                   <div>
                     <strong>{displayName}</strong>
-                    <span>Logged-in Roblox session detected</span>
+                    <span>{account.authenticated ? "Active session on this device" : "Account seen on this device"}</span>
+                    <a href={profileUrl} target="_blank" rel="noreferrer" className="account-profile-link">
+                      {profileUrl}
+                    </a>
                     <span>
-                      {account.sources?.length ? `Detected via ${account.sources.join(", ")}` : "Session detected"}
+                      {account.sources?.length ? `Found via ${account.sources.join(", ")}` : "Detected during scan"}
                     </span>
                   </div>
                 </div>
@@ -1473,7 +1487,7 @@ function RobloxSection({ report, query, token }) {
           )}
         </div>
       </Card>
-      <Card icon={Gamepad2} title="Browser Roblox Artifacts">
+      <Card icon="sports_esports" title="Browser Roblox Artifacts">
         <TerminalBlock query={query}>
           {lines(roblox.browser_scan?.artifacts ?? [], (artifact) => {
             const sources = (artifact.sources ?? []).join(", ") || "none";
@@ -1491,7 +1505,7 @@ function RobloxSection({ report, query, token }) {
           })}
         </TerminalBlock>
       </Card>
-      <Card icon={Gamepad2} title="Roblox Logs">
+      <Card icon="sports_esports" title="Roblox Logs">
         <TerminalBlock query={query}>
           {lines(logs, (log) => {
             const signals = log.signals ?? {};
@@ -1536,7 +1550,7 @@ function SecuritySection({ report, query }) {
 
   return (
     <>
-      <Card icon={Shield} title="Windows Defender status">
+      <Card icon="shield" title="Windows Defender status">
         {defenderView.available ? (
           <>
             <div className={`verdict-pill verdict-pill--${defenderView.tone}`}>{defenderView.statusLabel}</div>
@@ -1568,7 +1582,7 @@ function SecuritySection({ report, query }) {
           <p className="muted">{defenderView.detail}</p>
         )}
       </Card>
-      <Card icon={Shield} title="Quarantine & threat history">
+      <Card icon="shield" title="Quarantine & threat history">
         {(defenderView.quarantine ?? []).filter(eventMatches).length ? (
           <div className="evidence-list">
             {defenderView.quarantine.filter(eventMatches).slice(0, 30).map((item, index) => (
@@ -1591,7 +1605,7 @@ function SecuritySection({ report, query }) {
           <TerminalBlock query={query}>{asJson(sec.defender)}</TerminalBlock>
         </details>
       </Card>
-      <Card icon={Terminal} title="Security event log (14 days)">
+      <Card icon="terminal" title="Security event log (14 days)">
         {securityEvents.filter(eventMatches).length ? (
           <div className="evidence-list">
             {securityEvents.filter(eventMatches).slice(0, 25).map((item, index) => (
@@ -1608,7 +1622,7 @@ function SecuritySection({ report, query }) {
           <p className="muted">No tracked Security log events (log may be disabled or empty).</p>
         )}
       </Card>
-      <Card icon={Terminal} title="PowerShell operational log">
+      <Card icon="terminal" title="PowerShell operational log">
         {psEvents.filter(eventMatches).length ? (
           <div className="evidence-list">
             {psEvents.filter(eventMatches).slice(0, 20).map((item, index) => (
@@ -1625,7 +1639,7 @@ function SecuritySection({ report, query }) {
           <p className="muted">No PowerShell operational events in the last 14 days.</p>
         )}
       </Card>
-      <Card icon={Cpu} title="Service install & state changes">
+      <Card icon="memory" title="Service install & state changes">
         {serviceEvents.filter(eventMatches).length ? (
           <div className="evidence-list">
             {serviceEvents.filter(eventMatches).slice(0, 25).map((item, index) => (
@@ -1652,7 +1666,7 @@ function SystemSection({ report, query }) {
   const sec = report.security_integrity_signals ?? {};
   return (
     <>
-      <Card icon={Cpu} title="System Overview">
+      <Card icon="memory" title="System Overview">
         <TerminalBlock query={query}>
           {[
             `OS: ${system.os ?? "unknown"}`,
@@ -1665,13 +1679,13 @@ function SystemSection({ report, query }) {
           ].join("\n")}
         </TerminalBlock>
       </Card>
-      <Card icon={Cpu} title="Services">
+      <Card icon="memory" title="Services">
         <TerminalBlock query={query}>{sec.services?.raw}</TerminalBlock>
       </Card>
-      <Card icon={Trash2} title="Recycle Bin">
+      <Card icon="delete" title="Recycle Bin">
         <TerminalBlock query={query}>{asJson(perf.trash)}</TerminalBlock>
       </Card>
-      <Card icon={Terminal} title="Shell History">
+      <Card icon="terminal" title="Shell History">
         <p className="muted panel-intro">
           PowerShell PSReadLine does not store per-command UTC. The time shown is when the history file was last
           updated — usually when recent commands (low &quot;lines from end&quot;) were entered.
@@ -1720,7 +1734,7 @@ function BypassSection({ report, query }) {
   const sec = report.security_integrity_signals ?? {};
   return (
     <>
-      <Card icon={Shield} title="Bypass Detection">
+      <Card icon="shield" title="Bypass Detection">
         <TerminalBlock query={query}>
           {[
             "Event Log / USN / Clearing Signals:",
@@ -1737,7 +1751,7 @@ function BypassSection({ report, query }) {
           ].join("\n")}
         </TerminalBlock>
       </Card>
-      <Card icon={Shield} title="Log Keyword Hits">
+      <Card icon="shield" title="Log Keyword Hits">
         <TerminalBlock query={query}>{asJson(sec.roblox_executor_indicators?.traceback_or_log_hits)}</TerminalBlock>
       </Card>
     </>
@@ -1749,7 +1763,7 @@ function RegistrySection({ report, query }) {
   const perf = report.performance_environment ?? {};
   return (
     <>
-      <Card icon={Database} title="Registry Activity">
+      <Card icon="database" title="Registry Activity">
         <TerminalBlock query={query}>
           {[
             "BAM Registry Entries:",
@@ -1763,7 +1777,7 @@ function RegistrySection({ report, query }) {
           ].join("\n")}
         </TerminalBlock>
       </Card>
-      <Card icon={FileText} title="Execution Artifacts">
+      <Card icon="description" title="Execution Artifacts">
         <TerminalBlock query={query}>
           {[
             `Report Date: ${formatGmtPlus3(report.generated_at)}`,
@@ -1783,7 +1797,7 @@ function FileAnalysisSection({ report, query }) {
   const sec = report.security_integrity_signals ?? {};
   return (
     <>
-      <Card icon={ScanSearch} title="Execution Artifacts">
+      <Card icon="document_search" title="Execution Artifacts">
         <TerminalBlock query={query}>
           {[
             "Keyword Scan",
@@ -1799,7 +1813,7 @@ function FileAnalysisSection({ report, query }) {
           ].join("\n")}
         </TerminalBlock>
       </Card>
-      <Card icon={ScanSearch} title="File Verification">
+      <Card icon="document_search" title="File Verification">
         <TerminalBlock query={query}>Unsigned binary verification is not enabled in this prototype. Use indicator hits and Defender history for triage.</TerminalBlock>
       </Card>
     </>
@@ -1809,7 +1823,7 @@ function FileAnalysisSection({ report, query }) {
 function SuspiciousFilesSection({ report, query }) {
   const sec = report.security_integrity_signals ?? {};
   return (
-    <Card icon={ScanSearch} title="Suspicious Files">
+    <Card icon="document_search" title="Suspicious Files">
       <TerminalBlock query={query}>
         {[
           "Recent files with matched keywords:",
@@ -1826,7 +1840,7 @@ function SuspiciousFilesSection({ report, query }) {
 function CrashLogsSection({ report, query }) {
   const hits = report.security_integrity_signals?.roblox_executor_indicators?.traceback_or_log_hits ?? [];
   return (
-    <Card icon={Terminal} title="Crash Logs">
+    <Card icon="terminal" title="Crash Logs">
       <TerminalBlock query={query}>{hits.length ? asJson(hits) : "No crash logs detected."}</TerminalBlock>
     </Card>
   );
@@ -1852,7 +1866,7 @@ function DeletionsSection({ report, query }) {
 
   return (
     <>
-      <Card icon={Shield} title="Filesystem evidence integrity">
+      <Card icon="shield" title="Filesystem evidence integrity">
         <p className="muted opened-files-intro">
           Dates use <strong>MM/DD/YY</strong> (GMT+3). This section records whether USN journaling, event logs, and
           related services look intact — or were disabled, cleared, deleted, or recreated.
@@ -1890,7 +1904,7 @@ function DeletionsSection({ report, query }) {
         )}
       </Card>
 
-      <Card icon={Clock3} title="Delete-to-cleanup timing">
+      <Card icon="schedule" title="Delete-to-cleanup timing">
         <p className="muted opened-files-intro">
           Measures the gap between when a file was deleted (Recycle Bin $I metadata or USN FILE_DELETE) and when the
           Recycle Bin was emptied or items were permanently removed.
@@ -1937,7 +1951,7 @@ function DeletionsSection({ report, query }) {
         ) : null}
       </Card>
 
-      <Card icon={Trash2} title="Deleted files (resolved timestamps)">
+      <Card icon="delete" title="Deleted files (resolved timestamps)">
         <p className="muted opened-files-intro">
           Times use <strong>MM/DD/YY</strong> (GMT+3). When Recycle Bin $I metadata is missing or zeroed, {BRAND_NAME}{" "}
           falls back to metadata file mtime, USN delete rows, or companion $R data file mtime.
@@ -1989,7 +2003,7 @@ function DeletionsSection({ report, query }) {
           <p className="muted">No deleted-file evidence with timestamps was collected.</p>
         )}
       </Card>
-      <Card icon={Trash2} title="Deletion evidence">
+      <Card icon="delete" title="Deletion evidence">
         <TerminalBlock query={query}>
           {[
             `Report Date: ${formatGmtPlus3(report.generated_at)}`,
@@ -2017,7 +2031,7 @@ function MemorySection({ report, query }) {
   const shaBlocklist = report.security_integrity_signals?.executor_sha256_blocklist ?? {};
   return (
     <>
-      <Card icon={MemoryStick} title="Roblox integrity (live + offline)">
+      <Card icon="sd_card" title="Roblox integrity (live + offline)">
         <TerminalBlock query={query}>
           {runtime.available === false
             ? runtime.reason ?? "Roblox integrity scan not available on this host."
@@ -2026,17 +2040,17 @@ function MemorySection({ report, query }) {
               : "[OK] No suspicious Roblox integrity signals were found in available artifacts."}
         </TerminalBlock>
       </Card>
-      <Card icon={MemoryStick} title="Persistence signals">
+      <Card icon="sd_card" title="Persistence signals">
         <TerminalBlock query={query}>
           {persistence.available === false
             ? persistence.reason ?? "Persistence scan not available."
             : asJson(persistence)}
         </TerminalBlock>
       </Card>
-      <Card icon={MemoryStick} title="Known binary fingerprint matches">
+      <Card icon="sd_card" title="Known binary fingerprint matches">
         <TerminalBlock query={query}>{asJson(shaBlocklist)}</TerminalBlock>
       </Card>
-      <Card icon={MemoryStick} title="Process Snapshot">
+      <Card icon="sd_card" title="Process Snapshot">
         <TerminalBlock query={query}>
           {robloxProcesses.length ? asJson(robloxProcesses) : "[OK] Roblox Memory: No running Roblox process found"}
         </TerminalBlock>
@@ -2114,7 +2128,7 @@ function ForensicFindingsSection({ report, query }) {
   );
   if (!fa || fa.available === false) {
     return (
-      <Card icon={Fingerprint} title="Evidence review">
+      <Card icon="fingerprint" title="Evidence review">
         <p className="muted">
           No forensic analysis bundle on this report. Scans from older desktop builds, or non-Windows hosts, will not
           include this section.
@@ -2143,7 +2157,7 @@ function ForensicFindingsSection({ report, query }) {
           <span>Missing time</span>
         </div>
       </div>
-      <Card icon={Fingerprint} title="Evidence review">
+      <Card icon="fingerprint" title="Evidence review">
         <p className="muted panel-intro">
           Reviewer-first layout — expand a row for hash and signature detail. Times are GMT+3; deleted paths are
           cross-matched across available system traces when {BRAND_NAME} can.
@@ -2238,7 +2252,7 @@ function PcaExecutedCard({ report, query }) {
   const missing = useMemo(() => filtered.filter((item) => !item.file_exists && !item.display_at), [filtered]);
 
   return (
-    <Card icon={Boxes} title="Compatibility trace programs">
+    <Card icon="inventory_2" title="Compatibility trace programs">
       <p className="muted panel-intro">
         Programs Windows Compatibility Assistant recorded. Deleted files show the best available time from linked
         artifacts — not raw null fields.
@@ -2310,7 +2324,7 @@ function ForensicCorrelationSection({ report, query }) {
 
   if (!fa || fa.available === false) {
     return (
-      <Card icon={GitBranch} title="Correlation">
+      <Card icon="account_tree" title="Correlation">
         <p className="muted">No unified correlation data for this report.</p>
       </Card>
     );
@@ -2318,19 +2332,19 @@ function ForensicCorrelationSection({ report, query }) {
 
   return (
     <>
-      <Card icon={GitBranch} title="Cross-artifact summary">
+      <Card icon="account_tree" title="Cross-artifact summary">
         <details className="raw-fold">
           <summary>View summary JSON</summary>
           <TerminalBlock query={query}>{asJson(uc.cross_artifact_summary)}</TerminalBlock>
         </details>
       </Card>
-      <Card icon={GitBranch} title="Execution chains">
+      <Card icon="account_tree" title="Execution chains">
         <details className="raw-fold">
           <summary>View execution chains JSON</summary>
           <TerminalBlock query={query}>{asJson(uc.execution_chains ?? [])}</TerminalBlock>
         </details>
       </Card>
-      <Card icon={Clock3} title="Cross-source timeline">
+      <Card icon="schedule" title="Cross-source timeline">
         <p className="muted panel-intro">
           Merged Windows traces in plain language (newest first). Each row explains what happened; technical artifact
           names are expanded in the glossary above.
@@ -2362,7 +2376,7 @@ function ForensicArtifactsSection({ report, query }) {
   const fa = report.security_integrity_signals?.forensic_analysis;
   if (!fa || fa.available === false) {
     return (
-      <Card icon={Boxes} title="Artifact detail">
+      <Card icon="inventory_2" title="Artifact detail">
         <p className="muted">No structured forensic artifacts for this report.</p>
       </Card>
     );
@@ -2370,19 +2384,19 @@ function ForensicArtifactsSection({ report, query }) {
   const usnRows = safeArray(fa.usn_file_lifecycle_rows).slice(0, 100);
   return (
     <>
-      <Card icon={Boxes} title="Structured execution traces">
+      <Card icon="inventory_2" title="Structured execution traces">
         <details className="raw-fold">
           <summary>View execution trace JSON</summary>
           <TerminalBlock query={query}>{asJson(fa.bam_structured)}</TerminalBlock>
         </details>
       </Card>
-      <Card icon={Boxes} title="Browser SQLite probe">
+      <Card icon="inventory_2" title="Browser SQLite probe">
         <details className="raw-fold">
           <summary>View browser SQLite JSON</summary>
           <TerminalBlock query={query}>{asJson(fa.sqlite)}</TerminalBlock>
         </details>
       </Card>
-      <Card icon={Boxes} title="File lifecycle sample">
+      <Card icon="inventory_2" title="File lifecycle sample">
         <details className="raw-fold">
           <summary>View lifecycle rows JSON</summary>
           <TerminalBlock query={query}>{asJson(usnRows)}</TerminalBlock>
@@ -2393,36 +2407,36 @@ function ForensicArtifactsSection({ report, query }) {
 }
 
 const resultSections = [
-  { id: "starter", label: "Suspicion Score", icon: Gauge, component: StarterSection },
-  { id: "user-activity", label: "User Activity", icon: History, component: UserActivitySection },
+  { id: "starter", label: "Suspicion Score", icon: "speed", component: StarterSection },
+  { id: "user-activity", label: "User Activity", icon: "history", component: UserActivitySection },
   {
     id: "forensic-findings",
     label: "Evidence",
-    icon: Fingerprint,
+    icon: "fingerprint",
     component: ForensicFindingsSection,
   },
   {
     id: "forensic-corr",
-    label: "Cross-source timeline",
-    icon: GitBranch,
+    label: "Cross source timeline",
+    icon: "account_tree",
     component: ForensicCorrelationSection,
   },
   {
     id: "forensic-artifacts",
     label: "Structured OS traces",
-    icon: Boxes,
+    icon: "inventory_2",
     component: ForensicArtifactsSection,
   },
-  { id: "roblox", label: "Roblox", icon: Gamepad2, component: RobloxSection },
-  { id: "security", label: "Security & AV", icon: Shield, component: SecuritySection },
-  { id: "system", label: "System", icon: Cpu, component: SystemSection },
-  { id: "bypass", label: "Bypass Detection", icon: Shield, component: BypassSection },
-  { id: "registry", label: "Registry", icon: Database, component: RegistrySection },
-  { id: "file-analysis", label: "File Analysis", icon: ScanSearch, component: FileAnalysisSection },
-  { id: "suspicious", label: "Suspicious Files", icon: ScanSearch, component: SuspiciousFilesSection },
-  { id: "crash", label: "Crash Logs", icon: Terminal, component: CrashLogsSection },
-  { id: "deletions", label: "Deletions", icon: Trash2, component: DeletionsSection },
-  { id: "memory", label: "Memory", icon: MemoryStick, component: MemorySection },
+  { id: "roblox", label: "Roblox", icon: "sports_esports", component: RobloxSection },
+  { id: "security", label: "Security & AV", icon: "shield", component: SecuritySection },
+  { id: "system", label: "System", icon: "memory", component: SystemSection },
+  { id: "bypass", label: "Bypass Detection", icon: "gpp_maybe", component: BypassSection },
+  { id: "registry", label: "Registry", icon: "database", component: RegistrySection },
+  { id: "file-analysis", label: "File Analysis", icon: "document_search", component: FileAnalysisSection },
+  { id: "suspicious", label: "Suspicious Files", icon: "folder_off", component: SuspiciousFilesSection },
+  { id: "crash", label: "Crash Logs", icon: "terminal", component: CrashLogsSection },
+  { id: "deletions", label: "Deletions", icon: "delete", component: DeletionsSection },
+  { id: "memory", label: "Memory", icon: "sd_card", component: MemorySection },
 ];
 const resultSectionById = Object.fromEntries(resultSections.map((section) => [section.id, section]));
 
@@ -2450,69 +2464,29 @@ function Results({ detail, token, onSessionReviewSaved }) {
   const activeSection = resultSectionById[sectionId] ?? resultSections[0];
   const ActiveComponent = activeSection.component;
   if (!detail) {
-    return <section className="empty-state">Select or generate a PIN session.</section>;
+    return (
+      <section className="workspace-panel workspace-panel--empty">
+        <div className="empty-state workspace-empty">
+          <MaterialIcon name="pin" size={36} />
+          <h2>Select or create a PIN session</h2>
+          <p>Generate a PIN above, then run the desktop scanner to review results here.</p>
+        </div>
+      </section>
+    );
   }
   const showSectionContent = detail.status === "completed";
 
   return (
-    <section className={`scan-results ${expertMode ? "scan-results--expert" : "scan-results--simple"}`}>
-      <aside className="results-nav">
-        {expertMode ? (
-          <button className="back-link" type="button" onClick={() => setExpertMode(false)}>
-            ← Simple view
-          </button>
-        ) : (
-          <p className="back-link back-link--static">Easy results</p>
-        )}
-        <h2>{expertMode ? "Advanced review" : "Scan results"}</h2>
-        <p>
-          {detail.completed_at
-            ? `Submitted ${formatGmtPlus3(detail.completed_at)}`
-            : "Waiting for the desktop client to submit results."}
-        </p>
-        <button className="download-button" onClick={() => downloadReport(detail)}>
-          <Download size={15} /> Download JSON
-        </button>
-        <button
-          type="button"
-          className="download-button"
-          onClick={() => exportReportPdf({ detail, report, summary, brandName: BRAND_NAME })}
-        >
-          <FileText size={15} /> Print summary
-        </button>
-        <button type="button" className="tutorial-open-btn" onClick={() => setTutorialOpen(true)}>
-          <BookOpen size={15} /> Full tutorial
-        </button>
-        {expertMode ? (
-          <nav>
-            {resultSections.map((section) => {
-              const Icon = section.icon;
-              return (
-                <button
-                  key={section.id}
-                  className={sectionId === section.id ? "active" : ""}
-                  onClick={() => setSectionId(section.id)}
-                  type="button"
-                >
-                  <Icon size={18} className="nav-tab-icon" />
-                  <span className="nav-tab-labels">
-                    <span className="nav-tab-primary">{section.label}</span>
-                  </span>
-                </button>
-              );
-            })}
-          </nav>
-        ) : (
-          <p className="results-nav-hint">
-            Use the tabs: Summary, Last activity, Download history, Programs run, Program list, Word matches.
+    <section className={`workspace-panel ${expertMode ? "workspace-panel--expert" : "workspace-panel--simple"}`}>
+      <header className="workspace-panel__header">
+        <div className="workspace-panel__title">
+          <p className="eyebrow">Session PIN {detail.pin}</p>
+          <h2>{expertMode ? "Advanced review" : "Scan results"}</h2>
+          <p className="workspace-panel__meta">
+            {detail.completed_at
+              ? `Submitted ${formatGmtPlus3(detail.completed_at)}`
+              : "Waiting for the desktop scanner to submit results."}
           </p>
-        )}
-      </aside>
-      <div className="result-content">
-        <div className="result-header">
-        <div>
-          <p className="eyebrow">Session PIN</p>
-          <h2>{detail.pin}</h2>
         </div>
         <div className="header-badges">
           {detail.status === "completed" && (
@@ -2532,13 +2506,53 @@ function Results({ detail, token, onSessionReviewSaved }) {
           <span className={`status large ${formatSessionStatus(detail.status)}`}>
             {formatSessionStatus(detail.status)}
           </span>
-          {showSectionContent && !expertMode ? (
-            <button type="button" className="text-button header-expert-link" onClick={() => setExpertMode(true)}>
-              Advanced review
+        </div>
+        <div className="workspace-panel__actions">
+          <button type="button" className="btn btn--ghost btn--sm" onClick={() => downloadReport(detail)}>
+            <MaterialIcon name="download" size={16} /> JSON
+          </button>
+          <button
+            type="button"
+            className="btn btn--ghost btn--sm"
+            onClick={() => exportReportPdf({ detail, report, summary, brandName: BRAND_NAME })}
+          >
+            <MaterialIcon name="print" size={16} /> Print
+          </button>
+          <button type="button" className="btn btn--ghost btn--sm" onClick={() => setTutorialOpen(true)}>
+            <MaterialIcon name="menu_book" size={16} /> Tutorial
+          </button>
+          {showSectionContent ? (
+            <button
+              type="button"
+              className={`btn btn--sm ${expertMode ? "btn--outline" : "btn--primary"}`}
+              onClick={() => setExpertMode((value) => !value)}
+            >
+              <MaterialIcon name={expertMode ? "dashboard" : "science"} size={16} />
+              {expertMode ? "Simple view" : "Advanced review"}
             </button>
           ) : null}
         </div>
+      </header>
+
+      {expertMode ? (
+        <div className="expert-tabbar" role="tablist" aria-label="Expert sections">
+          {resultSections.map((section) => (
+            <button
+              key={section.id}
+              type="button"
+              role="tab"
+              aria-selected={sectionId === section.id}
+              className={`expert-tab ${sectionId === section.id ? "active" : ""}`}
+              onClick={() => setSectionId(section.id)}
+            >
+              <MaterialIcon name={section.icon} size={16} />
+              <span>{section.label}</span>
+            </button>
+          ))}
         </div>
+      ) : null}
+
+      <div className="workspace-panel__body">
         <SessionReview
           detail={detail}
           apiUrl={API_URL}
@@ -2547,7 +2561,10 @@ function Results({ detail, token, onSessionReviewSaved }) {
           onSaved={onSessionReviewSaved}
         />
         {!showSectionContent ? (
-          <div className="empty-state">Waiting for the desktop client to submit results.</div>
+          <div className="empty-state workspace-empty">
+            <MaterialIcon name="hourglass_top" size={32} />
+            <p>Waiting for the desktop scanner to submit results.</p>
+          </div>
         ) : expertMode ? (
           <>
             <input
@@ -2595,6 +2612,8 @@ export function Dashboard({ token, onLogout }) {
   const [detail, setDetail] = useState(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleteBusy, setDeleteBusy] = useState(false);
   const detailFetchSeq = useRef(0);
 
   const hasAccess = Boolean(profile?.has_access);
@@ -2671,19 +2690,16 @@ export function Dashboard({ token, onLogout }) {
     }
   }, [token, hasAccess, loadProfile]);
 
-  async function deleteSession(session) {
-    if (!hasAccess) {
-      return;
-    }
-    if (
-      !window.confirm(
-        `Delete session PIN ${session.pin}? The scan record will be removed from the dashboard.`,
-      )
-    ) {
-      return;
-    }
+  function requestDeleteSession(session) {
+    if (!hasAccess) return;
+    setDeleteTarget(session);
+  }
+
+  async function confirmDeleteSession() {
+    if (!deleteTarget || !hasAccess) return;
+    setDeleteBusy(true);
     try {
-      const response = await fetch(`${API_URL}/sessions/${session.id}`, {
+      const response = await fetch(`${API_URL}/sessions/${deleteTarget.id}`, {
         method: "DELETE",
         headers: authHeaders(token),
       });
@@ -2695,10 +2711,13 @@ export function Dashboard({ token, onLogout }) {
       if (!response.ok) {
         throw new Error(`Delete failed: ${response.status}`);
       }
-      setMessage(`Deleted session ${session.pin}`);
+      setMessage(`Deleted session ${deleteTarget.pin}`);
+      setDeleteTarget(null);
       await loadSessions();
     } catch (caught) {
       setError(caught.message);
+    } finally {
+      setDeleteBusy(false);
     }
   }
 
@@ -2800,92 +2819,92 @@ export function Dashboard({ token, onLogout }) {
   const greetingName = profile?.username || "there";
 
   return (
-    <main className="dashboard">
-      <header className="topbar">
-        <div className="topbar-brand">
-          <img src={BRAND_LOGO} alt="" />
+    <main className="workspace">
+      <header className="workspace-bar">
+        <div className="workspace-bar__brand">
+          <img src={BRAND_LOGO} alt="" className="workspace-bar__logo" />
           <div>
-            <p className="eyebrow">Review Console</p>
+            <p className="eyebrow">Review workspace</p>
             <h1>Hi, {greetingName}</h1>
-            <p className="topbar-subtitle">
-              {hasAccess
-                ? "Generate a PIN, run the desktop scanner, and review completed diagnostics here."
-                : "Signed in — unlock the console after verifying your Discord Access role."}
-            </p>
           </div>
         </div>
-        <div className="topbar-user">
+        <div className="workspace-bar__actions">
           {profile?.avatar_url ? (
             <img src={profile.avatar_url} alt="" className="topbar-avatar" />
           ) : null}
-          <div className="actions">
-          <a className="topbar-discord" href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer" title="Discord">
-            <MessageCircle size={18} />
+          <a className="workspace-icon-btn" href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer" title="Discord">
+            <MaterialIcon name="forum" size={20} />
           </a>
-          {hasAccess && selectedPin && (
-            <button onClick={() => navigator.clipboard?.writeText(selectedPin)}>
-              <Clipboard size={18} /> Copy PIN
+          {hasAccess && selectedPin ? (
+            <button type="button" className="btn btn--ghost btn--sm" onClick={() => navigator.clipboard?.writeText(selectedPin)}>
+              <MaterialIcon name="content_copy" size={16} /> Copy PIN
             </button>
-          )}
+          ) : null}
           {hasAccess ? (
             <>
               {isSuperAdmin ? (
-                <button type="button" className={showAdmin ? "active" : ""} onClick={() => setShowAdmin((v) => !v)}>
-                  <Shield size={18} /> {showAdmin ? "Back to scans" : "Admin"}
+                <button type="button" className={`btn btn--ghost btn--sm ${showAdmin ? "active" : ""}`} onClick={() => setShowAdmin((v) => !v)}>
+                  <MaterialIcon name="admin_panel_settings" size={16} />
+                  {showAdmin ? "Scans" : "Admin"}
                 </button>
               ) : null}
-              <button onClick={loadSessions}>
-                <RefreshCw size={18} /> Refresh
+              <button type="button" className="btn btn--ghost btn--sm" onClick={loadSessions}>
+                <MaterialIcon name="refresh" size={16} /> Refresh
               </button>
-              <button className="primary" onClick={createPin}>
-                <KeyRound size={18} /> Generate New PIN
+              <button type="button" className="btn btn--primary btn--sm" onClick={createPin}>
+                <MaterialIcon name="key" size={16} /> New PIN
               </button>
             </>
           ) : (
-            <button className="primary" onClick={verifyAccess} disabled={verifyBusy}>
-              <Shield size={18} /> {verifyBusy ? "Checking Discord..." : "Verify Access"}
+            <button type="button" className="btn btn--primary btn--sm" onClick={verifyAccess} disabled={verifyBusy}>
+              <MaterialIcon name="verified_user" size={16} />
+              {verifyBusy ? "Checking Discord…" : "Verify access"}
             </button>
           )}
-          <button type="button" onClick={onLogout}>
-            <LogOut size={18} /> Log out
+          <button type="button" className="btn btn--ghost btn--sm" onClick={onLogout}>
+            <MaterialIcon name="logout" size={16} /> Log out
           </button>
-          </div>
         </div>
       </header>
+
       {!hasAccess ? (
         <section className="access-gate">
           <div className="access-gate-card">
-            <Shield size={28} />
+            <MaterialIcon name="shield" size={32} />
             <div>
               <h2>Access not verified yet</h2>
               <p>
-                Join our Discord server and get the <strong>Access</strong> role. After that, click{" "}
-                <strong>Verify Access</strong> to unlock PIN generation and scan results.
+                Join our Discord server and get the <strong>Access</strong> role. Then click{" "}
+                <strong>Verify access</strong> to unlock PIN generation and scan results.
               </p>
             </div>
             <div className="access-gate-actions">
               <a className="discord-invite inline-invite" href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer">
                 Open Discord server
               </a>
-              <button className="primary" type="button" onClick={verifyAccess} disabled={verifyBusy}>
-                {verifyBusy ? "Checking Discord..." : "Verify Access"}
+              <button className="btn btn--primary" type="button" onClick={verifyAccess} disabled={verifyBusy}>
+                {verifyBusy ? "Checking Discord…" : "Verify access"}
               </button>
             </div>
           </div>
         </section>
       ) : null}
-      {message && <div className="notice">{message}</div>}
-      {error && <div className="error-banner">{error}</div>}
+
+      {message ? <div className="notice workspace-toast">{message}</div> : null}
+      {error ? <div className="error-banner workspace-toast">{error}</div> : null}
+
       {isSuperAdmin && showAdmin ? (
         <AdminPanel apiUrl={API_URL} token={token} authHeaders={authHeaders} />
       ) : (
-        <div className={`layout ${hasAccess ? "" : "layout-locked"}`}>
-          <SessionList
-            sessions={sessions}
-            selectedId={selectedId}
-            onSelect={setSelectedId}
-            onDelete={deleteSession}
-          />
+        <div className={`workspace-stage ${hasAccess ? "" : "workspace-stage--locked"}`}>
+          {hasAccess ? (
+            <SessionRail
+              sessions={sessions}
+              selectedId={selectedId}
+              onSelect={setSelectedId}
+              onDelete={requestDeleteSession}
+            />
+          ) : null}
           <Results
             detail={detail}
             token={token}
@@ -2896,6 +2915,18 @@ export function Dashboard({ token, onLogout }) {
           />
         </div>
       )}
+
+      <ConfirmModal
+        open={Boolean(deleteTarget)}
+        title={`Delete PIN ${deleteTarget?.pin ?? ""}?`}
+        message="This removes the scan record from your dashboard. The action cannot be undone."
+        confirmLabel="Delete session"
+        busy={deleteBusy}
+        onCancel={() => {
+          if (!deleteBusy) setDeleteTarget(null);
+        }}
+        onConfirm={confirmDeleteSession}
+      />
     </main>
   );
 }

@@ -13,7 +13,7 @@ const REQUIREMENTS = [
 const STEPS = [
   "Download and run the Virello scanner on the device being checked.",
   "Enter the PIN provided by your reviewer and read the consent summary.",
-  "Start the scan — primary results are delivered within six minutes.",
+  "Start the scan. Primary results are delivered within six minutes.",
   "Your reviewer views the completed report in the Review Console.",
 ];
 
@@ -28,7 +28,7 @@ export function DownloadPage() {
           <h1>Download {BRAND_FULL}</h1>
           <p>
             The Virello desktop scanner collects forensic diagnostics with explicit user consent.
-            Reviewers generate a PIN in the console — users run this app to complete the scan.
+            Reviewers generate a PIN in the console. Users run this app to complete the scan.
           </p>
           <div className="download-hero__actions">
             {hasDirectDownload ? (
@@ -63,7 +63,7 @@ export function DownloadPage() {
           <div className="download-stat">
             <IconConsent size={22} />
             <div>
-              <strong>Consent-first</strong>
+              <strong>Consent first</strong>
               <span>No hidden collection</span>
             </div>
           </div>

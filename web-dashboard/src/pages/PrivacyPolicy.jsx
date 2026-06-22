@@ -12,7 +12,7 @@ export function PrivacyPolicyPage() {
     >
       <p className="legal-doc__lead">
         This policy describes what Virello collects through its website, Discord community, desktop
-        scanner, and review platform — and what we deliberately avoid collecting.
+        scanner, and review platform, and what we deliberately avoid collecting.
       </p>
 
       <LegalArticle index="I" title="Information we collect">
@@ -70,7 +70,7 @@ export function PrivacyPolicyPage() {
           administration. Data may be disclosed when required by law.
         </p>
         <p>
-          Discord&apos;s own policies govern your use of Discord — see{" "}
+          Discord&apos;s own policies govern your use of Discord. See{" "}
           <a href="https://discord.com/privacy" target="_blank" rel="noreferrer">discord.com/privacy</a>.
         </p>
       </LegalArticle>

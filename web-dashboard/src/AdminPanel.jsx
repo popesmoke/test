@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { Database, RefreshCw, Shield, Trash2, Users } from "lucide-react";
+import { MaterialIcon } from "./components/MaterialIcon.jsx";
+import { ConfirmModal } from "./components/ConfirmModal.jsx";
 
 export function AdminPanel({ apiUrl, token, authHeaders }) {
   const [stats, setStats] = useState(null);
@@ -7,6 +8,8 @@ export function AdminPanel({ apiUrl, token, authHeaders }) {
   const [users, setUsers] = useState([]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+  const [purgeOpen, setPurgeOpen] = useState(false);
+  const [purgeBusy, setPurgeBusy] = useState(false);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -35,12 +38,17 @@ export function AdminPanel({ apiUrl, token, authHeaders }) {
   }, [loadAll]);
 
   async function purgeExpired() {
-    if (!window.confirm("Delete all expired PIN sessions from the database?")) return;
-    const expired = sessions.filter((s) => s.status === "expired");
-    for (const row of expired) {
-      await fetch(`${apiUrl}/sessions/${row.id}`, { method: "DELETE", headers: authHeaders(token) });
+    setPurgeBusy(true);
+    try {
+      const expired = sessions.filter((s) => s.status === "expired");
+      for (const row of expired) {
+        await fetch(`${apiUrl}/sessions/${row.id}`, { method: "DELETE", headers: authHeaders(token) });
+      }
+      setPurgeOpen(false);
+      await loadAll();
+    } finally {
+      setPurgeBusy(false);
     }
-    await loadAll();
   }
 
   const byStatus = stats?.by_status ?? {};
@@ -51,16 +59,16 @@ export function AdminPanel({ apiUrl, token, authHeaders }) {
         <div>
           <p className="eyebrow">Owner tools</p>
           <h2>
-            <Shield size={18} /> Scanner admin
+            <MaterialIcon name="admin_panel_settings" size={18} /> Scanner admin
           </h2>
           <p className="muted">Sessions, reviewers, and verdict tags across the API.</p>
         </div>
         <div className="actions">
-          <button type="button" onClick={loadAll} disabled={loading}>
-            <RefreshCw size={16} /> Refresh
+          <button type="button" className="btn btn--ghost btn--sm" onClick={loadAll} disabled={loading}>
+            <MaterialIcon name="refresh" size={16} /> Refresh
           </button>
-          <button type="button" onClick={purgeExpired}>
-            <Trash2 size={16} /> Purge expired
+          <button type="button" className="btn btn--ghost btn--sm" onClick={() => setPurgeOpen(true)}>
+            <MaterialIcon name="delete_sweep" size={16} /> Purge expired
           </button>
         </div>
       </header>
@@ -88,7 +96,7 @@ export function AdminPanel({ apiUrl, token, authHeaders }) {
           </div>
           <div className="admin-table card-like">
             <h3>
-              <Database size={16} /> Sessions
+              <MaterialIcon name="database" size={16} /> Sessions
             </h3>
             <div className="admin-table-scroll">
               <table>
@@ -107,9 +115,9 @@ export function AdminPanel({ apiUrl, token, authHeaders }) {
                       <tr key={row.id}>
                         <td>{row.pin}</td>
                         <td>{row.status}</td>
-                        <td>{row.reviewer_verdict || "—"}</td>
-                        <td>{row.completed_at || "—"}</td>
-                        <td>{row.reviewer_note ? row.reviewer_note.slice(0, 80) : "—"}</td>
+                        <td>{row.reviewer_verdict || "n/a"}</td>
+                        <td>{row.completed_at || "n/a"}</td>
+                        <td>{row.reviewer_note ? row.reviewer_note.slice(0, 80) : "n/a"}</td>
                       </tr>
                     ))
                   ) : (
@@ -123,7 +131,7 @@ export function AdminPanel({ apiUrl, token, authHeaders }) {
           </div>
           <div className="admin-table card-like">
             <h3>
-              <Users size={16} /> Reviewer logins
+              <MaterialIcon name="group" size={16} /> Reviewer logins
             </h3>
             <div className="admin-table-scroll">
               <table>
@@ -140,7 +148,7 @@ export function AdminPanel({ apiUrl, token, authHeaders }) {
                       <tr key={row.discord_id}>
                         <td>{row.username}</td>
                         <td>{row.has_access ? "Yes" : "No"}</td>
-                        <td>{row.last_login_at || "—"}</td>
+                        <td>{row.last_login_at || "n/a"}</td>
                       </tr>
                     ))
                   ) : (
@@ -154,6 +162,17 @@ export function AdminPanel({ apiUrl, token, authHeaders }) {
           </div>
         </>
       ) : null}
+      <ConfirmModal
+        open={purgeOpen}
+        title="Purge expired sessions?"
+        message="This permanently removes every expired PIN session from the database."
+        confirmLabel="Purge expired"
+        busy={purgeBusy}
+        onCancel={() => {
+          if (!purgeBusy) setPurgeOpen(false);
+        }}
+        onConfirm={purgeExpired}
+      />
     </section>
   );
 }

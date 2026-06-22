@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Save } from "lucide-react";
+import { MaterialIcon } from "./components/MaterialIcon.jsx";
 
 const VERDICTS = [
   { id: "", label: "No verdict" },
@@ -66,13 +66,13 @@ export function SessionReview({ detail, apiUrl, token, authHeaders, onSaved }) {
             rows={3}
             value={note}
             onChange={(e) => setNote(e.target.value)}
-            placeholder="Staff-only note for this scan…"
+            placeholder="Staff only note for this scan…"
           />
         </label>
       </div>
       <div className="session-review-actions">
-        <button type="button" className="primary" onClick={saveReview} disabled={busy}>
-          <Save size={15} /> {busy ? "Saving…" : "Save review"}
+        <button type="button" className="btn btn--primary btn--sm" onClick={saveReview} disabled={busy}>
+          <MaterialIcon name="save" size={15} /> {busy ? "Saving…" : "Save review"}
         </button>
         {message ? <span className="muted">{message}</span> : null}
       </div>

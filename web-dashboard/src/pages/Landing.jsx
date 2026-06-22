@@ -1,46 +1,39 @@
 import React from "react";
 import { Link } from "react-router-dom";
 import { DISCORD_INVITE_URL } from "../config/brand.js";
-import {
-  IconBolt,
-  IconConsent,
-  IconConsole,
-  IconDiscord,
-  IconRadar,
-  IconShieldMark,
-  IconTimer,
-} from "../components/VirelloIcons.jsx";
+import { MaterialIcon } from "../components/MaterialIcon.jsx";
+import { IconDiscord } from "../components/VirelloIcons.jsx";
 
 const FEATURES = [
   {
-    icon: IconRadar,
-    title: "Deep Forensic Scanning",
-    text: "Execution traces, filesystem artifacts, Roblox runtime signals, and cross-source correlation in one pass.",
+    icon: "radar",
+    title: "Deep forensic scanning",
+    text: "Execution traces, filesystem artifacts, Roblox runtime signals, and correlated findings in one pass.",
   },
   {
-    icon: IconShieldMark,
-    title: "Low False Positives",
-    text: "Evidence is scored by reliability tier. Weak signals need corroboration before they affect a verdict.",
+    icon: "verified_user",
+    title: "Fewer false positives",
+    text: "Evidence is scored by reliability. Weak signals need backup before they affect a verdict.",
   },
   {
-    icon: IconTimer,
-    title: "Fast, Bounded Scans",
-    text: "Primary results land within six minutes. Background collectors finish without blocking the report.",
+    icon: "timer",
+    title: "Fast, bounded scans",
+    text: "Primary results arrive within six minutes. Background collectors finish without blocking the report.",
   },
   {
-    icon: IconConsent,
-    title: "Consent-First Design",
+    icon: "policy",
+    title: "Consent first design",
     text: "Users approve collection upfront. No passwords, session cookies, or message contents are gathered.",
   },
   {
-    icon: IconConsole,
-    title: "Structured Review Console",
-    text: "Plain-language summaries for quick calls, plus an advanced mode for full forensic detail.",
+    icon: "dashboard",
+    title: "Structured review console",
+    text: "Plain language summaries for quick calls, plus an advanced mode for full forensic detail.",
   },
   {
-    icon: IconBolt,
-    title: "Production-Grade Stability",
-    text: "Built for repeated screenshares and long review sessions — not throwaway demos.",
+    icon: "bolt",
+    title: "Production grade stability",
+    text: "Built for repeated screenshares and long review sessions, not throwaway demos.",
   },
 ];
 
@@ -72,9 +65,9 @@ export function LandingPage() {
             </a>
           </div>
           <ul className="hero__trust">
-            <li>Consent-based collection</li>
+            <li>Consent based collection</li>
             <li>40+ tracked executor brands</li>
-            <li>6-minute scan budget</li>
+            <li>6 minute scan budget</li>
           </ul>
         </div>
         <div className="hero__panel">
@@ -103,13 +96,13 @@ export function LandingPage() {
         <header className="section__header">
           <p className="section__eyebrow">Capabilities</p>
           <h2>Built for real screenshare workflows</h2>
-          <p>Accuracy, clarity, and speed — without sacrificing reviewer trust.</p>
+          <p>Accuracy, clarity, and speed without sacrificing reviewer trust.</p>
         </header>
         <div className="feature-grid">
           {FEATURES.map((feature) => (
             <article key={feature.title} className="feature-card">
               <div className="feature-card__icon">
-                <feature.icon size={24} />
+                <MaterialIcon name={feature.icon} size={24} />
               </div>
               <h3>{feature.title}</h3>
               <p>{feature.text}</p>
