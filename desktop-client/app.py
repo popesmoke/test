@@ -43,12 +43,12 @@ API_URL = get_api_url()
 CONSENT_VERSION = "2026-06-02.virello-scanner"
 
 SCAN_STAGES = [
-    "Preparing Scan",
-    "Checking Device",
-    "Reviewing App Data",
-    "Collecting Diagnostics",
-    "Finalizing Report",
-    "Uploading Results",
+    "Initializing Scan",
+    "System Environment Check",
+    "Application Data Review",
+    "Forensic Collection",
+    "Evidence Correlation",
+    "Uploading Report",
 ]
 
 # Progress bar uses 0–100; the long build_report() phase is animated slowly instead of jumping to ~67%.
@@ -2791,6 +2791,19 @@ EXECUTOR_NAMES = [
     "Nucleus",
     "Electron",
     "Trigon",
+    # 2025–2026 expansion
+    "Ronix",
+    "Evon",
+    "KRNL",
+    "Oxygen U",
+    "Comet",
+    "Bunni",
+    "Nezur",
+    "Zorara",
+    "Swift",
+    "Temple",
+    "Valex",
+    "Pluto",
 ]
 
 # Extra tokens commonly seen in paths, prefetch stems, or renamed folders.
@@ -2827,6 +2840,18 @@ EXECUTOR_ALIASES: dict[str, list[str]] = {
     "Nucleus": ["nucleusexecutor", "nucleus executor", "nucleus.exe"],
     "Electron": ["electronexecutor", "electron executor", "electron-executor", "electron.exe"],
     "Trigon": ["trigonexecutor", "trigon executor", "trigon.exe"],
+    "Ronix": ["ronix", "ronixexploit", "ronix exploit", "ronixexecutor"],
+    "Evon": ["evon", "evonexecutor", "evon executor", "evonmobile"],
+    "KRNL": ["krnl", "krnl.exe", "krnlplace", "krnl bootstrap"],
+    "Oxygen U": ["oxygen", "oxygen u", "oxygenu", "oxygen-u"],
+    "Comet": ["comet", "cometexecutor", "comet executor"],
+    "Bunni": ["bunni", "bunniexecutor", "bunni exploit"],
+    "Nezur": ["nezur", "nezurexecutor", "nezur executor"],
+    "Zorara": ["zorara", "zoraraexecutor"],
+    "Swift": ["swiftexecutor", "swift executor", "swiftdownload"],
+    "Temple": ["temple", "templeexecutor", "temple executor"],
+    "Valex": ["valex", "valexexecutor", "valex executor"],
+    "Pluto": ["pluto", "plutoexecutor", "pluto executor"],
 }
 
 # Folder names used by installers (path segment match — survives generic renames of the .exe).
@@ -2861,6 +2886,18 @@ EXECUTOR_INSTALL_DIR_NAMES = frozenset(
         "vega x",
         "codex",
         "codexexecutor",
+        "ronix",
+        "evon",
+        "krnl",
+        "oxygen",
+        "comet",
+        "bunni",
+        "nezur",
+        "zorara",
+        "swift",
+        "temple",
+        "valex",
+        "pluto",
     }
 )
 
@@ -2964,6 +3001,13 @@ EXECUTOR_KNOWN_RELATIVE_PATHS: dict[str, list[str]] = {
     "Delta": ["AppData/Local/Delta", "AppData/Local/DeltaExecutor"],
     "Vega X": ["AppData/Local/Vega X", "AppData/Local/VegaX"],
     "Codex": ["AppData/Local/Codex", "AppData/Local/CodexExecutor"],
+    "Ronix": ["AppData/Local/Ronix", "AppData/Local/RonixExploit"],
+    "Evon": ["AppData/Local/Evon", "AppData/Roaming/Evon"],
+    "KRNL": ["AppData/Local/krnl", "AppData/Local/KRNL"],
+    "Oxygen U": ["AppData/Local/Oxygen", "AppData/Local/Oxygen U"],
+    "Comet": ["AppData/Local/Comet", "AppData/Local/CometExecutor"],
+    "Nezur": ["AppData/Local/Nezur", "AppData/Roaming/Nezur"],
+    "Swift": ["AppData/Local/Swift", "AppData/Local/SwiftExecutor"],
 }
 
 # Download-site domains tied to tracked executors (browser history + download URL matching).
@@ -2985,6 +3029,13 @@ EXECUTOR_DOWNLOAD_DOMAIN_HINTS: dict[str, list[str]] = {
     "Delta": ["deltaexecutor", "delta-executor"],
     "Vega X": ["vegax", "vega-x"],
     "Codex": ["codexexecutor", "codex-executor"],
+    "Ronix": ["ronix", "ronixexploit", "ronix-exploit"],
+    "Evon": ["evon", "evonexecutor", "evon-mobile"],
+    "KRNL": ["krnl", "krnl.place", "krnlplace"],
+    "Oxygen U": ["oxygen", "oxygenu", "oxygen-u"],
+    "Comet": ["cometexecutor", "comet-executor"],
+    "Nezur": ["nezur", "nezurexecutor"],
+    "Swift": ["swiftexecutor", "swift-executor"],
 }
 
 ROBLOX_TRUSTED_LAUNCHER_FRAGMENTS = (
@@ -3011,12 +3062,26 @@ ROBLOX_AUTOEXEC_DIR_NAMES = frozenset(
 
 ROBLOX_AUTOEXEC_FILE_EXTENSIONS = frozenset({".lua", ".txt", ".json", ".luau"})
 
+# rbxasset:// paths used by in-client executor asset detection (DevForum / community intel).
+EXECUTOR_RBXASSET_SIGNATURES: dict[str, list[str]] = {
+    "Delta": ["rbxasset://custom_gloop", "custom_gloop/new_logo"],
+    "Ronix": ["rbxasset://ronixexploit", "rbxasset://RonixExploit"],
+    "Evon": ["launching old evon gui", "evonmobile"],
+    "Vega X": ["depricated & drop support on", "deprecated & drop support"],
+    "Trigon": ["osebackground"],
+    "Arceus X": ["arceusx", "rbxasset://arceus"],
+    "Fluxus": ["fluxus", "rbxasset://fluxus"],
+    "KRNL": ["krnl", "rbxasset://krnl"],
+    "Comet": ["comet", "rbxasset://comet"],
+    "Swift": ["swift", "rbxasset://swift"],
+}
+
 # Hard ceiling for the full diagnostic pass (user requirement: never exceed 6 minutes).
 SCAN_MAX_SECONDS = 360.0
 SCAN_TARGET_MIN_SECONDS = 180.0
 # Reserve time for correlation/report assembly so the filesystem walk cannot consume the whole budget.
-SCAN_CORRELATION_RESERVE_SECONDS = 70.0
-FULL_PC_WALK_MAX_SECONDS = 90.0
+SCAN_CORRELATION_RESERVE_SECONDS = 55.0
+FULL_PC_WALK_MAX_SECONDS = 85.0
 PREFETCH_ARTIFACT_MAX_FILES = 100
 ARTIFACT_SCAN_MAX_TIMEOUT_SEC = 12.0
 DISK_EXECUTABLE_FALLBACK_TIMEOUT_SEC = 8.0
@@ -3462,6 +3527,7 @@ USER_FOLDER_TRUSTED_APP_STEMS = frozenset(
 # Disk-bound scans: too many parallel walkers thrash the volume and slow everything down.
 SCAN_WORKERS = min(10, max(6, (os.cpu_count() or 4) + 2))
 HASH_SCAN_WORKERS = min(8, max(4, (os.cpu_count() or 4)))
+PROCESS_SCAN_MAX_ITERATIONS = 2_500
 RECENT_EXECUTABLE_WINDOW_DAYS = 45
 
 # Populated once per build_report() pass to avoid duplicate full USN journal reads.
@@ -11881,8 +11947,10 @@ def scan_live_executor_processes() -> list[dict[str, object]]:
     patterns = executor_name_patterns()
     hits: list[dict[str, object]] = []
     seen: set[str] = set()
+    scanned = 0
     for proc in psutil.process_iter(["pid", "name", "exe", "cmdline", "create_time"]):
-        if scan_collect_phase_exhausted():
+        scanned += 1
+        if scanned > PROCESS_SCAN_MAX_ITERATIONS or scan_collect_phase_exhausted():
             break
         try:
             info = proc.info
@@ -12110,19 +12178,25 @@ def scan_roblox_log_executor_hits() -> list[dict[str, object]]:
     hits: list[dict[str, object]] = []
     seen: set[str] = set()
     for root in roots:
-        if not root.is_dir():
+        if not root.is_dir() or scan_collect_phase_exhausted():
             continue
         try:
             files = [p for p in root.rglob("*.log") if p.is_file()][:80]
         except OSError:
             continue
         for path in files:
+            if scan_collect_phase_exhausted():
+                break
             try:
                 text = path.read_text(encoding="utf-8", errors="replace")[:500_000]
                 modified = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
             except OSError:
                 continue
-            labels = executor_labels_for_artifact_text(text)
+            labels = set(executor_labels_for_artifact_text(text))
+            text_low = text.lower()
+            for brand, signatures in EXECUTOR_RBXASSET_SIGNATURES.items():
+                if any(sig.lower() in text_low for sig in signatures):
+                    labels.add(brand)
             if not labels:
                 continue
             extracted = extract_dos_paths_from_binary(text.encode("utf-8", errors="ignore"), limit=3)
@@ -12131,11 +12205,11 @@ def scan_roblox_log_executor_hits() -> list[dict[str, object]]:
                 hits,
                 seen,
                 path=display,
-                labels=labels,
+                labels=sorted(labels),
                 occurred_at=modified,
                 artifact_source="roblox_log",
                 file_exists=path_exists_on_disk(display),
-                note="Roblox client log mentions a checked executor.",
+                note="Roblox client log references executor language or rbxasset signature.",
             )
     return hits[:40]
 

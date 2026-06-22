@@ -242,7 +242,11 @@ def _scan_module_trust(
         module_paths: list[str] = []
         try:
             proc = psutil.Process(pid)
+            map_count = 0
             for mmap in proc.memory_maps(grouped=False):
+                map_count += 1
+                if map_count > 800:
+                    break
                 path = getattr(mmap, "path", "") or ""
                 if path and not path.startswith("["):
                     module_paths.append(path)

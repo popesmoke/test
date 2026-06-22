@@ -36,82 +36,11 @@ import { exportReportPdf } from "./exportReportPdf.js";
 import { SessionReview } from "./SessionReview.jsx";
 import { SimpleResults } from "./SimpleResults.jsx";
 import { TutorialGuide } from "./TutorialGuide.jsx";
+import { AppRouter } from "./App.jsx";
+import { API_URL, BRAND_FULL, BRAND_LOGO, DISCORD_INVITE_URL } from "./config/brand.js";
+import { authHeaders, DISCORD_ERROR_MESSAGES, setStoredToken, startDiscordLogin } from "./lib/auth.js";
 
-const API_URL = import.meta.env.VITE_API_URL || "https://virello-secure.onrender.com";
-const BRAND_LOGO = "/assets/virello-scanner-logo.png";
-const BRAND_NAME = "Virello Scanner";
-const DISCORD_INVITE_URL = import.meta.env.VITE_DISCORD_INVITE_URL || "https://discord.gg/wPZXKaPyWY";
-
-function authHeaders(token) {
-  return { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
-}
-
-const DISCORD_ERROR_MESSAGES = {
-  discord_auth_failed: "Discord login failed. Please try again.",
-  invalid_state: "Discord login expired. Please try again.",
-  missing_code: "Discord did not return a login code. Please try again.",
-};
-
-async function startDiscordLogin() {
-  const returnTo = `${window.location.origin}${window.location.pathname}`;
-  const response = await fetch(
-    `${API_URL}/auth/discord/start?return_to=${encodeURIComponent(returnTo)}`,
-  );
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok || !data.url) {
-    throw new Error(data.detail || "Could not start Discord login.");
-  }
-  window.location.assign(data.url);
-}
-
-function Login({ loginError }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState(loginError || "");
-
-  useEffect(() => {
-    setError(loginError || "");
-  }, [loginError]);
-
-  async function handleDiscordLogin() {
-    setError("");
-    setBusy(true);
-    try {
-      await startDiscordLogin();
-    } catch (caught) {
-      setError(caught.message || `Could not reach backend at ${API_URL}`);
-      setBusy(false);
-    }
-  }
-
-  return (
-    <main className="login-shell">
-      <section className="login-panel">
-        <div className="login-logo-wrap">
-          <img src={BRAND_LOGO} alt={BRAND_NAME} className="login-logo" />
-        </div>
-        <div className="brand-row">
-          <div>
-            <p>Sign in with Discord to check scan results in plain, simple language.</p>
-          </div>
-        </div>
-        <div className="form-stack login-discord-stack">
-          {error && <p className="error">{error}</p>}
-          <p className="login-help">
-            You need the <strong>Access</strong> role in our Discord server to use PIN sessions and scan results.
-            If you do not have it yet, you can still sign in and see what to do next.
-          </p>
-          <a className="discord-invite" href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer">
-            Need access? Join the Discord server.
-          </a>
-          <button className="primary discord-login-button" type="button" onClick={handleDiscordLogin} disabled={busy}>
-            <MessageCircle size={18} />
-            {busy ? "Connecting to Discord..." : "Continue with Discord"}
-          </button>
-        </div>
-      </section>
-    </main>
-  );
-}
+const BRAND_NAME = BRAND_FULL;
 
 function formatSessionStatus(status) {
   if (status === "expired") return "expired";
@@ -126,7 +55,7 @@ function SessionList({ sessions, selectedId, onSelect, onDelete }) {
       <div className="sidebar-brand">
         <img src={BRAND_LOGO} alt="" />
         <div>
-          <h2>{BRAND_NAME}</h2>
+          <h2>Review Console</h2>
           <span>PIN Sessions</span>
         </div>
       </div>
@@ -2654,7 +2583,7 @@ function downloadReport(detail) {
   URL.revokeObjectURL(url);
 }
 
-function Dashboard({ token, onLogout }) {
+export function Dashboard({ token, onLogout }) {
   const [profile, setProfile] = useState(null);
   const [profileLoading, setProfileLoading] = useState(true);
   const [verifyBusy, setVerifyBusy] = useState(false);
@@ -2873,12 +2802,12 @@ function Dashboard({ token, onLogout }) {
         <div className="topbar-brand">
           <img src={BRAND_LOGO} alt="" />
           <div>
-            <p className="eyebrow">{BRAND_NAME}</p>
+            <p className="eyebrow">Review Console</p>
             <h1>Hi, {greetingName}</h1>
             <p className="topbar-subtitle">
               {hasAccess
-                ? "Welcome back. Generate a PIN, then review completed scans here."
-                : "You are signed in, but dashboard tools stay locked until you have Access."}
+                ? "Generate a PIN, run the desktop scanner, and review completed diagnostics here."
+                : "Signed in — unlock the console after verifying your Discord Access role."}
             </p>
           </div>
         </div>
@@ -2887,6 +2816,9 @@ function Dashboard({ token, onLogout }) {
             <img src={profile.avatar_url} alt="" className="topbar-avatar" />
           ) : null}
           <div className="actions">
+          <a className="topbar-discord" href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer" title="Discord">
+            <MessageCircle size={18} />
+          </a>
           {hasAccess && selectedPin && (
             <button onClick={() => navigator.clipboard?.writeText(selectedPin)}>
               <Clipboard size={18} /> Copy PIN
@@ -2965,12 +2897,11 @@ function Dashboard({ token, onLogout }) {
   );
 }
 
-function App() {
-  const [token, setToken] = useState(localStorage.getItem("checkerToken") ?? "");
+function Root() {
   const [loginError, setLoginError] = useState("");
 
   useEffect(() => {
-    document.title = BRAND_NAME;
+    document.title = BRAND_FULL;
   }, []);
 
   useEffect(() => {
@@ -2980,26 +2911,29 @@ function App() {
     if (!nextToken && !discordError) {
       return;
     }
-    const cleanUrl = `${window.location.origin}${window.location.pathname}${window.location.hash}`;
+    const cleanUrl = `${window.location.origin}/workspace`;
     window.history.replaceState({}, document.title, cleanUrl);
     if (nextToken) {
-      localStorage.setItem("checkerToken", nextToken);
-      setToken(nextToken);
-      setLoginError("");
+      setStoredToken(nextToken);
+      window.location.replace("/workspace");
       return;
     }
-    setLoginError(DISCORD_ERROR_MESSAGES[discordError] || "Discord login failed. Please try again.");
+    window.location.replace(`/login?error=${encodeURIComponent(discordError || "discord_auth_failed")}`);
   }, []);
 
-  function logout() {
-    localStorage.removeItem("checkerToken");
-    setToken("");
-  }
-  return token ? <Dashboard token={token} onLogout={logout} /> : <Login loginError={loginError} />;
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const discordError = params.get("error");
+    if (discordError) {
+      setLoginError(DISCORD_ERROR_MESSAGES[discordError] || "Discord login failed. Please try again.");
+    }
+  }, []);
+
+  return <AppRouter loginError={loginError} />;
 }
 
 try {
-  createRoot(document.getElementById("root")).render(<App />);
+  createRoot(document.getElementById("root")).render(<Root />);
 } catch (error) {
-  document.body.innerHTML = `<main class="login-shell"><section class="login-panel"><h1>Dashboard Error</h1><p class="error">${error.message}</p></section></main>`;
+  document.body.innerHTML = `<main class="auth-page"><section class="auth-card"><h1>Dashboard Error</h1><p class="error">${error.message}</p></section></main>`;
 }

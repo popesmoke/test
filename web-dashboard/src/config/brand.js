@@ -1,0 +1,18 @@
+export const API_URL = import.meta.env.VITE_API_URL || "https://virello-secure.onrender.com";
+export const BRAND_LOGO = "/assets/virello-scanner-logo.png";
+export const BRAND_NAME = "Virello";
+export const BRAND_TAGLINE = "Secure Remote Diagnostic Platform";
+export const BRAND_FULL = "Virello Secure";
+export const DISCORD_INVITE_URL = import.meta.env.VITE_DISCORD_INVITE_URL || "https://discord.gg/wPZXKaPyWY";
+
+export const NAV_LINKS = [
+  { to: "/", label: "Home" },
+  { to: "/about", label: "About" },
+  { to: "/workspace", label: "Review Console" },
+];
+
+export const FOOTER_LINKS = [
+  { to: "/privacy", label: "Privacy Policy" },
+  { to: "/terms", label: "Terms of Service" },
+  { to: "/about", label: "About Virello" },
+];
