@@ -26,7 +26,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed
 from queue import Empty, PriorityQueue
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Iterable
 from tkinter import BOTH, BooleanVar, Canvas, Frame, PhotoImage, StringVar, Tk, ttk, messagebox
 
 import psutil
@@ -37,7 +37,7 @@ from evidence_engine import (
     build_evidence_verdict,
     enrich_executor_artifact_evidence,
 )
-from roblox_runtime import SUSPICIOUS_PROCESS_NAME_STEMS, roblox_runtime_provenance_scan
+from roblox_runtime import roblox_runtime_provenance_scan
 
 API_URL = get_api_url()
 CONSENT_VERSION = "2026-06-02.virello-scanner"
@@ -2791,23 +2791,6 @@ EXECUTOR_NAMES = [
     "Nucleus",
     "Electron",
     "Trigon",
-    # 2025–2026 landscape
-    "Ronix",
-    "Swift",
-    "Bunni",
-    "Evon",
-    "AWP",
-    "ChocoSploit",
-    "Nihon",
-    "Nezur",
-    "Volcano",
-    "Zenith",
-    "Comet",
-    "Furk Ultra",
-    "Cryptonite",
-    "Krnl",
-    "Oxygen U",
-    "Script-Ware",
 ]
 
 # Extra tokens commonly seen in paths, prefetch stems, or renamed folders.
@@ -2844,22 +2827,6 @@ EXECUTOR_ALIASES: dict[str, list[str]] = {
     "Nucleus": ["nucleusexecutor", "nucleus executor", "nucleus.exe"],
     "Electron": ["electronexecutor", "electron executor", "electron-executor", "electron.exe"],
     "Trigon": ["trigonexecutor", "trigon executor", "trigon.exe"],
-    "Ronix": ["ronix", "ronix.exe", "ronix executor", "ronixexecutor"],
-    "Swift": ["swiftexecutor", "swift executor", "swift.exe", "swift executor v3"],
-    "Bunni": ["bunni", "bunni.exe", "bunni executor", "bunniware"],
-    "Evon": ["evon", "evon.exe", "evon executor", "evonexecutor"],
-    "AWP": ["awp.gg", "awpgg", "awp.exe", "awp executor", "awpexecutor"],
-    "ChocoSploit": ["chocosploit", "choco sploit", "chocosploit.exe"],
-    "Nihon": ["nihon", "nihon.exe", "nihon executor", "nihonexecutor"],
-    "Nezur": ["nezur", "nezur.exe", "nezur executor"],
-    "Volcano": ["volcano", "volcano.exe", "volcano executor", "volcanoexecutor"],
-    "Zenith": ["zenithexecutor", "zenith executor", "zenith.exe"],
-    "Comet": ["cometexecutor", "comet executor", "comet.exe"],
-    "Furk Ultra": ["furku", "furk ultra", "furkultra", "furku.exe"],
-    "Cryptonite": ["cryptoniteexecutor", "cryptonite executor", "cryptonite.exe"],
-    "Krnl": ["krnl", "krnl.exe", "krnl.place", "krnlapi"],
-    "Oxygen U": ["oxygen", "oxygen u", "oxygen-u", "oxygen.exe", "oxygenus"],
-    "Script-Ware": ["scriptware", "script-ware", "script ware", "scriptware.exe"],
 }
 
 # Folder names used by installers (path segment match — survives generic renames of the .exe).
@@ -2894,23 +2861,6 @@ EXECUTOR_INSTALL_DIR_NAMES = frozenset(
         "vega x",
         "codex",
         "codexexecutor",
-        "ronix",
-        "swift",
-        "bunni",
-        "evon",
-        "awp",
-        "chocosploit",
-        "nihon",
-        "nezur",
-        "volcano",
-        "zenith",
-        "comet",
-        "furku",
-        "cryptonite",
-        "krnl",
-        "oxygen",
-        "scriptware",
-        "script-ware",
     }
 )
 
@@ -3014,14 +2964,6 @@ EXECUTOR_KNOWN_RELATIVE_PATHS: dict[str, list[str]] = {
     "Delta": ["AppData/Local/Delta", "AppData/Local/DeltaExecutor"],
     "Vega X": ["AppData/Local/Vega X", "AppData/Local/VegaX"],
     "Codex": ["AppData/Local/Codex", "AppData/Local/CodexExecutor"],
-    "Ronix": ["AppData/Local/Ronix", "AppData/Roaming/Ronix"],
-    "Swift": ["AppData/Local/Swift", "AppData/Local/SwiftExecutor"],
-    "Bunni": ["AppData/Local/Bunni", "AppData/Roaming/Bunni"],
-    "Evon": ["AppData/Local/Evon", "AppData/Local/EvonExecutor"],
-    "AWP": ["AppData/Local/AWP", "AppData/Local/AWP.GG"],
-    "Krnl": ["AppData/Local/krnl", "AppData/Local/Krnl"],
-    "Oxygen U": ["AppData/Local/Oxygen", "AppData/Local/Oxygen U"],
-    "Script-Ware": ["AppData/Local/Script-Ware", "AppData/Local/ScriptWare"],
 }
 
 # Download-site domains tied to tracked executors (browser history + download URL matching).
@@ -3040,13 +2982,9 @@ EXECUTOR_DOWNLOAD_DOMAIN_HINTS: dict[str, list[str]] = {
     "Serotonin": ["serotoninexecutor"],
     "Photon": ["photon-executor", "photonexecutor"],
     "DX9WARE V2": ["dx9ware"],
-    "Codex": ["codexexecutor", "codex-executor"],
-    "Ronix": ["ronix", "ronix-executor"],
-    "Swift": ["swiftexecutor", "swift-executor"],
-    "Evon": ["evonexecutor", "evon-executor"],
-    "Krnl": ["krnl", "krnl.place"],
     "Delta": ["deltaexecutor", "delta-executor"],
     "Vega X": ["vegax", "vega-x"],
+    "Codex": ["codexexecutor", "codex-executor"],
 }
 
 ROBLOX_TRUSTED_LAUNCHER_FRAGMENTS = (
@@ -3117,26 +3055,6 @@ def scan_seconds_remaining() -> float:
 def scan_collect_phase_exhausted() -> bool:
     """True when the long collector phase should stop to leave room for correlation."""
     return scan_deadline_exceeded() or scan_seconds_remaining() <= SCAN_CORRELATION_RESERVE_SECONDS
-
-
-def _scan_collector_timeout(*, cap: float = 30.0) -> float:
-    return min(cap, max(0.35, scan_seconds_remaining()))
-
-
-def _future_result_safe(
-    future,
-    *,
-    default: Any = None,
-    timeout_cap: float = 30.0,
-    label: str = "",
-) -> Any:
-    """Never block indefinitely — required for the 6-minute scan budget."""
-    try:
-        return future.result(timeout=_scan_collector_timeout(cap=timeout_cap))
-    except Exception as exc:
-        if default is not None:
-            return default
-        return {"available": False, "reason": f"{label or 'collector'} timed out or failed: {exc}"}
 
 EXECUTOR_BENIGN_PATH_FRAGMENTS = (
     "\\epic games\\",
@@ -3420,11 +3338,9 @@ CHEAT_FILENAME_HINT_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
             re.IGNORECASE,
         ),
     ),
-    ("hyperion_bypass", re.compile(r"hyperion|byfron|knightmare|anticheat[\s._-]*bypass|bypass[\s._-]*hyperion|manual[\s._-]*map", re.IGNORECASE)),
-    ("threadless_inject", re.compile(r"threadless|manual[\s._-]*map(?:ping)?|pe[\s._-]*header[\s._-]*remov", re.IGNORECASE)),
+    ("hyperion_bypass", re.compile(r"hyperion|byfron|anticheat[\s._-]*bypass|bypass[\s._-]*hyperion", re.IGNORECASE)),
     ("hwid_spoof", re.compile(r"hwid[\s._-]*spoof|spoofer", re.IGNORECASE)),
     ("auto_execute", re.compile(r"auto[\s._-]*exec(?:ute)?|autoexec", re.IGNORECASE)),
-    ("exploit_api_surface", re.compile(r"getgc|getrenv|hookfunction|hookmetamethod|getrawmetatable|loadstring|getconnections|saveinstance|cloneref|checkcaller", re.IGNORECASE)),
 ]
 
 # Only these cheat hints are strong enough to flag on their own (without executor branding).
@@ -3448,8 +3364,6 @@ STRONG_CHEAT_HINT_LABELS = frozenset(
         "unc_compat",
         "script_hub",
         "auto_execute",
-        "exploit_api_surface",
-        "threadless_inject",
     }
 )
 
@@ -3559,13 +3473,11 @@ _full_pc_recent_executables_cache: list[dict] | None = None
 _executor_indicator_cache: dict[str, object] | None = None
 _profile_binary_sweep_cache: list[dict[str, object]] | None = None
 _binary_probe_result_cache: dict[str, list[str]] = {}
-_binary_exploit_api_cache: dict[str, int] = {}
 
 
 def _reset_binary_probe_result_cache() -> None:
-    global _binary_probe_result_cache, _binary_exploit_api_cache
+    global _binary_probe_result_cache
     _binary_probe_result_cache = {}
-    _binary_exploit_api_cache = {}
 
 
 def _reset_usn_comprehensive_cache() -> None:
@@ -4628,49 +4540,6 @@ def scan_binary_blob_for_executor_names(data: bytes, *, limit: int = 12) -> list
     return sorted(set(hits))
 
 
-EXPLOIT_API_BINARY_TOKENS: tuple[bytes, ...] = (
-    b"getgc",
-    b"getrenv",
-    b"hookfunction",
-    b"hookmetamethod",
-    b"getrawmetatable",
-    b"setrawmetatable",
-    b"loadstring",
-    b"getconnections",
-    b"firetouchinterest",
-    b"gethui",
-    b"getscripts",
-    b"getloadedmodules",
-    b"saveinstance",
-    b"cloneref",
-    b"checkcaller",
-    b"getcallingscript",
-    b"gethiddenproperty",
-    b"sethiddenproperty",
-    b"Drawing.new",
-    b"getnamecallmethod",
-    b"islclosure",
-    b"newcclosure",
-    b"getcustomasset",
-    b"request",
-    b"syn.request",
-    b"http.request",
-)
-
-
-def count_exploit_api_tokens(data: bytes) -> int:
-    """Count embedded Roblox exploit API strings — strong signal when clustered in one binary."""
-    if not data:
-        return 0
-    sample = data[:6_000_000]
-    lower = sample.lower()
-    hits = 0
-    for token in EXPLOIT_API_BINARY_TOKENS:
-        if token in lower or token.decode("ascii", errors="ignore").encode("utf-16le") in sample:
-            hits += 1
-    return hits
-
-
 def path_stem_key(path_str: str) -> str:
     try:
         return Path(path_str).stem.lower()
@@ -5243,87 +5112,6 @@ def roblox_runtime_module_scan(prefetch: dict | None = None) -> dict:
     return roblox_integrity_scan(prefetch=prefetch)
 
 
-def merge_runtime_provenance_into_artifact_evidence(
-    bundle: dict[str, Any],
-    runtime: dict[str, Any],
-) -> dict[str, Any]:
-    """Promote live Roblox runtime signals into reviewer-facing artifact hits."""
-    if not bundle.get("available") or not runtime.get("available"):
-        return bundle
-    try:
-        hits = list(bundle.get("hits") or [])
-        before_count = len(hits)
-        seen: set[str] = set(str(row.get("path") or "").lower() for row in hits if row.get("path"))
-
-        def _runtime_path_exists(path: str) -> bool | None:
-            if not path or path.startswith(("pid_", "roblox_pid_")) or "(" in path:
-                return None
-            try:
-                return Path(path).is_file()
-            except (OSError, ValueError):
-                return None
-
-        def append_hit(**fields: Any) -> None:
-            path = str(fields.get("path") or "")
-            key = path.lower()
-            if key and key in seen:
-                return
-            if key:
-                seen.add(key)
-            hits.append(fields)
-
-        patterns = executor_name_patterns()
-        for row in runtime.get("module_trust_failures") or []:
-            module_path = str(row.get("module_path") or "")
-            labels = list(row.get("executor_labels") or [])
-            append_hit(
-                path=module_path or f"roblox_pid_{row.get('pid')}_module",
-                executor_name_hits=labels,
-                artifact_source="live_injected_module",
-                file_exists=_runtime_path_exists(module_path),
-                note=f"Live Roblox module trust failure: {row.get('reason')}",
-                reasons=[str(row.get("reason") or "")],
-                display_at=runtime.get("scanned_at"),
-                extra={"pid": row.get("pid"), "authenticode_status": row.get("authenticode_status")},
-            )
-
-        for row in runtime.get("verified_external_handles") or runtime.get("external_process_handles") or []:
-            exe = str(row.get("exe") or row.get("name") or "")
-            append_hit(
-                path=exe or f"pid_{row.get('pid')}",
-                executor_name_hits=sorted(set(match_executor_labels(exe, patterns, path_context=True))),
-                artifact_source="live_external_handle",
-                file_exists=_runtime_path_exists(exe),
-                note=str(row.get("reason") or "External process with risky Roblox access."),
-                reasons=[str(row.get("reason") or "")],
-                display_at=runtime.get("scanned_at"),
-                extra={
-                    "pid": row.get("pid"),
-                    "target_roblox_pid": row.get("target_roblox_pid"),
-                    "detection_method": row.get("detection_method"),
-                    "confidence": row.get("confidence"),
-                },
-            )
-
-        for row in runtime.get("high_confidence_memory_regions") or []:
-            append_hit(
-                path=f"roblox_pid_{row.get('pid')}_memory_{row.get('base_address')}",
-                executor_name_hits=[],
-                cheat_filename_hints=["hyperion_bypass"] if row.get("has_pe_header") else [],
-                artifact_source="live_memory_region",
-                file_exists=None,
-                note="High-confidence private RWX region inside live Roblox process.",
-                reasons=[str(row.get("reason") or "")],
-                display_at=runtime.get("scanned_at"),
-                extra={"pid": row.get("pid"), "size_bytes": row.get("size_bytes"), "confidence": row.get("confidence")},
-            )
-
-        bundle["hits"] = hits
-        bundle["runtime_promoted_hit_count"] = len(hits) - before_count
-    except Exception as exc:
-        bundle["runtime_merge_error"] = str(exc)[:240]
-    return bundle
-
 def designated_user_folder_roots() -> list[Path]:
     """Return scan roots: all accessible local/removable drive letters plus user home."""
     roots: list[Path] = []
@@ -5593,9 +5381,6 @@ def _probe_executable_binary_labels(path: Path) -> list[str]:
         labels = scan_binary_blob_for_executor_names(data)
         labels.extend(loose_executor_labels_for_artifact(data.decode("utf-16le", errors="ignore")[:500000]))
         labels = _sanitize_binary_executor_labels(path_str, labels)
-        api_count = count_exploit_api_tokens(data)
-        if api_count >= 3:
-            _binary_exploit_api_cache[path_str.lower()] = api_count
         if labels or quick_read >= max_read or quick_read >= size:
             return sorted(set(labels))
         read_len = min(size, max_read)
@@ -5607,9 +5392,6 @@ def _probe_executable_binary_labels(path: Path) -> list[str]:
         labels.extend(scan_binary_blob_for_executor_names(data))
         labels.extend(loose_executor_labels_for_artifact(data.decode("utf-16le", errors="ignore")[:500000]))
         labels = _sanitize_binary_executor_labels(path_str, labels)
-        api_count = count_exploit_api_tokens(data)
-        if api_count >= 3:
-            _binary_exploit_api_cache[path_str.lower()] = api_count
     except OSError:
         return []
     return sorted(set(labels))
@@ -5825,9 +5607,6 @@ def _merge_binary_probe_results(
             )
             continue
         cheat_hints = cheat_path_hint_labels(path_str)
-        api_count = _binary_exploit_api_cache.get(path_key, 0)
-        if api_count >= 3 and "exploit_api_surface" not in cheat_hints:
-            cheat_hints = sorted(set(cheat_hints + ["exploit_api_surface"]))
         weird = list(weird_filename_reasons(path.stem, path.name))
         if not _path_is_trusted_install_zone(path_str):
             for part in path.parts[:-1]:
@@ -6042,10 +5821,7 @@ def full_pc_filesystem_executor_scan(
             for root, max_depth in roots
         ]
         for future in as_completed(futures):
-            try:
-                partial = future.result(timeout=min(15.0, max(0.5, scan_seconds_remaining())))
-            except Exception:
-                continue
+            partial = future.result()
             roots_scanned.append(str(partial.get("root") or ""))
             hits.extend(partial.get("hits") or [])
             files_hashed += int(partial.get("files_hashed") or 0)
@@ -6061,14 +5837,13 @@ def full_pc_filesystem_executor_scan(
         )
         ind_future = collect_pool.submit(indicator_collector.finalize, roots_checked=roots_checked)
         prof_future = collect_pool.submit(profile_collector.finalize)
-        collect_timeout = min(45.0, max(1.0, scan_seconds_remaining()))
-        probe_results, probed_paths = bin_future.result(timeout=collect_timeout)
+        probe_results, probed_paths = bin_future.result()
         if hash_future is not None:
-            hash_hits, files_hashed = hash_future.result(timeout=collect_timeout)
+            hash_hits, files_hashed = hash_future.result()
         else:
             hash_hits = []
-        _executor_indicator_cache = ind_future.result(timeout=collect_timeout)
-        _profile_binary_sweep_cache = prof_future.result(timeout=collect_timeout)
+        _executor_indicator_cache = ind_future.result()
+        _profile_binary_sweep_cache = prof_future.result()
     _binary_probe_result_cache = probe_results
     hits = _merge_binary_probe_results(hits, probe_results, probed_paths, patterns)
     recent_executables = recent_collector.finalize()
@@ -12120,9 +11895,7 @@ def scan_live_executor_processes() -> list[dict[str, object]]:
             labels = sorted(set(match_executor_labels(blob, patterns) + executor_labels_for_artifact_text(blob)))
             cheat_hints = cheat_path_hint_labels(exe or name)
             strong_cheat = [hint for hint in cheat_hints if hint in STRONG_CHEAT_HINT_LABELS]
-            process_stem = Path(name or exe).stem.lower().replace(" ", "").replace("_", "").replace("-", "")
-            if process_stem in SUSPICIOUS_PROCESS_NAME_STEMS:
-                labels = sorted(set(labels + ["suspicious_process"]))
+            process_stem = Path(name or exe).stem.lower().replace(" ", "")
             if process_stem in RESEARCH_TOOL_PROCESS_STEMS or any(
                 process_stem.startswith(stem.replace(" ", "")) for stem in RESEARCH_TOOL_PROCESS_STEMS
             ):
@@ -14194,7 +13967,6 @@ def _collect_forensic_core_signals() -> dict[str, object]:
     """Collect BAM/PCA/SQLite/USN in parallel — does not need filesystem scan results."""
     if platform.system() != "Windows":
         return {"available": False}
-    timeout = _scan_collector_timeout(cap=45.0)
     with ThreadPoolExecutor(max_workers=min(4, SCAN_WORKERS)) as pool:
         bam_future = pool.submit(bam_execution_records)
         pca_future = pool.submit(pca_executed_records)
@@ -14202,10 +13974,10 @@ def _collect_forensic_core_signals() -> dict[str, object]:
         usn_future = pool.submit(usn_journal_enriched_sample)
         return {
             "available": True,
-            "bam_structured": _future_result_safe(bam_future, default={}, timeout_cap=timeout, label="bam_core"),
-            "pca_executed": _future_result_safe(pca_future, default={}, timeout_cap=timeout, label="pca_core"),
-            "sqlite": _future_result_safe(sqlite_future, default={}, timeout_cap=timeout, label="sqlite_core"),
-            "usn_extra": _future_result_safe(usn_future, default={}, timeout_cap=timeout, label="usn_core"),
+            "bam_structured": bam_future.result(),
+            "pca_executed": pca_future.result(),
+            "sqlite": sqlite_future.result(),
+            "usn_extra": usn_future.result(),
         }
 
 
@@ -16270,13 +16042,10 @@ def build_report() -> dict:
             _done, _barrier_one = wait(_barrier_one, timeout=0.5, return_when=FIRST_COMPLETED)
         if _barrier_one:
             wait(_barrier_one, timeout=max(0.0, scan_seconds_remaining()))
-        prefetch = _future_result_safe(fut_prefetch, default={"available": False, "items": []}, timeout_cap=45.0, label="prefetch")
-        deletion_signals = _future_result_safe(fut_deletion, default={"available": False}, timeout_cap=45.0, label="deletion")
-        _folder_default = ({"available": False, "hits": []}, {"available": False, "hits": []})
-        designated, sha_blocklist = _future_result_safe(
-            fut_folders, default=_folder_default, timeout_cap=120.0, label="full_pc_scan"
-        )
-        forensic_core = _future_result_safe(fut_forensic_core, default={"available": False}, timeout_cap=60.0, label="forensic_core")
+        prefetch = fut_prefetch.result()
+        deletion_signals = fut_deletion.result()
+        designated, sha_blocklist = fut_folders.result()
+        forensic_core = fut_forensic_core.result()
         fut_disk_exe = pool.submit(recent_disk_executable_scan)
 
         fut_forensic = pool.submit(
@@ -16324,7 +16093,7 @@ def build_report() -> dict:
         _correlate_started = _time.perf_counter()
         prefetched_artifact_scans = _resolve_prefetched_artifact_scans(artifact_scan_futures)
         roblox_surface = build_roblox_exploit_surface_report(prefetched_artifact_scans)
-        forensic_bundle = _future_result_safe(fut_forensic, default={"available": False}, timeout_cap=60.0, label="forensic_bundle")
+        forensic_bundle = fut_forensic.result()
         with ThreadPoolExecutor(max_workers=min(6, SCAN_WORKERS)) as correlate_pool:
             fut_exec_indicators = correlate_pool.submit(executor_indicator_scan)
             fut_bam_registry = correlate_pool.submit(
@@ -16335,30 +16104,20 @@ def build_report() -> dict:
             )
             fut_del_cleanup = correlate_pool.submit(
                 build_deletion_cleanup_analysis,
-                trash=_future_result_safe(fut_trash, default={"available": False, "items": []}, timeout_cap=25.0, label="trash"),
+                trash=fut_trash.result(),
                 deletion=deletion_signals,
                 forensic_bundle=forensic_bundle,
             )
             fut_fs_integrity = correlate_pool.submit(
                 build_filesystem_evidence_integrity,
                 deletion=deletion_signals,
-                command_history=_future_result_safe(
-                    fut_cmdhist, default={"available": False, "hits": []}, timeout_cap=25.0, label="command_history"
-                ),
-                services=_future_result_safe(fut_services, default={"available": False}, timeout_cap=25.0, label="services"),
+                command_history=fut_cmdhist.result(),
+                services=fut_services.result(),
             )
-            executor_indicators = _future_result_safe(
-                fut_exec_indicators, default={"available": False, "hits": []}, timeout_cap=45.0, label="executor_indicators"
-            )
-            bam_registry = _future_result_safe(
-                fut_bam_registry, default={"available": False, "items": []}, timeout_cap=45.0, label="bam_registry"
-            )
-            deletion_cleanup_analysis = _future_result_safe(
-                fut_del_cleanup, default={"available": False}, timeout_cap=45.0, label="deletion_cleanup"
-            )
-            filesystem_evidence_integrity = _future_result_safe(
-                fut_fs_integrity, default={"available": False}, timeout_cap=45.0, label="filesystem_integrity"
-            )
+            executor_indicators = fut_exec_indicators.result()
+            bam_registry = fut_bam_registry.result()
+            deletion_cleanup_analysis = fut_del_cleanup.result()
+            filesystem_evidence_integrity = fut_fs_integrity.result()
         blocklist = load_executor_sha256_blocklist()
         if blocklist:
             bam_paths = [
@@ -16377,38 +16136,30 @@ def build_report() -> dict:
                     sha_blocklist.setdefault("hits", []).append(hit)
                     merged_paths.add(str(hit.get("path") or "").lower())
 
-        prefetch_health = _future_result_safe(fut_pref_health, default={"available": False}, timeout_cap=30.0, label="prefetch_health")
-        roblox_integrity = _future_result_safe(fut_roblox_int, default={"available": False}, timeout_cap=30.0, label="roblox_integrity")
-        persistence = _future_result_safe(fut_persist, default={"available": False, "items": []}, timeout_cap=30.0, label="persistence")
-        recent_items = _future_result_safe(fut_recent, default={"available": False, "items": []}, timeout_cap=30.0, label="recent_items")
+        prefetch_health = fut_pref_health.result()
+        roblox_integrity = fut_roblox_int.result()
+        persistence = fut_persist.result()
+        recent_items = fut_recent.result()
         generated_at = datetime.now(timezone.utc).isoformat()
-        trash = _future_result_safe(fut_trash, default={"available": False, "items": []}, timeout_cap=30.0, label="trash")
-        userassist = _future_result_safe(fut_userassist, default={"available": False, "items": []}, timeout_cap=30.0, label="userassist")
-        roblox = _future_result_safe(fut_roblox, default={"available": False}, timeout_cap=30.0, label="roblox")
-        command_history = _future_result_safe(fut_cmdhist, default={"available": False, "hits": []}, timeout_cap=30.0, label="command_history")
-        browser_download_history = _future_result_safe(
-            fut_browser_downloads, default={"available": False, "items": []}, timeout_cap=30.0, label="browser_downloads"
-        )
-        services_snapshot = _future_result_safe(fut_services, default={"available": False}, timeout_cap=30.0, label="services")
-        hardware = _future_result_safe(fut_hardware, default={"available": False}, timeout_cap=30.0, label="hardware")
-        installed_apps = _future_result_safe(fut_apps, default={"available": False}, timeout_cap=30.0, label="installed_apps")
-        amcache = _future_result_safe(fut_amcache, default={"available": False}, timeout_cap=30.0, label="amcache")
-        defender = _future_result_safe(fut_defender, default={"available": False}, timeout_cap=30.0, label="defender")
-        windows_event_logs = _future_result_safe(fut_events, default={"available": False}, timeout_cap=30.0, label="event_logs")
-        windows_security_events = _future_result_safe(
-            fut_security_events, default={"available": False}, timeout_cap=30.0, label="security_events"
-        )
-        powershell_events_summary = _future_result_safe(
-            fut_powershell_events, default={"available": False}, timeout_cap=30.0, label="powershell_events"
-        )
-        service_change_events_summary = _future_result_safe(
-            fut_service_changes, default={"available": False}, timeout_cap=30.0, label="service_changes"
-        )
-        xml_event_log_summary = _future_result_safe(fut_xml, default={"available": False}, timeout_cap=30.0, label="xml_events")
-        shellbag = _future_result_safe(fut_shellbag, default={"available": False}, timeout_cap=30.0, label="shellbag")
-        disk_executables = _future_result_safe(fut_disk_exe, default={"available": False, "items": []}, timeout_cap=30.0, label="disk_exe")
-        process_overview = _future_result_safe(fut_processes, default={"count": 0, "items": []}, timeout_cap=20.0, label="processes")
-        dam_registry = _future_result_safe(fut_dam, default={"available": False, "items": []}, timeout_cap=30.0, label="dam")
+        trash = fut_trash.result()
+        userassist = fut_userassist.result()
+        roblox = fut_roblox.result()
+        command_history = fut_cmdhist.result()
+        browser_download_history = fut_browser_downloads.result()
+        services_snapshot = fut_services.result()
+        hardware = fut_hardware.result()
+        installed_apps = fut_apps.result()
+        amcache = fut_amcache.result()
+        defender = fut_defender.result()
+        windows_event_logs = fut_events.result()
+        windows_security_events = fut_security_events.result()
+        powershell_events_summary = fut_powershell_events.result()
+        service_change_events_summary = fut_service_changes.result()
+        xml_event_log_summary = fut_xml.result()
+        shellbag = fut_shellbag.result()
+        disk_executables = fut_disk_exe.result()
+        process_overview = fut_processes.result()
+        dam_registry = fut_dam.result()
         usn_rows = forensic_bundle.get("usn_file_lifecycle_rows") or []
         merge_removed_executor_artifact_hits(
             designated,
@@ -16476,19 +16227,11 @@ def build_report() -> dict:
             executor_artifact_evidence=executor_artifact_evidence,
             forensic_bundle=forensic_bundle,
         )
-        roblox_runtime = _run_collector_with_timeout(
-            lambda: roblox_runtime_provenance_scan(
-                win_authenticode_status=_win_authenticode_status,
-                executor_label_matcher=lambda text: sorted(
-                    set(match_executor_labels(text, executor_name_patterns(), path_context=True))
-                ),
+        roblox_runtime = roblox_runtime_provenance_scan(
+            win_authenticode_status=_win_authenticode_status,
+            executor_label_matcher=lambda text: sorted(
+                set(match_executor_labels(text, executor_name_patterns(), path_context=True))
             ),
-            timeout=min(18.0, max(4.0, scan_seconds_remaining())),
-            label="roblox_runtime",
-        )
-        executor_artifact_evidence = merge_runtime_provenance_into_artifact_evidence(
-            executor_artifact_evidence,
-            roblox_runtime,
         )
         for hit in executor_artifact_evidence.get("hits") or []:
             path = str(hit.get("path") or "")
