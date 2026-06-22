@@ -5,11 +5,18 @@ import json
 import platform
 import re
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 import psutil
+
+RUNTIME_SCAN_BUDGET_SEC = 12.0
+HANDLE_ENUM_MAX_ATTEMPTS = 96
+HANDLE_ENUM_MAX_BUFFER_BYTES = 48 * 1024 * 1024
+MEMORY_SCAN_MAX_ITERATIONS = 4096
+DUPLICATE_SAME_ACCESS = 0x00000002
 
 ROBLOX_PROCESS_NAMES = frozenset({"robloxplayerbeta.exe", "robloxplayer.exe", "roblox.exe"})
 ROBLOX_TRUSTED_LAUNCHER_NAMES = frozenset(
@@ -183,6 +190,28 @@ RWX_MEDIUM_CONFIDENCE_MAX_BYTES = 8 * 1024 * 1024
 RWX_JIT_NOISE_MIN_BYTES = 16 * 1024 * 1024
 
 
+class _RuntimeScanBudget:
+    def __init__(self, seconds: float = RUNTIME_SCAN_BUDGET_SEC) -> None:
+        self._deadline = time.perf_counter() + max(1.0, seconds)
+
+    def expired(self) -> bool:
+        return time.perf_counter() >= self._deadline
+
+    def remaining(self) -> float:
+        return max(0.0, self._deadline - time.perf_counter())
+
+
+def _runtime_scan_error(reason: str, *, partial: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "available": False,
+        "reason": reason,
+        "scanned_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if partial:
+        payload.update(partial)
+    return payload
+
+
 def _run_command(command: list[str], *, timeout: float = 12.0, max_chars: int = 16000) -> str:
     try:
         completed = subprocess.run(
@@ -316,10 +345,10 @@ def _score_rwx_region(region_size: int, has_pe: bool) -> str:
     return "low"
 
 
-def _scan_memory_regions(pid: int) -> list[dict[str, Any]]:
+def _scan_memory_regions(pid: int, *, budget: _RuntimeScanBudget | None = None) -> list[dict[str, Any]]:
     """Detect private committed regions that are both writable and executable."""
     suspicious: list[dict[str, Any]] = []
-    if platform.system() != "Windows":
+    if platform.system() != "Windows" or (budget and budget.expired()):
         return suspicious
     try:
         import ctypes
@@ -365,7 +394,11 @@ def _scan_memory_regions(pid: int) -> list[dict[str, Any]]:
         address = 0
         max_address = 0x7FFFFFFFFFFF
         mbi = MEMORY_BASIC_INFORMATION()
-        while address < max_address and len(suspicious) < 40:
+        iterations = 0
+        while address < max_address and len(suspicious) < 20 and iterations < MEMORY_SCAN_MAX_ITERATIONS:
+            if budget and budget.expired():
+                break
+            iterations += 1
             read = virtual_query_ex(handle, ctypes.c_void_p(address), ctypes.byref(mbi), ctypes.sizeof(mbi))
             if not read:
                 break
@@ -382,7 +415,9 @@ def _scan_memory_regions(pid: int) -> list[dict[str, Any]]:
                 and writable
                 and region_size >= 4096
             ):
-                has_pe = _region_has_pe_header(int(handle), address)
+                has_pe = False
+                if region_size <= RWX_MEDIUM_CONFIDENCE_MAX_BYTES:
+                    has_pe = _region_has_pe_header(int(handle), address)
                 confidence = _score_rwx_region(region_size, has_pe)
                 if confidence != "low":
                     suspicious.append(
@@ -396,7 +431,9 @@ def _scan_memory_regions(pid: int) -> list[dict[str, Any]]:
                             "confidence": confidence,
                         }
                     )
-            address += region_size
+            address += max(region_size, 1)
+    except Exception:
+        return suspicious[:20]
     finally:
         close_handle(handle)
     suspicious.sort(key=lambda row: (0 if row.get("confidence") == "high" else 1, row.get("size_bytes", 0)))
@@ -482,180 +519,190 @@ def _scan_module_trust(
     return failures[:40]
 
 
-def _enumerate_roblox_process_handles(roblox_pids: set[int]) -> list[dict[str, Any]]:
+def _enumerate_roblox_process_handles(
+    roblox_pids: set[int],
+    *,
+    budget: _RuntimeScanBudget | None = None,
+) -> list[dict[str, Any]]:
     """User-mode handle table walk: external processes with VM write access to Roblox."""
-    if platform.system() != "Windows" or not roblox_pids:
+    if platform.system() != "Windows" or not roblox_pids or (budget and budget.expired()):
         return []
     try:
         import ctypes
         from ctypes import wintypes
-    except ImportError:
-        return []
 
-    ntdll = ctypes.WinDLL("ntdll")
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    NtQuerySystemInformation = ntdll.NtQuerySystemInformation
-    NtQuerySystemInformation.argtypes = [
-        ctypes.c_ulong,
-        ctypes.c_void_p,
-        ctypes.c_ulong,
-        ctypes.POINTER(ctypes.c_ulong),
-    ]
-    NtQuerySystemInformation.restype = ctypes.c_ulong
+        ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
 
-    class SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX(ctypes.Structure):
-        _fields_ = [
-            ("Object", ctypes.c_void_p),
-            ("UniqueProcessId", ctypes.c_void_p),
-            ("HandleValue", ctypes.c_void_p),
-            ("GrantedAccess", wintypes.DWORD),
-            ("CreatorBackTraceIndex", wintypes.USHORT),
-            ("ObjectTypeIndex", wintypes.USHORT),
-            ("HandleAttributes", wintypes.ULONG),
-            ("Reserved", wintypes.ULONG),
+        ntdll = ctypes.WinDLL("ntdll")
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        NtQuerySystemInformation = ntdll.NtQuerySystemInformation
+        NtQuerySystemInformation.argtypes = [
+            ctypes.c_ulong,
+            ctypes.c_void_p,
+            ctypes.c_ulong,
+            ctypes.POINTER(ctypes.c_ulong),
         ]
+        NtQuerySystemInformation.restype = ctypes.c_ulong
 
-    class SYSTEM_HANDLE_INFORMATION_EX(ctypes.Structure):
-        _fields_ = [
-            ("NumberOfHandles", ctypes.c_ulong),
-            ("Reserved", ctypes.c_ulong),
-            ("Handles", SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX * 1),
-        ]
+        class SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX(ctypes.Structure):
+            _fields_ = [
+                ("Object", ctypes.c_void_p),
+                ("UniqueProcessId", ULONG_PTR),
+                ("HandleValue", ULONG_PTR),
+                ("GrantedAccess", wintypes.DWORD),
+                ("CreatorBackTraceIndex", wintypes.USHORT),
+                ("ObjectTypeIndex", wintypes.USHORT),
+                ("HandleAttributes", wintypes.ULONG),
+                ("Reserved", wintypes.ULONG),
+            ]
 
-    SystemExtendedHandleInformation = 64
-    STATUS_INFO_LENGTH_MISMATCH = 0xC0000004
-    current_pid = kernel32.GetCurrentProcessId()
-    buffer_size = 0x100000
-    buffer = (ctypes.c_char * buffer_size)()
-    return_length = wintypes.ULONG(0)
-
-    status = NtQuerySystemInformation(
-        SystemExtendedHandleInformation,
-        buffer,
-        buffer_size,
-        ctypes.byref(return_length),
-    )
-    if status == STATUS_INFO_LENGTH_MISMATCH:
-        buffer_size = int(return_length.value) + 0x10000
-        buffer = (ctypes.c_char * buffer_size)()
-        status = NtQuerySystemInformation(
-            SystemExtendedHandleInformation,
-            buffer,
-            buffer_size,
-            ctypes.byref(return_length),
-        )
-    if status != 0:
-        return []
-
-    class HandleInfo(ctypes.Structure):
-        _fields_ = [
-            ("NumberOfHandles", ctypes.c_ulong),
-            ("Reserved", ctypes.c_ulong),
-        ]
-
-    header = HandleInfo.from_buffer_copy(buffer)
-    handle_count = int(header.NumberOfHandles)
-    entry_size = ctypes.sizeof(SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX)
-    offset = ctypes.sizeof(HandleInfo)
-    pid_name_cache: dict[int, str] = {}
-    hits: list[dict[str, Any]] = []
-    seen_pairs: set[tuple[int, int]] = set()
-
-    PROCESS_DUP_HANDLE_FLAG = 0x0040
-    duplicate_handle = kernel32.DuplicateHandle
-    duplicate_handle.argtypes = [
-        wintypes.HANDLE,
-        wintypes.HANDLE,
-        wintypes.HANDLE,
-        ctypes.POINTER(wintypes.HANDLE),
-        wintypes.DWORD,
-        wintypes.BOOL,
-        wintypes.DWORD,
-    ]
-    duplicate_handle.restype = wintypes.BOOL
-    get_process_id = kernel32.GetProcessId
-    get_process_id.argtypes = [wintypes.HANDLE]
-    get_process_id.restype = wintypes.DWORD
-    close_handle = kernel32.CloseHandle
-    open_process = kernel32.OpenProcess
-    open_process.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-    open_process.restype = wintypes.HANDLE
-    PROCESS_DUP_HANDLE = 0x0040
-
-    for index in range(min(handle_count, 200_000)):
-        if len(hits) >= 24:
-            break
-        entry_bytes = buffer[offset + index * entry_size : offset + (index + 1) * entry_size]
-        if len(entry_bytes) < entry_size:
-            break
-        entry = SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX.from_buffer_copy(entry_bytes)
-        owner_pid = int(ctypes.cast(entry.UniqueProcessId, ctypes.POINTER(ctypes.c_ulong)).contents.value or 0)
-        if owner_pid <= 4 or owner_pid == current_pid:
-            continue
-        access = int(entry.GrantedAccess or 0)
-        if not (access & HIGH_RISK_ACCESS_MASK):
-            continue
-        handle_value = int(ctypes.cast(entry.HandleValue, ctypes.POINTER(ctypes.c_ulong)).contents.value or 0)
-        pair_key = (owner_pid, handle_value)
-        if pair_key in seen_pairs:
-            continue
-        seen_pairs.add(pair_key)
-
-        owner_handle = open_process(PROCESS_DUP_HANDLE, False, owner_pid)
-        if not owner_handle:
-            continue
-        duplicated = wintypes.HANDLE()
-        try:
-            ok = duplicate_handle(
-                owner_handle,
-                wintypes.HANDLE(handle_value),
-                kernel32.GetCurrentProcess(),
-                ctypes.byref(duplicated),
-                0,
-                False,
-                PROCESS_DUP_HANDLE_FLAG,
+        SystemExtendedHandleInformation = 64
+        STATUS_INFO_LENGTH_MISMATCH = 0xC0000004
+        current_pid = int(kernel32.GetCurrentProcessId())
+        buffer_size = 0x200000
+        return_length = wintypes.ULONG(0)
+        buffer = None
+        status = STATUS_INFO_LENGTH_MISMATCH
+        for _ in range(6):
+            if budget and budget.expired():
+                return []
+            buffer = (ctypes.c_char * buffer_size)()
+            status = NtQuerySystemInformation(
+                SystemExtendedHandleInformation,
+                buffer,
+                buffer_size,
+                ctypes.byref(return_length),
             )
-            if not ok or not duplicated.value:
+            if status != STATUS_INFO_LENGTH_MISMATCH:
+                break
+            buffer_size = min(int(return_length.value) + 0x20000, HANDLE_ENUM_MAX_BUFFER_BYTES)
+            if buffer_size >= HANDLE_ENUM_MAX_BUFFER_BYTES:
+                return []
+        if status != 0 or buffer is None:
+            return []
+
+        class HandleInfo(ctypes.Structure):
+            _fields_ = [
+                ("NumberOfHandles", ctypes.c_ulong),
+                ("Reserved", ctypes.c_ulong),
+            ]
+
+        header = HandleInfo.from_buffer_copy(buffer)
+        handle_count = int(header.NumberOfHandles)
+        entry_size = ctypes.sizeof(SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX)
+        offset = ctypes.sizeof(HandleInfo)
+
+        duplicate_handle = kernel32.DuplicateHandle
+        duplicate_handle.argtypes = [
+            wintypes.HANDLE,
+            wintypes.HANDLE,
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.HANDLE),
+            wintypes.DWORD,
+            wintypes.BOOL,
+            wintypes.DWORD,
+        ]
+        duplicate_handle.restype = wintypes.BOOL
+        get_process_id = kernel32.GetProcessId
+        get_process_id.argtypes = [wintypes.HANDLE]
+        get_process_id.restype = wintypes.DWORD
+        close_handle = kernel32.CloseHandle
+        open_process = kernel32.OpenProcess
+        open_process.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        open_process.restype = wintypes.HANDLE
+        PROCESS_DUP_HANDLE = 0x0040
+
+        pid_name_cache: dict[int, str] = {}
+        owner_handles: dict[int, int] = {}
+        hits: list[dict[str, Any]] = []
+        seen_pairs: set[tuple[int, int]] = set()
+        duplicate_attempts = 0
+
+        for index in range(handle_count):
+            if budget and budget.expired():
+                break
+            if len(hits) >= 24 or duplicate_attempts >= HANDLE_ENUM_MAX_ATTEMPTS:
+                break
+            entry_bytes = buffer[offset + index * entry_size : offset + (index + 1) * entry_size]
+            if len(entry_bytes) < entry_size:
+                break
+            entry = SYSTEM_HANDLE_TABLE_ENTRY_INFO_EX.from_buffer_copy(entry_bytes)
+            owner_pid = int(entry.UniqueProcessId or 0)
+            if owner_pid <= 4 or owner_pid == current_pid:
                 continue
-            target_pid = int(get_process_id(duplicated))
-        finally:
-            close_handle(owner_handle)
-            if duplicated.value:
-                close_handle(duplicated)
+            access = int(entry.GrantedAccess or 0)
+            if not (access & HIGH_RISK_ACCESS_MASK):
+                continue
+            handle_value = int(entry.HandleValue or 0)
+            if not handle_value:
+                continue
+            pair_key = (owner_pid, handle_value)
+            if pair_key in seen_pairs:
+                continue
+            seen_pairs.add(pair_key)
 
-        if target_pid not in roblox_pids:
-            continue
+            if owner_pid not in pid_name_cache:
+                try:
+                    pid_name_cache[owner_pid] = str(psutil.Process(owner_pid).name() or "").lower()
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pid_name_cache[owner_pid] = ""
+            owner_name = pid_name_cache[owner_pid]
+            if owner_name in TRUSTED_EXTERNAL_PROCESS_NAMES or owner_name in ROBLOX_PROCESS_NAMES:
+                continue
 
-        if owner_pid not in pid_name_cache:
+            owner_handle = owner_handles.get(owner_pid)
+            if not owner_handle:
+                owner_handle = open_process(PROCESS_DUP_HANDLE, False, owner_pid)
+                if not owner_handle:
+                    continue
+                owner_handles[owner_pid] = int(owner_handle)
+
+            duplicated = wintypes.HANDLE()
+            duplicate_attempts += 1
             try:
-                pid_name_cache[owner_pid] = str(psutil.Process(owner_pid).name() or "").lower()
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                pid_name_cache[owner_pid] = ""
-        owner_name = pid_name_cache[owner_pid]
-        if owner_name in TRUSTED_EXTERNAL_PROCESS_NAMES:
-            continue
-        if owner_name in ROBLOX_PROCESS_NAMES:
-            continue
+                ok = duplicate_handle(
+                    wintypes.HANDLE(owner_handle),
+                    wintypes.HANDLE(handle_value),
+                    kernel32.GetCurrentProcess(),
+                    ctypes.byref(duplicated),
+                    0,
+                    False,
+                    DUPLICATE_SAME_ACCESS,
+                )
+                if not ok or not duplicated.value:
+                    continue
+                target_pid = int(get_process_id(duplicated))
+            except Exception:
+                continue
+            finally:
+                if duplicated.value:
+                    close_handle(duplicated)
 
-        try:
+            if target_pid not in roblox_pids:
+                continue
+
             owner_brief = _resolve_process_brief(owner_pid)
-        except Exception:
-            owner_brief = {"pid": owner_pid}
+            hits.append(
+                {
+                    "pid": owner_pid,
+                    "name": owner_brief.get("name"),
+                    "exe": owner_brief.get("exe"),
+                    "target_roblox_pid": target_pid,
+                    "granted_access": hex(access),
+                    "reason": "cross_process_vm_access_to_roblox",
+                    "detection_method": "handle_enumeration",
+                    "confidence": "high",
+                }
+            )
 
-        hits.append(
-            {
-                "pid": owner_pid,
-                "name": owner_brief.get("name"),
-                "exe": owner_brief.get("exe"),
-                "target_roblox_pid": target_pid,
-                "granted_access": hex(access),
-                "reason": "cross_process_vm_access_to_roblox",
-                "detection_method": "handle_enumeration",
-                "confidence": "high",
-            }
-        )
-
-    return hits
+        for proc_handle in owner_handles.values():
+            try:
+                close_handle(wintypes.HANDLE(proc_handle))
+            except Exception:
+                pass
+        return hits
+    except Exception:
+        return []
 
 
 def _scan_suspicious_nearby_processes(roblox_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -704,8 +751,8 @@ def _scan_suspicious_nearby_processes(roblox_rows: list[dict[str, Any]]) -> list
             continue
     return hits[:20]
 
-def _scan_suspicious_window_titles(roblox_pids: set[int]) -> list[dict[str, Any]]:
-    if platform.system() != "Windows":
+def _scan_suspicious_window_titles(roblox_pids: set[int], *, budget: _RuntimeScanBudget | None = None) -> list[dict[str, Any]]:
+    if platform.system() != "Windows" or (budget and budget.expired()):
         return []
     try:
         import ctypes
@@ -724,53 +771,61 @@ def _scan_suspicious_window_titles(roblox_pids: set[int]) -> list[dict[str, Any]
     hits: list[dict[str, Any]] = []
     seen: set[int] = set()
 
+    stop_enum = {"value": False}
+
     @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
     def callback(hwnd, _lparam):
-        if not is_window_visible(hwnd):
-            return True
-        length = get_window_text_length(hwnd)
-        if length <= 0 or length > 512:
-            return True
-        buffer = ctypes.create_unicode_buffer(length + 1)
-        get_window_text(hwnd, buffer, length + 1)
-        title = buffer.value.strip()
-        if not title:
-            return True
-        title_low = title.lower()
-        if not any(keyword in title_low for keyword in SUSPICIOUS_WINDOW_TITLE_KEYWORDS):
-            return True
-        owner_pid = wintypes.DWORD(0)
-        get_window_thread_process_id(hwnd, ctypes.byref(owner_pid))
-        pid = int(owner_pid.value or 0)
-        if not pid or pid in roblox_pids or pid in seen:
-            return True
-        seen.add(pid)
-        if len(hits) >= 12:
-            return False
         try:
-            proc = psutil.Process(pid)
-            hits.append(
-                {
-                    "pid": pid,
-                    "name": proc.name(),
-                    "exe": proc.exe(),
-                    "window_title": title[:240],
-                    "reason": "suspicious_window_title",
-                    "detection_method": "window_title",
-                    "confidence": "medium",
-                }
-            )
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            hits.append(
-                {
-                    "pid": pid,
-                    "window_title": title[:240],
-                    "reason": "suspicious_window_title",
-                    "detection_method": "window_title",
-                    "confidence": "medium",
-                }
-            )
-        return True
+            if stop_enum["value"] or (budget and budget.expired()):
+                return False
+            if not is_window_visible(hwnd):
+                return True
+            length = get_window_text_length(hwnd)
+            if length <= 0 or length > 512:
+                return True
+            buffer = ctypes.create_unicode_buffer(length + 1)
+            get_window_text(hwnd, buffer, length + 1)
+            title = buffer.value.strip()
+            if not title:
+                return True
+            title_low = title.lower()
+            if not any(keyword in title_low for keyword in SUSPICIOUS_WINDOW_TITLE_KEYWORDS):
+                return True
+            owner_pid = wintypes.DWORD(0)
+            get_window_thread_process_id(hwnd, ctypes.byref(owner_pid))
+            pid = int(owner_pid.value or 0)
+            if not pid or pid in roblox_pids or pid in seen:
+                return True
+            seen.add(pid)
+            if len(hits) >= 12:
+                stop_enum["value"] = True
+                return False
+            try:
+                proc = psutil.Process(pid)
+                hits.append(
+                    {
+                        "pid": pid,
+                        "name": proc.name(),
+                        "exe": proc.exe(),
+                        "window_title": title[:240],
+                        "reason": "suspicious_window_title",
+                        "detection_method": "window_title",
+                        "confidence": "medium",
+                    }
+                )
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                hits.append(
+                    {
+                        "pid": pid,
+                        "window_title": title[:240],
+                        "reason": "suspicious_window_title",
+                        "detection_method": "window_title",
+                        "confidence": "medium",
+                    }
+                )
+            return True
+        except Exception:
+            return True
 
     try:
         user32.EnumWindows(callback, 0)
@@ -779,18 +834,24 @@ def _scan_suspicious_window_titles(roblox_pids: set[int]) -> list[dict[str, Any]
     return hits
 
 
-def _scan_external_handle_proxy(roblox_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _scan_external_handle_proxy(
+    roblox_rows: list[dict[str, Any]],
+    *,
+    budget: _RuntimeScanBudget | None = None,
+) -> list[dict[str, Any]]:
     """Detect external processes with risky cross-process access to live Roblox."""
-    if not roblox_rows:
+    if not roblox_rows or (budget and budget.expired()):
         return []
     roblox_pids = {int(row["pid"]) for row in roblox_rows}
     hits: list[dict[str, Any]] = []
 
-    handle_hits = _enumerate_roblox_process_handles(roblox_pids)
+    handle_hits = _enumerate_roblox_process_handles(roblox_pids, budget=budget)
     hits.extend(handle_hits)
 
-    hits.extend(_scan_suspicious_nearby_processes(roblox_rows))
-    hits.extend(_scan_suspicious_window_titles(roblox_pids))
+    if not budget or not budget.expired():
+        hits.extend(_scan_suspicious_nearby_processes(roblox_rows))
+    if not budget or not budget.expired():
+        hits.extend(_scan_suspicious_window_titles(roblox_pids, budget=budget))
 
     # Fallback: cmdline heuristics when handle enumeration is blocked (permissions/policy).
     if not handle_hits:
@@ -888,39 +949,57 @@ def roblox_runtime_provenance_scan(
     if platform.system() != "Windows":
         return {"available": False, "reason": "Roblox runtime provenance scan is Windows-only"}
 
-    roblox_rows = _find_roblox_processes()
-    launch = _scan_launch_provenance(roblox_rows)
-    memory_regions: list[dict[str, Any]] = []
-    for row in roblox_rows[:2]:
-        memory_regions.extend(_scan_memory_regions(int(row["pid"])))
+    budget = _RuntimeScanBudget(RUNTIME_SCAN_BUDGET_SEC)
+    try:
+        roblox_rows = _find_roblox_processes()
+        launch = _scan_launch_provenance(roblox_rows)
+        memory_regions: list[dict[str, Any]] = []
+        for row in roblox_rows[:2]:
+            if budget.expired():
+                break
+            memory_regions.extend(_scan_memory_regions(int(row["pid"]), budget=budget))
 
-    module_trust = _scan_module_trust(
-        roblox_rows,
-        win_authenticode_status=win_authenticode_status,
-        executor_label_matcher=executor_label_matcher,
-    )
-    external_handles = _scan_external_handle_proxy(roblox_rows)
-    drivers = _scan_driver_inventory()
+        module_trust: list[dict[str, Any]] = []
+        if not budget.expired():
+            module_trust = _scan_module_trust(
+                roblox_rows,
+                win_authenticode_status=win_authenticode_status,
+                executor_label_matcher=executor_label_matcher,
+            )
 
-    high_confidence_memory = [row for row in memory_regions if row.get("confidence") == "high"]
-    verified_handles = [row for row in external_handles if row.get("detection_method") == "handle_enumeration"]
+        external_handles: list[dict[str, Any]] = []
+        if not budget.expired():
+            external_handles = _scan_external_handle_proxy(roblox_rows, budget=budget)
 
-    return {
-        "available": True,
-        "live_process_detected": bool(roblox_rows),
-        "roblox_processes": roblox_rows,
-        "launch_provenance": launch,
-        "launch_provenance_anomaly": launch.get("launch_provenance_anomaly"),
-        "suspicious_memory_regions": memory_regions,
-        "high_confidence_memory_regions": high_confidence_memory,
-        "module_trust_failures": module_trust,
-        "external_process_handles": external_handles,
-        "verified_external_handles": verified_handles,
-        "suspicious_drivers": drivers,
-        "scanned_at": datetime.now(timezone.utc).isoformat(),
-        "note": (
-            "Runtime provenance complements offline artifacts: filtered private RWX regions (PE-aware), "
-            "unsigned/injected modules, handle-table cross-process VM access, suspicious window titles, "
-            "nonstandard drivers, and external processes referencing Roblox."
-        ),
-    }
+        drivers: list[dict[str, Any]] = []
+        if not budget.expired():
+            drivers = _scan_driver_inventory()
+
+        high_confidence_memory = [row for row in memory_regions if row.get("confidence") == "high"]
+        verified_handles = [row for row in external_handles if row.get("detection_method") == "handle_enumeration"]
+
+        return {
+            "available": True,
+            "live_process_detected": bool(roblox_rows),
+            "roblox_processes": roblox_rows,
+            "launch_provenance": launch,
+            "launch_provenance_anomaly": launch.get("launch_provenance_anomaly"),
+            "suspicious_memory_regions": memory_regions,
+            "high_confidence_memory_regions": high_confidence_memory,
+            "module_trust_failures": module_trust,
+            "external_process_handles": external_handles,
+            "verified_external_handles": verified_handles,
+            "suspicious_drivers": drivers,
+            "scanned_at": datetime.now(timezone.utc).isoformat(),
+            "runtime_budget_exceeded": budget.expired(),
+            "note": (
+                "Runtime provenance complements offline artifacts: filtered private RWX regions (PE-aware), "
+                "unsigned/injected modules, handle-table cross-process VM access, suspicious window titles, "
+                "nonstandard drivers, and external processes referencing Roblox."
+            ),
+        }
+    except Exception as exc:
+        return _runtime_scan_error(
+            f"Runtime provenance scan failed safely: {exc}",
+            partial={"live_process_detected": False},
+        )
