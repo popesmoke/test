@@ -44,38 +44,30 @@ export function SessionReview({ detail, apiUrl, token, authHeaders, onSaved }) {
   }
 
   return (
-    <section className="session-review">
-      <div className="session-review-head">
-        <h3>Session verdict</h3>
-        <p className="muted">Private reviewer tags for PIN {detail.pin}.</p>
-      </div>
-      <div className="session-review-grid">
-        <label>
-          Verdict
-          <select value={verdict} onChange={(e) => setVerdict(e.target.value)}>
-            {VERDICTS.map((item) => (
-              <option key={item.id || "none"} value={item.id}>
-                {item.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="session-review-note">
-          Note
-          <textarea
-            rows={3}
-            value={note}
-            onChange={(e) => setNote(e.target.value)}
-            placeholder="Staff only note for this scan…"
-          />
-        </label>
-      </div>
-      <div className="session-review-actions">
-        <button type="button" className="btn btn--primary btn--sm" onClick={saveReview} disabled={busy}>
-          <MaterialIcon name="save" size={15} /> {busy ? "Saving…" : "Save review"}
-        </button>
-        {message ? <span className="muted">{message}</span> : null}
-      </div>
+    <section className="session-review session-review--inline">
+      <label className="session-review__field">
+        <span>Verdict</span>
+        <select value={verdict} onChange={(e) => setVerdict(e.target.value)}>
+          {VERDICTS.map((item) => (
+            <option key={item.id || "none"} value={item.id}>
+              {item.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="session-review__field session-review__field--grow">
+        <span>Reviewer note</span>
+        <input
+          type="text"
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder="Private note for this case…"
+        />
+      </label>
+      <button type="button" className="btn btn--primary btn--sm session-review__save" onClick={saveReview} disabled={busy}>
+        <MaterialIcon name="save" size={15} /> {busy ? "Saving…" : "Save"}
+      </button>
+      {message ? <span className="session-review__msg">{message}</span> : null}
     </section>
   );
 }
