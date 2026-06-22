@@ -141,7 +141,7 @@ function buildSimpleProblems(report, summary) {
 
 function SimpleStat({ label, value, hint }) {
   return (
-    <div className="simple-stat">
+    <div className="ws-metric">
       <strong>{value}</strong>
       <span>{label}</span>
       {hint ? <small>{hint}</small> : null}
@@ -153,24 +153,21 @@ function ProblemCard({ problem }) {
   const [open, setOpen] = useState(false);
   const icon =
     problem.severity === "high" || problem.severity === "critical" ? (
-      <ShieldAlert size={22} />
+      <ShieldAlert size={18} />
     ) : problem.severity === "medium" ? (
-      <AlertTriangle size={22} />
+      <AlertTriangle size={18} />
     ) : (
-      <HelpCircle size={22} />
+      <HelpCircle size={18} />
     );
 
   return (
-    <article className={`simple-problem simple-problem--${problem.severity}`}>
-      <button type="button" className="simple-problem-head" onClick={() => setOpen((v) => !v)}>
-        <span className="simple-problem-icon">{icon}</span>
-        <span className="simple-problem-text">
-          <strong>{problem.title}</strong>
-          {!open ? <span className="simple-problem-teaser">Tap to read more</span> : null}
-        </span>
-        <ChevronRight size={18} className={open ? "open" : ""} />
+    <article className={`ws-finding ws-finding--${problem.severity}`}>
+      <button type="button" className="ws-finding__toggle" onClick={() => setOpen((v) => !v)}>
+        <span className="ws-finding__icon">{icon}</span>
+        <strong>{problem.title}</strong>
+        <ChevronRight size={16} className={open ? "open" : ""} />
       </button>
-      {open ? <p className="simple-problem-body">{problem.detail}</p> : null}
+      {open ? <p className="ws-finding__detail">{problem.detail}</p> : null}
     </article>
   );
 }
@@ -201,88 +198,87 @@ function OverviewTab({ verdict, problems, review, formatGmtPlus3 }) {
   }).length;
   return (
     <>
-      <section className={`simple-hero simple-hero--${verdict.tone}`}>
-        <div className="simple-hero-main">
-          <span className="simple-hero-emoji" aria-hidden>
-            {verdict.emoji}
-          </span>
-          <div>
-            <p className="simple-hero-eyebrow">What we think</p>
-            <h3>{verdict.label}</h3>
-            <p>{verdict.blurb}</p>
-          </div>
-        </div>
-        <div className="simple-hero-score" aria-label={`Overall concern level ${verdict.combined} out of 100`}>
+      <div className="ws-bento">
+        <section className={`ws-bento__verdict ws-bento__verdict--${verdict.tone}`}>
+          <p className="ws-bento__verdict-label">Assessment</p>
+          <h3>{verdict.label}</h3>
+          <p>{verdict.blurb}</p>
+        </section>
+        <section className="ws-bento__meter" aria-label={`Overall concern level ${verdict.combined} out of 100`}>
           <strong>{verdict.combined}</strong>
           <span>concern level</span>
-          <small>0 = calm · 100 = very worried</small>
-        </div>
-      </section>
+        </section>
+      </div>
 
-      <section className="simple-stats-row">
-        <SimpleStat label="Warning signs" value={problems.length} hint="Read the list below" />
-        <SimpleStat label="Timeline events" value={activity.event_count ?? 0} hint="Chronological log" />
+      <section className="ws-metrics">
+        <SimpleStat label="Warning signs" value={problems.length} hint="Expand below" />
+        <SimpleStat label="Timeline events" value={activity.event_count ?? 0} hint="Chronological" />
         <SimpleStat
           label="Evidence chains"
           value={review.evidence_chains?.chain_count ?? 0}
-          hint="Multi-trace matches"
+          hint="Multi-trace"
         />
-        <SimpleStat label="Deleted traces" value={deletionCount} hint="Removed but still logged" />
-        <SimpleStat label="Word matches" value={review.string_detection?.hit_count ?? 0} hint="In logs & files" />
+        <SimpleStat label="Deleted traces" value={deletionCount} hint="Still logged" />
+        <SimpleStat label="Word matches" value={review.string_detection?.hit_count ?? 0} hint="In logs" />
       </section>
 
-      <section className="simple-panel">
-        <header className="simple-panel-head">
-          <ListChecks size={22} />
+      <section className="ws-panel">
+        <header className="ws-panel__head">
+          <ListChecks size={20} />
           <div>
             <h4>What stood out</h4>
             <p>The main things a reviewer should know, in plain words.</p>
           </div>
         </header>
-        {problems.length ? (
-          <div className="simple-problem-list">
-            {problems.slice(0, 12).map((problem) => (
-              <ProblemCard key={problem.id} problem={problem} />
-            ))}
-          </div>
-        ) : (
-          <div className="simple-empty">
-            <CheckCircle2 size={28} />
-            <p>Nothing scary jumped out on this scan.</p>
-          </div>
-        )}
+        <div className="ws-panel__body">
+          {problems.length ? (
+            <div>
+              {problems.slice(0, 12).map((problem) => (
+                <ProblemCard key={problem.id} problem={problem} />
+              ))}
+            </div>
+          ) : (
+            <div className="ws-empty-state">
+              <CheckCircle2 size={24} />
+              <p>Nothing concerning jumped out on this scan.</p>
+            </div>
+          )}
+        </div>
       </section>
 
-      <section className="simple-panel simple-panel--tips">
-        <header className="simple-panel-head">
-          <Sparkles size={22} />
+      <section className="ws-panel">
+        <header className="ws-panel__head">
+          <Sparkles size={20} />
           <div>
-            <h4>Quick guide</h4>
+            <h4>Navigation guide</h4>
+            <p>Use the dock at the bottom to explore each area of the report.</p>
           </div>
         </header>
-        <ul className="simple-tips">
-          <li>
-            <strong>Summary</strong> — start here for the big picture.
-          </li>
-          <li>
-            <strong>Last activity</strong> — what the PC did recently, in time order.
-          </li>
-          <li>
-            <strong>Download history</strong> — files downloaded in Chrome, Edge, Brave, or Firefox.
-          </li>
-          <li>
-            <strong>Programs run</strong> — apps and files that were executed.
-          </li>
-          <li>
-            <strong>Program list</strong> — executables we found on disk.
-          </li>
-          <li>
-            <strong>Word matches</strong> — cheat or cleanup words inside files and history.
-          </li>
-        </ul>
-        {activity.boot_time ? (
-          <p className="muted small-note">PC last turned on: {formatGmtPlus3(activity.boot_time)}</p>
-        ) : null}
+        <div className="ws-panel__body">
+          <ul className="ws-tips">
+            <li>
+              <strong>Summary</strong> — start here for the big picture.
+            </li>
+            <li>
+              <strong>Last activity</strong> — what the PC did recently, in time order.
+            </li>
+            <li>
+              <strong>Download history</strong> — files downloaded in Chrome, Edge, Brave, or Firefox.
+            </li>
+            <li>
+              <strong>Programs run</strong> — apps and files that were executed.
+            </li>
+            <li>
+              <strong>Program list</strong> — executables found on disk.
+            </li>
+            <li>
+              <strong>Word matches</strong> — cheat or cleanup words inside files and history.
+            </li>
+          </ul>
+          {activity.boot_time ? (
+            <p className="muted small-note">PC last turned on: {formatGmtPlus3(activity.boot_time)}</p>
+          ) : null}
+        </div>
       </section>
     </>
   );
@@ -324,15 +320,16 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
   });
 
   return (
-    <section className="simple-panel">
-      <header className="simple-panel-head">
-        <Clock3 size={22} />
+    <section className="ws-panel">
+      <header className="ws-panel__head">
+        <Clock3 size={20} />
         <div>
           <h4>Last computer activity</h4>
-          <p>Executors, suspicious files, and deletions only. Newest first (MM/DD/YY, GMT+3).</p>
+          <p>Executors, suspicious files, and deletions only. Newest first.</p>
         </div>
       </header>
-      <div className="simple-filter-row">
+      <div className="ws-panel__body">
+      <div className="ws-filter-row">
         {ACTIVITY_FILTERS.map((row) => (
           <button
             key={row.id}
@@ -356,42 +353,35 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
         </ul>
       ) : null}
       {shown.length ? (
-        <ul className="simple-timeline simple-timeline--forensic">
+        <ul className="ws-timeline">
           {shown.map((event, index) => {
             const badge = activityEventBadge(event);
-            const isDeletion = badge.tone === "deletion";
             return (
-            <li
-              key={`${event.path}-${event.occurred_at}-${index}`}
-              className={isDeletion ? "simple-timeline__deletion" : ""}
-            >
-              <div className="simple-timeline-meta">
-                <time>{event.occurred_at ? formatGmtPlus3(event.occurred_at) : "Time unknown"}</time>
-                <span className={`simple-event-badge simple-event-badge--${badge.tone}`}>{badge.label}</span>
+            <li key={`${event.path}-${event.occurred_at}-${index}`}>
+              <time>{event.occurred_at ? formatGmtPlus3(event.occurred_at) : "—"}</time>
+              <div>
+                <span className="ws-tag">{badge.label}</span>
+                <p>{event.summary || "Activity recorded"}</p>
+                {event.timestamp_source && event.occurred_at ? (
+                  <p className="muted small-note">
+                    Time from {event.timestamp_source.replace(/_/g, " ")}
+                  </p>
+                ) : null}
+                {event.gap_human ? (
+                  <p className="muted">
+                    Recycle Bin emptied <strong>{event.gap_human}</strong> after this delete.
+                  </p>
+                ) : null}
+                <LocationHint row={event} path={event.path} />
               </div>
-              <p>{event.summary || "Activity recorded"}</p>
-              {event.timestamp_source && event.occurred_at ? (
-                <p className="muted small-note">
-                  Time from {event.timestamp_source.replace(/_/g, " ")}
-                </p>
-              ) : null}
-              {event.gap_human ? (
-                <p className="muted">
-                  Recycle Bin was emptied <strong>{event.gap_human}</strong> after this delete
-                  {event.cleanup_at_display || event.cleanup_at
-                    ? ` (${event.cleanup_at_display || formatGmtPlus3(event.cleanup_at)})`
-                    : ""}
-                  .
-                </p>
-              ) : null}
-              <LocationHint row={event} path={event.path} />
             </li>
             );
           })}
         </ul>
       ) : (
-        <p className="muted">No activity in this filter. Try another tab or run a new scan.</p>
+        <p className="muted">No activity in this filter.</p>
       )}
+      </div>
     </section>
   );
 }
@@ -742,52 +732,40 @@ export function SimpleResults({
   const problems = useMemo(() => buildSimpleProblems(report, summary), [report, summary]);
 
   return (
-    <div className="simple-results">
-      <nav className="simple-tabs" aria-label="Result sections">
+    <div className="ws-simple">
+      <div className="ws-simple__content">
+        {tab === "overview" ? (
+          <OverviewTab verdict={verdict} problems={problems} review={review} formatGmtPlus3={formatGmtPlus3} />
+        ) : null}
+        {tab === "chains" ? <EvidenceChainsTab review={review} formatGmtPlus3={formatGmtPlus3} /> : null}
+        {tab === "activity" ? (
+          <ActivityTab
+            review={review}
+            activity={activity}
+            activityEventSummary={activityEventSummary}
+            formatGmtPlus3={formatGmtPlus3}
+          />
+        ) : null}
+        {tab === "downloads" ? <DownloadsTab review={review} formatGmtPlus3={formatGmtPlus3} /> : null}
+        {tab === "execution" ? <ExecutionTab review={review} formatGmtPlus3={formatGmtPlus3} /> : null}
+        {tab === "programs" ? <ProgramsTab review={review} formatGmtPlus3={formatGmtPlus3} /> : null}
+        {tab === "strings" ? <StringsTab review={review} formatGmtPlus3={formatGmtPlus3} /> : null}
+        {tab === "security" ? <SecurityTab report={report} formatGmtPlus3={formatGmtPlus3} /> : null}
+      </div>
+
+      <nav className="ws-dock" aria-label="Report sections">
         {TABS.map(({ id, label, icon: Icon }) => (
           <button
             key={id}
             type="button"
-            className={tab === id ? "active" : ""}
+            className={`ws-dock__tab ${tab === id ? "ws-dock__tab--active" : ""}`}
             onClick={() => setTab(id)}
           >
-            <Icon size={17} />
+            <Icon size={15} />
             {label}
           </button>
         ))}
       </nav>
-
-      {tab === "overview" ? (
-        <OverviewTab verdict={verdict} problems={problems} review={review} formatGmtPlus3={formatGmtPlus3} />
-      ) : null}
-      {tab === "chains" ? <EvidenceChainsTab review={review} formatGmtPlus3={formatGmtPlus3} /> : null}
-      {tab === "activity" ? (
-        <ActivityTab
-          review={review}
-          activity={activity}
-          activityEventSummary={activityEventSummary}
-          formatGmtPlus3={formatGmtPlus3}
-        />
-      ) : null}
-      {tab === "downloads" ? <DownloadsTab review={review} formatGmtPlus3={formatGmtPlus3} /> : null}
-      {tab === "execution" ? <ExecutionTab review={review} formatGmtPlus3={formatGmtPlus3} /> : null}
-      {tab === "programs" ? <ProgramsTab review={review} formatGmtPlus3={formatGmtPlus3} /> : null}
-      {tab === "strings" ? <StringsTab review={review} formatGmtPlus3={formatGmtPlus3} /> : null}
-      {tab === "security" ? <SecurityTab report={report} formatGmtPlus3={formatGmtPlus3} /> : null}
-
-      <footer className="simple-footer">
-        <button type="button" className="simple-expert-btn" onClick={onExpertMode}>
-          Advanced reviewer view
-        </button>
-        <button type="button" className="download-button" onClick={onDownload}>
-          <Download size={15} /> Save JSON
-        </button>
-        {onPrintPdf ? (
-          <button type="button" className="download-button" onClick={onPrintPdf}>
-            <FileText size={15} /> Print summary
-          </button>
-        ) : null}
-      </footer>
     </div>
   );
 }

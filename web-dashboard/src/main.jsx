@@ -17,6 +17,7 @@ import { authHeaders, DISCORD_ERROR_MESSAGES, startDiscordLogin } from "./lib/au
 import { consumeAuthCallback } from "./lib/authCallback.js";
 import { MaterialIcon, renderIcon } from "./components/MaterialIcon.jsx";
 import { ConfirmModal } from "./components/ConfirmModal.jsx";
+import { EXPERT_NAV_GROUPS } from "./dashboardNav.js";
 
 const AUTH_CALLBACK = consumeAuthCallback();
 
@@ -29,34 +30,40 @@ function formatSessionStatus(status) {
   return status || "unknown";
 }
 
-function CaseFileBar({ sessions, selectedId, onSelect, onDelete, onNewPin }) {
+function CaseRail({ sessions, selectedId, onSelect, onDelete, onNewPin }) {
   return (
-    <div className="case-file-bar">
-      <div className="case-file-bar__label">
-        <MaterialIcon name="folder_open" size={18} />
-        <span>Your cases</span>
+    <aside className="ws-case-rail" aria-label="Case files">
+      <div className="ws-case-rail__head">
+        <h2 className="ws-case-rail__title">Cases</h2>
+        <button type="button" className="ws-case-rail__new btn btn--primary btn--sm" onClick={onNewPin} title="New case">
+          <MaterialIcon name="add" size={14} />
+        </button>
       </div>
-      <div className="case-file-bar__track" role="tablist" aria-label="PIN sessions">
+      <div className="ws-case-rail__list" role="tablist">
         {sessions.length === 0 ? (
-          <p className="case-file-bar__empty">No cases yet</p>
+          <p className="ws-case-rail__empty">Create a PIN to start your first scan.</p>
         ) : (
           sessions.map((session) => {
             const active = selectedId === session.id;
+            const status = formatSessionStatus(session.status);
             return (
-              <div key={session.id} className={`case-tab ${active ? "active" : ""}`}>
+              <div key={session.id} className={`ws-case-item ${active ? "ws-case-item--active" : ""}`}>
                 <button
                   type="button"
                   role="tab"
                   aria-selected={active}
-                  className="case-tab__open"
+                  className="ws-case-item__open"
                   onClick={() => onSelect(session.id)}
                 >
-                  <span className={`case-tab__dot status-dot status-dot--${formatSessionStatus(session.status)}`} />
-                  <span className="case-tab__pin">{session.pin}</span>
+                  <span className={`ws-case-item__bar ws-case-item__bar--${status}`} />
+                  <span className="ws-case-item__body">
+                    <span className="ws-case-item__pin">{session.pin}</span>
+                    <span className="ws-case-item__status">{status}</span>
+                  </span>
                 </button>
                 <button
                   type="button"
-                  className="case-tab__close"
+                  className="ws-case-item__del"
                   aria-label={`Delete case ${session.pin}`}
                   onClick={() => onDelete(session)}
                 >
@@ -67,10 +74,7 @@ function CaseFileBar({ sessions, selectedId, onSelect, onDelete, onNewPin }) {
           })
         )}
       </div>
-      <button type="button" className="case-file-bar__new btn btn--primary btn--sm" onClick={onNewPin}>
-        <MaterialIcon name="add" size={16} /> New case
-      </button>
-    </div>
+    </aside>
   );
 }
 
@@ -612,12 +616,12 @@ function buildSuspicionSummary(report) {
 
 function Card({ icon, title, children }) {
   return (
-    <section className="desk-section">
-      <header className="desk-section__head">
-        {icon ? <span className="desk-section__glyph">{renderIcon(icon, 18)}</span> : null}
-        <h3 className="desk-section__title">{title}</h3>
+    <section className="ws-module">
+      <header className="ws-module__head">
+        {icon ? <span className="ws-module__glyph">{renderIcon(icon, 16)}</span> : null}
+        <h3>{title}</h3>
       </header>
-      <div className="desk-section__body">{children}</div>
+      <div className="ws-module__body">{children}</div>
     </section>
   );
 }
@@ -1453,52 +1457,27 @@ function RobloxSection({ report, query, token }) {
     <>
       <Card icon="sports_esports" title="Roblox accounts on this device">
         {accounts.length === 0 ? (
-          <p className="desk-empty">No Roblox accounts were found from client logs or local app data.</p>
+          <p className="ws-empty-note">No Roblox accounts were found from client logs or local app data.</p>
         ) : (
-          <div className="desk-table-wrap">
-            <table className="desk-table">
-              <thead>
-                <tr>
-                  <th scope="col">Account</th>
-                  <th scope="col">User ID</th>
-                  <th scope="col">How it was found</th>
-                  <th scope="col">Profile</th>
-                </tr>
-              </thead>
-              <tbody>
-                {accounts.slice(0, 40).map((account) => {
-                  const headshot = robloxHeadshotUrl(account);
-                  const displayName = robloxDisplayName(account);
-                  const profileUrl = `https://www.roblox.com/users/${encodeURIComponent(account.user_id)}/profile`;
-                  return (
-                    <tr key={account.user_id}>
-                      <td>
-                        <div className="desk-table__user">
-                          <span className="desk-table__avatar">
-                            {headshot ? (
-                              <img src={headshot} alt="" loading="lazy" />
-                            ) : (
-                              displayName.slice(0, 1).toUpperCase()
-                            )}
-                          </span>
-                          <span className="desk-table__name">{displayName}</span>
-                        </div>
-                      </td>
-                      <td className="desk-table__mono">{account.user_id}</td>
-                      <td className="desk-table__muted">
-                        {account.sources?.length ? account.sources.join(", ") : "Detected during scan"}
-                      </td>
-                      <td>
-                        <a href={profileUrl} target="_blank" rel="noreferrer" className="desk-table__link">
-                          Open profile
-                          <MaterialIcon name="open_in_new" size={14} />
-                        </a>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+          <div className="ws-records">
+            {accounts.slice(0, 40).map((account) => {
+              const displayName = robloxDisplayName(account);
+              const profileUrl = `https://www.roblox.com/users/${encodeURIComponent(account.user_id)}/profile`;
+              return (
+                <article key={account.user_id} className="ws-record">
+                  <div>
+                    <code className="ws-record__id">{account.user_id}</code>
+                    <span className="ws-record__name">{displayName}</span>
+                  </div>
+                  <div className="ws-record__meta">
+                    {account.sources?.length ? account.sources.join(" · ") : "Detected during scan"}
+                  </div>
+                  <a href={profileUrl} target="_blank" rel="noreferrer" className="ws-record__link">
+                    View profile →
+                  </a>
+                </article>
+              );
+            })}
           </div>
         )}
       </Card>
@@ -2455,6 +2434,146 @@ const resultSections = [
 ];
 const resultSectionById = Object.fromEntries(resultSections.map((section) => [section.id, section]));
 
+function expertGroupForSection(sectionId) {
+  return EXPERT_NAV_GROUPS.find((group) => group.sectionIds.includes(sectionId)) ?? EXPERT_NAV_GROUPS[0];
+}
+
+function ExpertNavigator({ sectionId, onSectionChange, query, onQueryChange, activeLabel }) {
+  const [activeGroupId, setActiveGroupId] = useState(() => expertGroupForSection(sectionId).id);
+  const activeGroup = EXPERT_NAV_GROUPS.find((g) => g.id === activeGroupId) ?? EXPERT_NAV_GROUPS[0];
+
+  useEffect(() => {
+    const group = expertGroupForSection(sectionId);
+    setActiveGroupId(group.id);
+  }, [sectionId]);
+
+  function selectGroup(group) {
+    setActiveGroupId(group.id);
+    if (!group.sectionIds.includes(sectionId)) {
+      onSectionChange(group.sectionIds[0]);
+    }
+  }
+
+  return (
+    <div className="ws-workflow">
+      <div className="ws-workflow__steps" role="tablist" aria-label="Review workflow">
+        {EXPERT_NAV_GROUPS.map((group) => (
+          <button
+            key={group.id}
+            type="button"
+            role="tab"
+            aria-selected={activeGroupId === group.id}
+            className={`ws-workflow__step ${activeGroupId === group.id ? "ws-workflow__step--active" : ""}`}
+            onClick={() => selectGroup(group)}
+          >
+            <span className="ws-workflow__step-num">{group.label.split("·")[0]?.trim()}</span>
+            <span className="ws-workflow__step-label">{group.label.split("·").slice(1).join("·").trim() || group.label}</span>
+          </button>
+        ))}
+      </div>
+      <div className="ws-workflow__sections">
+        {activeGroup.sectionIds.map((id) => {
+          const section = resultSectionById[id];
+          if (!section) return null;
+          return (
+            <button
+              key={id}
+              type="button"
+              className={`ws-chip ${sectionId === id ? "ws-chip--active" : ""}`}
+              onClick={() => onSectionChange(id)}
+            >
+              {section.label}
+            </button>
+          );
+        })}
+        <input
+          className="ws-workflow__search"
+          value={query}
+          onChange={(event) => onQueryChange(event.target.value)}
+          placeholder={`Filter ${activeLabel}…`}
+          aria-label="Filter section content"
+        />
+      </div>
+    </div>
+  );
+}
+
+function WorkspaceInspector({
+  detail,
+  concernScore,
+  expertMode,
+  showSectionContent,
+  onDownload,
+  onPrint,
+  onTutorial,
+  onToggleMode,
+  token,
+  onSessionReviewSaved,
+}) {
+  return (
+    <aside className="ws-inspector" aria-label="Case inspector">
+      <div className="ws-inspector__block">
+        <span className="ws-inspector__eyebrow">Active case</span>
+        <div className="ws-inspector__pin">{detail.pin}</div>
+        <dl className="ws-inspector__grid">
+          <div className="ws-inspector__field">
+            <dt>Status</dt>
+            <dd>
+              <span className={`ws-status-tag ws-status-tag--${formatSessionStatus(detail.status)}`}>
+                {formatSessionStatus(detail.status)}
+              </span>
+            </dd>
+          </div>
+          {concernScore != null ? (
+            <div className="ws-inspector__field">
+              <dt>{expertMode ? "Suspicion score" : "Concern level"}</dt>
+              <dd>
+                <span className="ws-inspector__score">{concernScore}/100</span>
+              </dd>
+            </div>
+          ) : null}
+          <div className="ws-inspector__field">
+            <dt>Submitted</dt>
+            <dd>{detail.completed_at ? formatGmtPlus3(detail.completed_at) : "Awaiting scan"}</dd>
+          </div>
+        </dl>
+        <div className="ws-inspector__actions">
+          <button type="button" className="ws-icon-btn" onClick={onDownload} title="Download JSON">
+            <MaterialIcon name="download" size={18} />
+          </button>
+          <button type="button" className="ws-icon-btn" onClick={onPrint} title="Print summary">
+            <MaterialIcon name="print" size={18} />
+          </button>
+          <button type="button" className="ws-icon-btn" onClick={onTutorial} title="Tutorial">
+            <MaterialIcon name="menu_book" size={18} />
+          </button>
+          {showSectionContent ? (
+            <button
+              type="button"
+              className={`ws-inspector__mode ${expertMode ? "ws-inspector__mode--expert" : ""}`}
+              onClick={onToggleMode}
+            >
+              {expertMode ? "← Simple overview" : "Forensic analysis →"}
+            </button>
+          ) : null}
+        </div>
+      </div>
+      {showSectionContent ? (
+        <div className="ws-inspector__block">
+          <SessionReview
+            detail={detail}
+            apiUrl={API_URL}
+            token={token}
+            authHeaders={authHeaders}
+            onSaved={onSessionReviewSaved}
+            variant="inspector"
+          />
+        </div>
+      ) : null}
+    </aside>
+  );
+}
+
 function Results({ detail, token, onSessionReviewSaved }) {
   const [sectionId, setSectionId] = useState("starter");
   const [query, setQuery] = useState("");
@@ -2480,11 +2599,11 @@ function Results({ detail, token, onSessionReviewSaved }) {
   const ActiveComponent = activeSection.component;
   if (!detail) {
     return (
-      <div className="dossier dossier--idle">
-        <div className="dossier__placeholder">
-          <MaterialIcon name="description" size={40} />
-          <h2>Open a case to begin review</h2>
-          <p>Select a PIN from the case bar above, or create a new one to start a scan.</p>
+      <div className="ws-main-area">
+        <div className="ws-empty">
+          <MaterialIcon name="description" size={36} />
+          <h2>Select a case to begin</h2>
+          <p>Choose a PIN from the case rail, or create a new one to start a scan.</p>
         </div>
       </div>
     );
@@ -2505,117 +2624,51 @@ function Results({ detail, token, onSessionReviewSaved }) {
       : null;
 
   return (
-    <div className={`dossier ${expertMode ? "dossier--expert" : "dossier--simple"}`}>
-      <header className="dossier__masthead">
-        <div className="dossier__pin-block">
-          <span className="dossier__pin-label">Case PIN</span>
-          <span className="dossier__pin">{detail.pin}</span>
-        </div>
-        <dl className="dossier__facts">
-          <div>
-            <dt>Status</dt>
-            <dd>
-              <span className={`status-pill status-pill--${formatSessionStatus(detail.status)}`}>
-                {formatSessionStatus(detail.status)}
-              </span>
-            </dd>
-          </div>
-          {concernScore != null ? (
-            <div>
-              <dt>{expertMode ? "Suspicion" : "Concern"}</dt>
-              <dd>
-                <span className="dossier__score">{concernScore}/100</span>
-              </dd>
-            </div>
-          ) : null}
-          <div>
-            <dt>Submitted</dt>
-            <dd>{detail.completed_at ? formatGmtPlus3(detail.completed_at) : "Pending"}</dd>
-          </div>
-        </dl>
-        <div className="dossier__tools">
-          <button type="button" className="desk-tool" onClick={() => downloadReport(detail)} title="Download JSON">
-            <MaterialIcon name="download" size={18} />
-          </button>
-          <button
-            type="button"
-            className="desk-tool"
-            onClick={() => exportReportPdf({ detail, report, summary, brandName: BRAND_NAME })}
-            title="Print summary"
-          >
-            <MaterialIcon name="print" size={18} />
-          </button>
-          <button type="button" className="desk-tool" onClick={() => setTutorialOpen(true)} title="Tutorial">
-            <MaterialIcon name="menu_book" size={18} />
-          </button>
-          {showSectionContent ? (
-            <button
-              type="button"
-              className={`desk-mode-toggle ${expertMode ? "desk-mode-toggle--expert" : ""}`}
-              onClick={() => setExpertMode((value) => !value)}
-            >
-              {expertMode ? "Simple view" : "Forensic view"}
-            </button>
-          ) : null}
-        </div>
-      </header>
-
-      <div className="dossier__controls">
-        <SessionReview
-          detail={detail}
-          apiUrl={API_URL}
-          token={token}
-          authHeaders={authHeaders}
-          onSaved={onSessionReviewSaved}
-        />
+    <div className="ws-split">
+      <div className="ws-canvas">
         {expertMode && showSectionContent ? (
-          <div className="dossier__section-picker">
-            <label className="desk-select-label" htmlFor="expert-section">
-              Forensic section
-            </label>
-            <select
-              id="expert-section"
-              className="desk-select"
-              value={sectionId}
-              onChange={(event) => setSectionId(event.target.value)}
-            >
-              {resultSections.map((section) => (
-                <option key={section.id} value={section.id}>
-                  {section.label}
-                </option>
-              ))}
-            </select>
-            <input
-              className="desk-search"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder={`Filter ${activeSection.label}…`}
-            />
-          </div>
-        ) : null}
-      </div>
-
-      <div className="dossier__content">
-        {!showSectionContent ? (
-          <div className="dossier__waiting">
-            <MaterialIcon name="hourglass_top" size={28} />
-            <p>Waiting for the desktop scanner to submit results for this case.</p>
-          </div>
-        ) : expertMode ? (
-          <ActiveComponent report={report} query={deferredQuery} token={token} />
-        ) : (
-          <SimpleResults
-            report={report}
-            summary={summary}
-            activity={activity}
-            activityEventSummary={activityEventSummary}
-            formatGmtPlus3={formatGmtPlus3}
-            onExpertMode={() => setExpertMode(true)}
-            onDownload={() => downloadReport(detail)}
-            onPrintPdf={() => exportReportPdf({ detail, report, summary, brandName: BRAND_NAME })}
+          <ExpertNavigator
+            sectionId={sectionId}
+            onSectionChange={setSectionId}
+            query={query}
+            onQueryChange={setQuery}
+            activeLabel={activeSection.label}
           />
-        )}
+        ) : null}
+        <div className="ws-canvas__body">
+          {!showSectionContent ? (
+            <div className="ws-canvas__waiting">
+              <MaterialIcon name="hourglass_top" size={24} />
+              <p>Waiting for the desktop scanner to submit results for this case.</p>
+            </div>
+          ) : expertMode ? (
+            <ActiveComponent report={report} query={deferredQuery} token={token} />
+          ) : (
+            <SimpleResults
+              report={report}
+              summary={summary}
+              activity={activity}
+              activityEventSummary={activityEventSummary}
+              formatGmtPlus3={formatGmtPlus3}
+              onExpertMode={() => setExpertMode(true)}
+              onDownload={() => downloadReport(detail)}
+              onPrintPdf={() => exportReportPdf({ detail, report, summary, brandName: BRAND_NAME })}
+            />
+          )}
+        </div>
       </div>
+      <WorkspaceInspector
+        detail={detail}
+        concernScore={concernScore}
+        expertMode={expertMode}
+        showSectionContent={showSectionContent}
+        onDownload={() => downloadReport(detail)}
+        onPrint={() => exportReportPdf({ detail, report, summary, brandName: BRAND_NAME })}
+        onTutorial={() => setTutorialOpen(true)}
+        onToggleMode={() => setExpertMode((value) => !value)}
+        token={token}
+        onSessionReviewSaved={onSessionReviewSaved}
+      />
       <TutorialGuide open={tutorialOpen} onClose={() => setTutorialOpen(false)} brandName={BRAND_NAME} />
     </div>
   );
@@ -2847,22 +2900,23 @@ export function Dashboard({ token, onLogout }) {
   const greetingName = profile?.username || "there";
 
   return (
-    <main className="review-desk">
-      <header className="desk-toolbar">
-        <div className="desk-toolbar__brand">
-          <img src={BRAND_LOGO} alt="" className="desk-toolbar__logo" />
-          <span className="desk-toolbar__title">Review Desk</span>
+    <main className="ws-shell">
+      <header className="ws-topbar">
+        <div className="ws-topbar__brand">
+          <img src={BRAND_LOGO} alt="" className="ws-topbar__logo" />
+          <span className="ws-topbar__label">Analyst Console</span>
         </div>
-        <div className="desk-toolbar__meta">
-          {profile?.avatar_url ? <img src={profile.avatar_url} alt="" className="desk-toolbar__avatar" /> : null}
-          <span className="desk-toolbar__user">{greetingName}</span>
+        <div className="ws-topbar__spacer" />
+        <div className="ws-topbar__user">
+          {profile?.avatar_url ? <img src={profile.avatar_url} alt="" className="ws-topbar__avatar" /> : null}
+          <span>{greetingName}</span>
         </div>
-        <div className="desk-toolbar__actions">
-          <a className="desk-tool" href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer" title="Discord">
+        <div className="ws-topbar__actions">
+          <a className="ws-icon-btn" href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer" title="Discord">
             <MaterialIcon name="forum" size={18} />
           </a>
           {hasAccess && selectedPin ? (
-            <button type="button" className="desk-tool" onClick={() => navigator.clipboard?.writeText(selectedPin)} title="Copy PIN">
+            <button type="button" className="ws-icon-btn" onClick={() => navigator.clipboard?.writeText(selectedPin)} title="Copy PIN">
               <MaterialIcon name="content_copy" size={18} />
             </button>
           ) : null}
@@ -2871,14 +2925,14 @@ export function Dashboard({ token, onLogout }) {
               {isSuperAdmin ? (
                 <button
                   type="button"
-                  className={`desk-tool ${showAdmin ? "desk-tool--active" : ""}`}
+                  className={`ws-icon-btn ${showAdmin ? "ws-icon-btn--active" : ""}`}
                   onClick={() => setShowAdmin((v) => !v)}
                   title={showAdmin ? "Back to cases" : "Admin"}
                 >
                   <MaterialIcon name="admin_panel_settings" size={18} />
                 </button>
               ) : null}
-              <button type="button" className="desk-tool" onClick={loadSessions} title="Refresh">
+              <button type="button" className="ws-icon-btn" onClick={loadSessions} title="Refresh">
                 <MaterialIcon name="refresh" size={18} />
               </button>
             </>
@@ -2887,7 +2941,7 @@ export function Dashboard({ token, onLogout }) {
               {verifyBusy ? "Checking…" : "Verify access"}
             </button>
           )}
-          <button type="button" className="desk-tool" onClick={onLogout} title="Log out">
+          <button type="button" className="ws-icon-btn" onClick={onLogout} title="Log out">
             <MaterialIcon name="logout" size={18} />
           </button>
         </div>
@@ -2922,9 +2976,9 @@ export function Dashboard({ token, onLogout }) {
       {isSuperAdmin && showAdmin ? (
         <AdminPanel apiUrl={API_URL} token={token} authHeaders={authHeaders} />
       ) : (
-        <div className={`review-desk__body ${hasAccess ? "" : "review-desk__body--locked"}`}>
+        <div className={`ws-frame ${hasAccess ? "" : "ws-frame--locked"}`}>
           {hasAccess ? (
-            <CaseFileBar
+            <CaseRail
               sessions={sessions}
               selectedId={selectedId}
               onSelect={setSelectedId}

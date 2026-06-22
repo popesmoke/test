@@ -9,7 +9,7 @@ const VERDICTS = [
   { id: "follow-up", label: "Follow-up" },
 ];
 
-export function SessionReview({ detail, apiUrl, token, authHeaders, onSaved }) {
+export function SessionReview({ detail, apiUrl, token, authHeaders, onSaved, variant = "inline" }) {
   const [verdict, setVerdict] = useState(detail?.reviewer_verdict ?? "");
   const [note, setNote] = useState(detail?.reviewer_note ?? "");
   const [busy, setBusy] = useState(false);
@@ -44,7 +44,7 @@ export function SessionReview({ detail, apiUrl, token, authHeaders, onSaved }) {
   }
 
   return (
-    <section className="session-review session-review--inline">
+    <section className={`session-review session-review--${variant}`}>
       <label className="session-review__field">
         <span>Verdict</span>
         <select value={verdict} onChange={(e) => setVerdict(e.target.value)}>
@@ -57,15 +57,24 @@ export function SessionReview({ detail, apiUrl, token, authHeaders, onSaved }) {
       </label>
       <label className="session-review__field session-review__field--grow">
         <span>Reviewer note</span>
-        <input
-          type="text"
-          value={note}
-          onChange={(e) => setNote(e.target.value)}
-          placeholder="Private note for this case…"
-        />
+        {variant === "inspector" ? (
+          <textarea
+            rows={3}
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="Private note for this case…"
+          />
+        ) : (
+          <input
+            type="text"
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="Private note for this case…"
+          />
+        )}
       </label>
       <button type="button" className="btn btn--primary btn--sm session-review__save" onClick={saveReview} disabled={busy}>
-        <MaterialIcon name="save" size={15} /> {busy ? "Saving…" : "Save"}
+        <MaterialIcon name="save" size={15} /> {busy ? "Saving…" : "Save review"}
       </button>
       {message ? <span className="session-review__msg">{message}</span> : null}
     </section>
