@@ -30,7 +30,7 @@ export function AboutPage() {
           <div className="about-card">
             <MaterialIcon name="lock" size={22} />
             <strong>Secure by design</strong>
-            <p>No passwords, .ROBLOSECURITY cookies, or message contents are collected.</p>
+            <p>No passwords, cookies, or message contents are collected.</p>
           </div>
           <div className="about-card">
             <MaterialIcon name="track_changes" size={22} />
