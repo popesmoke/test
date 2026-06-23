@@ -176,6 +176,10 @@ def init_db() -> None:
         ensure_column(conn, "discord_users", "admin_banned", "INTEGER NOT NULL DEFAULT 0")
         ensure_column(conn, "discord_users", "admin_notes", "TEXT")
         ensure_column(conn, "discord_users", "access_override", "INTEGER")
+        db_execute(
+            conn,
+            f"""
+            CREATE TABLE IF NOT EXISTS users (
                 id {id_column},
                 email TEXT NOT NULL UNIQUE,
                 username TEXT NOT NULL,
