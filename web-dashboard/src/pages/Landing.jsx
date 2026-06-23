@@ -29,14 +29,14 @@ export function LandingPage() {
           <ul className="hero__trust">
             <li>Consent before upload</li>
             <li>Watch lists you control</li>
-            <li>Most scans take about 2 minutes</li>
+            <li>Most scans take about 5 minutes</li>
           </ul>
         </div>
         <aside className="hero__panel">
           <div className="hero__panel-inner">
             <div className="hero__stat hero__stat--highlight">
               <MaterialIcon name="timer" size={22} />
-              <span className="hero__stat-value">~2 min</span>
+              <span className="hero__stat-value">5 min</span>
               <span className="hero__stat-label">Typical scan time</span>
             </div>
             <div className="hero__stat">
