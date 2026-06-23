@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from "react";
 import { MaterialIcon } from "./MaterialIcon.jsx";
 import { SeverityBadge } from "./SeverityBadge.jsx";
-import { buildBypassReport } from "../bypassDetection.js";
+import { buildBypassReport, BYPASS_TECHNIQUES } from "../bypassDetection.js";
 
 function PanelHeader({ icon, title, text }) {
   return (
@@ -15,31 +15,22 @@ function PanelHeader({ icon, title, text }) {
   );
 }
 
-function BypassFindingCard({ finding, defaultOpen = false }) {
-  const [open, setOpen] = useState(defaultOpen);
+function BypassFindingRow({ finding }) {
   return (
-    <article className={`ws-collapse-card ws-collapse-card--${finding.severity || "medium"} ${open ? "is-open" : ""}`}>
-      <button type="button" className="ws-collapse-card__trigger" onClick={() => setOpen((v) => !v)}>
-        <span className="ws-collapse-card__icon" aria-hidden>
-          <MaterialIcon name="gpp_maybe" size={18} />
-        </span>
-        <span className="ws-collapse-card__text">
+    <article className={`ws-bypass-finding ws-bypass-finding--${finding.severity || "medium"}`}>
+      <div className="ws-bypass-finding__head">
+        <div>
           <strong>{finding.title}</strong>
-          <span className="ws-collapse-card__sub">{finding.techniqueLabel}</span>
-        </span>
-        <SeverityBadge severity={finding.severity || "medium"} compact />
-        <MaterialIcon name="expand_more" size={20} className="ws-collapse-card__chevron" />
-      </button>
-      {open ? (
-        <div className="ws-collapse-card__content">
-          <p className="ws-bypass-action">
-            <span className="ws-bypass-action__label">What they did</span>
-            {finding.whatTheyDid}
-          </p>
-          {finding.detail && finding.detail !== finding.whatTheyDid ? (
-            <p className="muted">{finding.detail}</p>
-          ) : null}
+          <p className="muted">{finding.techniqueLabel}</p>
         </div>
+        <SeverityBadge severity={finding.severity || "medium"} compact />
+      </div>
+      <p className="ws-bypass-action">
+        <span className="ws-bypass-action__label">What they did</span>
+        {finding.whatTheyDid}
+      </p>
+      {finding.detail && finding.detail !== finding.whatTheyDid ? (
+        <p className="ws-bypass-finding__detail muted">{finding.detail}</p>
       ) : null}
     </article>
   );
@@ -78,7 +69,7 @@ export function BypassPanel({ report }) {
             title="Detected bypass activity"
             text="Each item explains what was done and which evasion category it matches."
           />
-          <div className="ws-panel__body ws-collapse-stack">
+          <div className="ws-panel__body">
             {view.detected.map((group) => (
               <div key={group.techniqueId} className="ws-bypass-group">
                 <header className="ws-bypass-group__head">
@@ -91,9 +82,9 @@ export function BypassPanel({ report }) {
                     {group.findings.length} hit{group.findings.length === 1 ? "" : "s"}
                   </span>
                 </header>
-                <div className="ws-collapse-stack">
+                <div className="ws-bypass-finding-list">
                   {group.findings.map((finding, index) => (
-                    <BypassFindingCard key={`${finding.title}-${index}`} finding={finding} />
+                    <BypassFindingRow key={`${finding.title}-${index}`} finding={finding} />
                   ))}
                 </div>
               </div>
@@ -128,5 +119,3 @@ export function BypassPanel({ report }) {
     </>
   );
 }
-
-import { buildBypassReport, BYPASS_TECHNIQUES } from "../bypassDetection.js";

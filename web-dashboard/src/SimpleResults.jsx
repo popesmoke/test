@@ -11,15 +11,14 @@ import {
 import { CollapseCard } from "./components/CollapseCard.jsx";
 import { BypassPanel } from "./components/BypassPanel.jsx";
 import { buildBypassReport } from "./bypassDetection.js";
-import { genericFindingTitle, genericReasonLabel, genericReasonDetail } from "./reviewerCopy.js";
-import { genericFindingTitle, genericReasonLabel, genericReasonDetail } from "./reviewerCopy.js";
+import { genericReasonLabel, genericReasonDetail } from "./reviewerCopy.js";
 
 const API_URL = import.meta.env.VITE_API_URL || "https://virello-secure.onrender.com";
 
 const TABS = [
   { id: "summary", label: "Summary", icon: "description" },
   { id: "findings", label: "Findings", icon: "shield_alert" },
-  { id: "bypass", label: "Bypass", icon: "gpp_maybe" },
+  { id: "bypass", label: "Bypass detection", icon: "gpp_maybe" },
   { id: "activity", label: "Activity", icon: "history" },
   { id: "accounts", label: "Accounts", icon: "users" },
 ];
@@ -38,18 +37,7 @@ function simpleVerdict(score, bypassRisk) {
 }
 
 function buildProblems(report, summary) {
-  const sec = report.security_integrity_signals ?? {};
-  const bypass = sec.bypass_resilience ?? {};
   const problems = [];
-
-  for (const row of bypass.findings ?? []) {
-    problems.push({
-      id: `bypass-${row.title}`,
-      severity: row.severity || "medium",
-      title: genericFindingTitle(row.title),
-      detail: genericReasonDetail(row.title, row.detail),
-    });
-  }
 
   for (const reason of summary.reasons ?? []) {
     if (!reason.points) continue;
@@ -83,16 +71,14 @@ function PanelHeader({ icon, title, text }) {
   );
 }
 
-function FindingRow({ problem, defaultOpen = false }) {
-  const [open, setOpen] = useState(defaultOpen);
+function WarningRow({ problem }) {
   return (
-    <article className={`ws-finding ws-finding--${problem.severity}`}>
-      <button type="button" className="ws-finding__toggle" onClick={() => setOpen((v) => !v)}>
+    <article className={`ws-static-finding ws-finding--${problem.severity}`}>
+      <div className="ws-static-finding__head">
         <SeverityBadge severity={problem.severity} />
         <strong>{problem.title}</strong>
-        <MaterialIcon name="chevron_right" size={16} className={open ? "open" : ""} />
-      </button>
-      {open ? <p className="ws-finding__detail">{problem.detail}</p> : null}
+      </div>
+      <p className="ws-static-finding__detail">{problem.detail}</p>
     </article>
   );
 }
@@ -229,8 +215,8 @@ function SummaryTab({ verdict, problems, review, report, formatGmtPlus3 }) {
         <section className="ws-panel">
           <PanelHeader icon="priority_high" title="Top concerns" text="Most important items first." />
           <div className="ws-panel__body">
-            {problems.slice(0, 5).map((problem, index) => (
-              <FindingRow key={problem.id} problem={problem} defaultOpen={index === 0} />
+            {problems.slice(0, 5).map((problem) => (
+              <WarningRow key={problem.id} problem={problem} />
             ))}
           </div>
         </section>
@@ -279,7 +265,7 @@ function FindingsTab({ problems, review, formatGmtPlus3 }) {
         <PanelHeader icon="list_checks" title="Warning signs" text="Sorted by importance." />
         <div className="ws-panel__body">
           {problems.length ? (
-            problems.map((problem) => <FindingRow key={problem.id} problem={problem} />)
+            problems.map((problem) => <WarningRow key={problem.id} problem={problem} />)
           ) : (
             <p className="muted">No warning signs on this scan.</p>
           )}
