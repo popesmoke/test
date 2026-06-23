@@ -1,4 +1,4 @@
-import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 import "./desk.css";
@@ -2542,12 +2542,10 @@ function ExpertNavigator({ sectionId, onSectionChange, query, onQueryChange, act
 function WorkspaceInspector({
   detail,
   concernScore,
-  expertMode,
   showSectionContent,
   onDownload,
   onPrint,
   onTutorial,
-  onToggleMode,
   token,
   onSessionReviewSaved,
 }) {
@@ -2567,7 +2565,7 @@ function WorkspaceInspector({
           </div>
           {concernScore != null ? (
             <div className="ws-inspector__field">
-              <dt>{expertMode ? "Suspicion score" : "Concern level"}</dt>
+              <dt>Concern level</dt>
               <dd>
                 <span className="ws-inspector__score">{concernScore}/100</span>
               </dd>
@@ -2585,18 +2583,9 @@ function WorkspaceInspector({
           <button type="button" className="ws-icon-btn" onClick={onPrint} title="Print summary">
             <MaterialIcon name="print" size={18} />
           </button>
-          <button type="button" className="ws-icon-btn" onClick={onTutorial} title="Tutorial">
+          <button type="button" className="ws-icon-btn" onClick={onTutorial} title="How to read scans">
             <MaterialIcon name="menu_book" size={18} />
           </button>
-          {showSectionContent ? (
-            <button
-              type="button"
-              className={`ws-inspector__mode ${expertMode ? "ws-inspector__mode--expert" : ""}`}
-              onClick={onToggleMode}
-            >
-              {expertMode ? "← Simple overview" : "Advanced review →"}
-            </button>
-          ) : null}
         </div>
       </div>
       {showSectionContent ? (
@@ -2616,28 +2605,16 @@ function WorkspaceInspector({
 }
 
 function Results({ detail, token, onSessionReviewSaved }) {
-  const [sectionId, setSectionId] = useState("starter");
-  const [query, setQuery] = useState("");
-  const deferredQuery = useDeferredValue(query);
-  const [expertMode, setExpertMode] = useState(false);
   const [tutorialOpen, setTutorialOpen] = useState(false);
 
   useEffect(() => {
-    if (!detail?.id) {
-      return;
-    }
-    setSectionId("starter");
-    setQuery("");
-    setExpertMode(false);
+    if (!detail?.id) return;
     setTutorialOpen(false);
-  }, [detail?.id]); // keep tutorialOpen reset on session change
+  }, [detail?.id]);
 
   const report = detail?.report ?? {};
-  // Large reports can make tab switches feel sluggish if recomputed on every render.
   const summary = useMemo(() => buildSuspicionSummary(report), [report]);
   const activity = useMemo(() => userActivityFromReport(report), [report]);
-  const activeSection = resultSectionById[sectionId] ?? resultSections[0];
-  const ActiveComponent = activeSection.component;
   if (!detail) {
     return (
       <div className="ws-main-area">
@@ -2652,38 +2629,25 @@ function Results({ detail, token, onSessionReviewSaved }) {
   const showSectionContent = detail.status === "completed";
   const concernScore =
     detail.status === "completed"
-      ? expertMode
-        ? summary.score
-        : Math.min(
-            100,
-            summary.evidenceVerdict?.score ??
-              Math.round(
-                summary.score * 0.75 +
-                  ((report.security_integrity_signals?.bypass_resilience?.risk_score ?? 0) * 0.35),
-              ),
-          )
+      ? Math.min(
+          100,
+          summary.evidenceVerdict?.score ??
+            Math.round(
+              summary.score * 0.75 +
+                ((report.security_integrity_signals?.bypass_resilience?.risk_score ?? 0) * 0.35),
+            ),
+        )
       : null;
 
   return (
     <div className="ws-split">
       <div className="ws-canvas">
-        {expertMode && showSectionContent ? (
-          <ExpertNavigator
-            sectionId={sectionId}
-            onSectionChange={setSectionId}
-            query={query}
-            onQueryChange={setQuery}
-            activeLabel={activeSection.label}
-          />
-        ) : null}
         <div className="ws-canvas__body">
           {!showSectionContent ? (
             <div className="ws-canvas__waiting">
               <MaterialIcon name="hourglass_top" size={24} />
               <p>Waiting for the desktop scanner to submit results for this case.</p>
             </div>
-          ) : expertMode ? (
-            <ActiveComponent report={report} query={deferredQuery} token={token} />
           ) : (
             <SimpleResults
               report={report}
@@ -2692,9 +2656,6 @@ function Results({ detail, token, onSessionReviewSaved }) {
               activityEventSummary={activityEventSummary}
               formatGmtPlus3={formatGmtPlus3}
               token={token}
-              onExpertMode={() => setExpertMode(true)}
-              onDownload={() => downloadReport(detail)}
-              onPrintPdf={() => exportReportPdf({ detail, report, summary, brandName: BRAND_NAME })}
             />
           )}
         </div>
@@ -2702,12 +2663,10 @@ function Results({ detail, token, onSessionReviewSaved }) {
       <WorkspaceInspector
         detail={detail}
         concernScore={concernScore}
-        expertMode={expertMode}
         showSectionContent={showSectionContent}
         onDownload={() => downloadReport(detail)}
         onPrint={() => exportReportPdf({ detail, report, summary, brandName: BRAND_NAME })}
         onTutorial={() => setTutorialOpen(true)}
-        onToggleMode={() => setExpertMode((value) => !value)}
         token={token}
         onSessionReviewSaved={onSessionReviewSaved}
       />
@@ -2952,7 +2911,7 @@ export function Dashboard({ token, onLogout }) {
       <header className="ws-topbar">
         <div className="ws-topbar__brand">
           <img src={BRAND_LOGO} alt="" className="ws-topbar__logo" />
-          <span className="ws-topbar__label">Analyst Console</span>
+          <span className="ws-topbar__label">Review Console</span>
         </div>
         <div className="ws-topbar__spacer" />
         <div className="ws-topbar__user">

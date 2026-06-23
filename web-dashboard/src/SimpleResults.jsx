@@ -1,62 +1,29 @@
-﻿import React, { useMemo, useState } from "react";
+﻿import React, { useEffect, useMemo, useState } from "react";
 import { MaterialIcon } from "./components/MaterialIcon.jsx";
+import { SeverityBadge, severityRank } from "./components/SeverityBadge.jsx";
 import { defenderSummary } from "./defenderSignals.js";
 import { scanReviewFromReport } from "./reportDigest.js";
 import { formatDisplayLocation, privacyPath, publicFindingLabels } from "./resultPrivacy.js";
-import { sortBySuspicion, genericFindingTitle, genericReasonLabel, genericReasonDetail } from "./reviewerCopy.js";
+import {
+  collectRobloxAccountsFromReport,
+  collectDiscordAccountsFromReport,
+} from "./accountExtract.js";
+import { genericFindingTitle, genericReasonLabel, genericReasonDetail } from "./reviewerCopy.js";
+
+const API_URL = import.meta.env.VITE_API_URL || "https://virello-secure.onrender.com";
 
 const TABS = [
-  { id: "overview", label: "Summary", icon: "description" },
-  { id: "accounts", label: "Accounts", icon: "users" },
-  { id: "chains", label: "Evidence chains", icon: "git_branch" },
+  { id: "summary", label: "Summary", icon: "description" },
+  { id: "findings", label: "Findings", icon: "shield_alert" },
   { id: "activity", label: "Activity", icon: "history" },
-  { id: "downloads", label: "Downloads", icon: "file_down" },
-  { id: "execution", label: "Programs run", icon: "play" },
-  { id: "programs", label: "Program list", icon: "file_code" },
-  { id: "strings", label: "Keywords", icon: "search" },
-  { id: "security", label: "Security", icon: "shield" },
+  { id: "accounts", label: "Accounts", icon: "users" },
 ];
 
 const VERDICT_META = {
-  clean: {
-    label: "Looks OK",
-    tone: "clean",
-    blurb: "No strong warning signs on this scan.",
-  },
-  watch: {
-    label: "Needs review",
-    tone: "watch",
-    blurb: "A few unusual signals. Worth a closer look.",
-  },
-  bad: {
-    label: "High risk",
-    tone: "bad",
-    blurb: "Multiple warning signs. Review carefully.",
-  },
+  clean: { label: "Looks clear", tone: "clean", blurb: "Nothing major stood out on this scan." },
+  watch: { label: "Review recommended", tone: "watch", blurb: "Some warning signs need a closer look." },
+  bad: { label: "High concern", tone: "bad", blurb: "Multiple warning signs — review carefully." },
 };
-
-const ACTIVITY_FILTERS = [
-  { id: "all", label: "All" },
-  { id: "executors", label: "Programs" },
-  { id: "suspicious", label: "Files" },
-  { id: "deletions", label: "Deletions" },
-];
-
-function classifyActivityFilter(event) {
-  if (event?.filter) return event.filter;
-  const summary = String(event?.summary || "").toLowerCase();
-  const category = String(event?.category || "").toLowerCase();
-  if (category === "deletions" || summary.includes("no longer on disk") || summary.includes("recycle bin")) {
-    return "deletions";
-  }
-  if (summary.includes("executor") || summary.includes("suspicious program") || category === "commands") {
-    return "executors";
-  }
-  if (category === "files" || summary.includes("suspicious file")) {
-    return "suspicious";
-  }
-  return "other";
-}
 
 function simpleVerdict(score, bypassRisk) {
   const combined = Math.min(100, Math.round(score * 0.75 + (bypassRisk || 0) * 0.35));
@@ -65,11 +32,7 @@ function simpleVerdict(score, bypassRisk) {
   return { ...VERDICT_META.clean, combined };
 }
 
-function friendlyReason(label, detail) {
-  return genericReasonLabel(label) || label;
-}
-
-function buildSimpleProblems(report, summary) {
+function buildProblems(report, summary) {
   const sec = report.security_integrity_signals ?? {};
   const bypass = sec.bypass_resilience ?? {};
   const problems = [];
@@ -88,30 +51,19 @@ function buildSimpleProblems(report, summary) {
     problems.push({
       id: `score-${reason.label}`,
       severity: reason.points >= 20 ? "high" : reason.points >= 10 ? "medium" : "low",
-      title: friendlyReason(reason.label, reason.detail),
+      title: genericReasonLabel(reason.label),
       detail: genericReasonDetail(reason.label, reason.detail),
     });
   }
 
   const seen = new Set();
-  const ranked = problems.filter((p) => {
-    if (seen.has(p.title)) return false;
-    seen.add(p.title);
-    return true;
-  });
-  const severityRank = { critical: 0, high: 1, medium: 2, low: 3 };
-  ranked.sort((a, b) => (severityRank[a.severity] ?? 9) - (severityRank[b.severity] ?? 9));
-  return ranked;
-}
-
-function SimpleStat({ label, value, hint }) {
-  return (
-    <div className="ws-metric">
-      <strong>{value}</strong>
-      <span>{label}</span>
-      {hint ? <small>{hint}</small> : null}
-    </div>
-  );
+  return problems
+    .filter((p) => {
+      if (seen.has(p.title)) return false;
+      seen.add(p.title);
+      return true;
+    })
+    .sort((a, b) => severityRank(a.severity) - severityRank(b.severity));
 }
 
 function PanelHeader({ icon, title, text }) {
@@ -126,25 +78,16 @@ function PanelHeader({ icon, title, text }) {
   );
 }
 
-function ProblemCard({ problem }) {
-  const [open, setOpen] = useState(false);
-  const iconName =
-    problem.severity === "high" || problem.severity === "critical"
-      ? "shield_alert"
-      : problem.severity === "medium"
-        ? "alert_triangle"
-        : "help_circle";
-
+function FindingRow({ problem, defaultOpen = false }) {
+  const [open, setOpen] = useState(defaultOpen);
   return (
     <article className={`ws-finding ws-finding--${problem.severity}`}>
       <button type="button" className="ws-finding__toggle" onClick={() => setOpen((v) => !v)}>
-        <span className="ws-finding__icon">
-          <MaterialIcon name={iconName} size={18} />
-        </span>
+        <SeverityBadge severity={problem.severity} />
         <strong>{problem.title}</strong>
         <MaterialIcon name="chevron_right" size={16} className={open ? "open" : ""} />
       </button>
-      {open ? <p className="ws-finding__detail">{genericReasonDetail(problem.title, problem.detail)}</p> : null}
+      {open ? <p className="ws-finding__detail">{problem.detail}</p> : null}
     </article>
   );
 }
@@ -155,24 +98,14 @@ function LocationHint({ row, path }) {
   return <span className="simple-location-hint muted">{text}</span>;
 }
 
-function activityEventBadge(event) {
-  const summary = String(event?.summary || "").toLowerCase();
-  if (event?.category === "deletions" || summary.includes("no longer on disk") || summary.includes("recycle bin")) {
-    return { label: "Deletion", tone: "deletion" };
-  }
-  if (summary.includes("download")) return { label: "Download", tone: "browser" };
-  if (summary.includes("program") || summary.includes("executed") || summary.includes("ran")) {
-    return { label: "Execution", tone: "execution" };
-  }
-  return { label: "Activity", tone: "neutral" };
-}
-
-function OverviewTab({ verdict, problems, review, formatGmtPlus3 }) {
+function SummaryTab({ verdict, problems, review, report, formatGmtPlus3 }) {
   const activity = review.last_computer_activity ?? {};
   const deletionCount = (activity.events ?? []).filter((event) => {
     const summary = String(event.summary || "").toLowerCase();
     return event.category === "deletions" || summary.includes("no longer on disk");
   }).length;
+  const defenderView = defenderSummary(report.security_integrity_signals?.defender);
+
   return (
     <>
       <div className="ws-bento">
@@ -181,145 +114,53 @@ function OverviewTab({ verdict, problems, review, formatGmtPlus3 }) {
           <h3>{verdict.label}</h3>
           <p>{verdict.blurb}</p>
         </section>
-        <section className="ws-bento__meter" aria-label={`Overall concern level ${verdict.combined} out of 100`}>
+        <section className="ws-bento__meter" aria-label={`Concern level ${verdict.combined} out of 100`}>
           <strong>{verdict.combined}</strong>
           <span>concern level</span>
         </section>
       </div>
 
       <section className="ws-metrics">
-        <SimpleStat label="Warning signs" value={problems.length} hint="Expand below" />
-        <SimpleStat label="Timeline events" value={activity.event_count ?? 0} hint="Chronological" />
-        <SimpleStat
-          label="Evidence chains"
-          value={review.evidence_chains?.chain_count ?? 0}
-          hint="Multi-trace"
-        />
-        <SimpleStat label="Deleted traces" value={deletionCount} hint="Still logged" />
-        <SimpleStat label="Word matches" value={review.string_detection?.hit_count ?? 0} hint="In logs" />
-      </section>
-
-      <section className="ws-panel">
-        <PanelHeader icon="list_checks" title="What stood out" text="Main signals for this case, in plain words." />
-        <div className="ws-panel__body">
-          {problems.length ? (
-            <div>
-              {problems.slice(0, 12).map((problem) => (
-                <ProblemCard key={problem.id} problem={problem} />
-              ))}
-            </div>
-          ) : (
-            <div className="ws-empty-state">
-              <MaterialIcon name="check_circle" size={24} />
-              <p>Nothing concerning jumped out on this scan.</p>
-            </div>
-          )}
+        <div className="ws-metric">
+          <strong>{problems.length}</strong>
+          <span>warning signs</span>
+        </div>
+        <div className="ws-metric">
+          <strong>{review.evidence_chains?.chain_count ?? 0}</strong>
+          <span>linked traces</span>
+        </div>
+        <div className="ws-metric">
+          <strong>{deletionCount}</strong>
+          <span>deletions logged</span>
+        </div>
+        <div className="ws-metric">
+          <strong>{review.download_history?.suspicious_count ?? 0}</strong>
+          <span>flagged downloads</span>
         </div>
       </section>
-    </>
-  );
-}
 
-function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 }) {
-  const block = review.last_computer_activity ?? {};
-  const [activityFilter, setActivityFilter] = useState("all");
-  let events = block.events ?? [];
-  if (!events.length && (activity?.events ?? []).length) {
-    events = (activity.events ?? [])
-      .filter((e) => e.occurred_at || e.category === "execution" || e.time_unknown)
-      .map((e) => ({
-        occurred_at: e.occurred_at,
-        summary: activityEventSummary(e),
-        path: e.path,
-        category: e.category,
-        filter: classifyActivityFilter(e),
-        time_unknown: e.time_unknown,
-        timestamp_source: e.timestamp_source,
-      }));
-  }
-  events = events.filter((event) => classifyActivityFilter(event) !== "other");
-  const counts = ACTIVITY_FILTERS.reduce((acc, row) => {
-    acc[row.id] =
-      row.id === "all"
-        ? events.length
-        : events.filter((event) => classifyActivityFilter(event) === row.id).length;
-    return acc;
-  }, {});
-  const shown =
-    activityFilter === "all"
-      ? events
-      : events.filter((event) => classifyActivityFilter(event) === activityFilter);
-  shown.sort((a, b) => {
-    const aSusp = classifyActivityFilter(a) === "executors" || a.suspicious ? 1 : 0;
-    const bSusp = classifyActivityFilter(b) === "executors" || b.suspicious ? 1 : 0;
-    if (aSusp !== bSusp) return bSusp - aSusp;
-    const aMs = a.occurred_at ? new Date(a.occurred_at).getTime() : 0;
-    const bMs = b.occurred_at ? new Date(b.occurred_at).getTime() : 0;
-    return bMs - aMs;
-  });
-
-  return (
-    <section className="ws-panel">
-      <PanelHeader
-        icon="history"
-        title="Recent activity"
-        text="Flagged events only, newest first."
-      />
-      <div className="ws-panel__body">
-      <div className="ws-filter-row">
-        {ACTIVITY_FILTERS.map((row) => (
-          <button
-            key={row.id}
-            type="button"
-            className={activityFilter === row.id ? "active" : ""}
-            onClick={() => setActivityFilter(row.id)}
-          >
-            {row.label} ({counts[row.id] ?? 0})
-          </button>
-        ))}
-      </div>
-      {(block.milestones ?? []).length ? (
-        <ul className="simple-milestones">
-          {block.milestones.map((m) => (
-            <li key={`${m.label}-${m.occurred_at}`}>
-              <time>{formatGmtPlus3(m.occurred_at)}</time>
-              <strong>{m.label}</strong>
-              <span>{m.summary}</span>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-      {shown.length ? (
-        <ul className="ws-timeline">
-          {shown.map((event, index) => {
-            const badge = activityEventBadge(event);
-            return (
-            <li key={`${event.path}-${event.occurred_at}-${index}`}>
-              <time>{event.occurred_at ? formatGmtPlus3(event.occurred_at) : "—"}</time>
-              <div>
-                <span className="ws-tag">{badge.label}</span>
-                <p>{event.summary || "Activity recorded"}</p>
-                {event.timestamp_source && event.occurred_at ? (
-                  <p className="muted small-note">
-                    Time from {event.timestamp_source.replace(/_/g, " ")}
-                  </p>
-                ) : null}
-                {event.gap_human ? (
-                  <p className="muted">
-                    Recycle Bin emptied <strong>{event.gap_human}</strong> after this delete.
-                  </p>
-                ) : null}
-                <LocationHint row={event} path={event.path} />
-              </div>
-            </li>
-            );
-          })}
-        </ul>
+      {problems.length ? (
+        <section className="ws-panel">
+          <PanelHeader icon="priority_high" title="Top concerns" text="Most important items first." />
+          <div className="ws-panel__body">
+            {problems.slice(0, 5).map((problem, index) => (
+              <FindingRow key={problem.id} problem={problem} defaultOpen={index === 0} />
+            ))}
+          </div>
+        </section>
       ) : (
-        <p className="muted">No activity in this filter.</p>
+        <div className="ws-empty-state">
+          <MaterialIcon name="check_circle" size={28} />
+          <p>Nothing concerning stood out on this scan.</p>
+        </div>
       )}
-      </div>
-    </section>
+
+      {defenderView.available ? (
+        <section className="ws-panel ws-panel--compact">
+          <PanelHeader icon="shield" title="Windows security" text={defenderView.statusLabel} />
+        </section>
+      ) : null}
+    </>
   );
 }
 
@@ -329,370 +170,361 @@ const CHAIN_ACTION_LABELS = {
   downloaded: "Downloaded",
   deleted: "Deleted",
   on_disk: "On disk",
-  known_hash: "Known hash",
+  known_hash: "Known match",
   removed_trace: "Trace remains",
-  filesystem: "Filesystem",
-  correlated: "Correlated",
+  filesystem: "File system",
+  correlated: "Linked",
   traced: "Traced",
 };
 
-function EvidenceChainsTab({ review, formatGmtPlus3 }) {
-  const block = review.evidence_chains ?? {};
-  const chains = block.chains ?? [];
-  const [onlyHigh, setOnlyHigh] = useState(false);
-  const shown = onlyHigh ? chains.filter((c) => c.confidence === "high") : chains;
+function FindingsTab({ problems, review, formatGmtPlus3 }) {
+  const chains = review.evidence_chains?.chains ?? [];
+  const programs = (review.executable_inventory?.items ?? []).filter((row) => row.suspicious);
+  const sortedChains = [...chains].sort((a, b) => {
+    const aHigh = a.confidence === "high" ? 0 : 1;
+    const bHigh = b.confidence === "high" ? 0 : 1;
+    return aHigh - bHigh;
+  });
 
   return (
-    <section className="ws-panel">
-      <PanelHeader
-        icon="git_branch"
-        title="Evidence chains"
-        text="Related traces grouped when multiple signals agree."
-      />
-      <div className="ws-panel__body">
-      <div className="ws-filter-row">
-        <button type="button" className={!onlyHigh ? "active" : ""} onClick={() => setOnlyHigh(false)}>
-          All chains ({block.chain_count ?? chains.length})
-        </button>
-        <button type="button" className={onlyHigh ? "active" : ""} onClick={() => setOnlyHigh(true)}>
-          High confidence ({chains.filter((c) => c.confidence === "high").length})
-        </button>
-      </div>
-      {shown.length ? (
-        <ul className="simple-chain-list">
-          {shown.map((chain) => (
-            <li key={chain.stem} className={`simple-chain-card simple-chain-card--${chain.confidence || "medium"}`}>
-              <div className="simple-chain-head">
-                <strong>{chain.labels?.length ? chain.labels.join(", ") : chain.stem}</strong>
-                <span className={`simple-chain-badge simple-chain-badge--${chain.confidence || "medium"}`}>
-                  {chain.confidence === "high" ? "High confidence" : "Medium"}
-                </span>
-              </div>
-              <p>{chain.summary}</p>
-              <ol className="simple-chain-steps">
-                {(chain.steps ?? []).map((step, index) => (
-                  <li key={`${step.source}-${step.path}-${index}`}>
-                    <div className="simple-chain-step-meta">
-                      <span className="simple-chain-step-action">
-                        {CHAIN_ACTION_LABELS[step.action] || step.action}
-                      </span>
-                      <time>{step.occurred_at ? formatGmtPlus3(step.occurred_at) : "Time unknown"}</time>
-                    </div>
-                    <p>{step.detail}</p>
-                    <LocationHint row={step} path={step.path} />
-                  </li>
-                ))}
-              </ol>
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <div className="ws-empty-state">
-          <MaterialIcon name="check_circle" size={28} />
-          <p>No multi-trace evidence chains on this scan.</p>
+    <>
+      <section className="ws-panel">
+        <PanelHeader icon="list_checks" title="Warning signs" text="Sorted by importance." />
+        <div className="ws-panel__body">
+          {problems.length ? (
+            problems.map((problem) => <FindingRow key={problem.id} problem={problem} />)
+          ) : (
+            <p className="muted">No warning signs on this scan.</p>
+          )}
         </div>
-      )}
-      </div>
-    </section>
+      </section>
+
+      {sortedChains.length ? (
+        <section className="ws-panel">
+          <PanelHeader icon="git_branch" title="Linked traces" text="Related activity grouped together." />
+          <div className="ws-panel__body">
+            <ul className="simple-chain-list">
+              {sortedChains.map((chain) => (
+                <li key={chain.stem} className={`simple-chain-card simple-chain-card--${chain.confidence || "medium"}`}>
+                  <div className="simple-chain-head">
+                    <strong>{chain.labels?.length ? chain.labels.join(", ") : "Related activity"}</strong>
+                    <SeverityBadge
+                      severity={chain.confidence === "high" ? "high" : "medium"}
+                      compact
+                    />
+                  </div>
+                  <p>{chain.summary}</p>
+                  <ol className="simple-chain-steps">
+                    {(chain.steps ?? []).map((step, index) => (
+                      <li key={`${step.source}-${step.path}-${index}`}>
+                        <div className="simple-chain-step-meta">
+                          <span className="simple-chain-step-action">
+                            {CHAIN_ACTION_LABELS[step.action] || step.action}
+                          </span>
+                          <time>{step.occurred_at ? formatGmtPlus3(step.occurred_at) : "Time unknown"}</time>
+                        </div>
+                        <p>{step.detail}</p>
+                        <LocationHint row={step} path={step.path} />
+                      </li>
+                    ))}
+                  </ol>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </section>
+      ) : null}
+
+      {programs.length ? (
+        <section className="ws-panel">
+          <PanelHeader icon="file_code" title="Flagged programs" text="Files that matched review rules." />
+          <div className="ws-panel__body">
+            <ul className="simple-program-list">
+              {programs.slice(0, 30).map((row, index) => (
+                <li key={`${row.path}-${index}`} className="simple-program--warn">
+                  <div>
+                    <strong>{row.name || row.file_name || "File"}</strong>
+                    {row.labels?.length ? (
+                      <span className="simple-tag">{publicFindingLabels(row.labels).join(", ")}</span>
+                    ) : null}
+                    <p className="muted">
+                      {row.file_exists === false ? "Removed from disk · " : ""}
+                      Last seen {row.last_seen ? formatGmtPlus3(row.last_seen) : "unknown"}
+                    </p>
+                  </div>
+                  <LocationHint row={row} path={row.path} />
+                </li>
+              ))}
+            </ul>
+          </div>
+        </section>
+      ) : null}
+    </>
   );
 }
 
-function AccountsTab({ report, token, formatGmtPlus3 }) {
-  const roblox = report.application_diagnostics?.roblox ?? {};
-  const discord = report.application_diagnostics?.discord ?? {};
-  const robloxIds = roblox.aggregate_user_ids ?? (roblox.accounts ?? []).map((a) => a.user_id).filter(Boolean);
-  const discordAccounts = discord.accounts ?? [];
+const ACTIVITY_VIEWS = [
+  { id: "timeline", label: "Timeline" },
+  { id: "downloads", label: "Downloads" },
+  { id: "programs", label: "Programs run" },
+];
 
-  return (
-    <section className="ws-panel">
-      <PanelHeader
-        icon="users"
-        title="Linked accounts"
-        text="Accounts found on this device. Usernames and profile links only."
-      />
-      <div className="ws-panel__body">
-      <h5 className="simple-subhead">Game accounts</h5>
-      {robloxIds.length ? (
-        <p className="muted panel-intro">{robloxIds.length} account(s) on this device.</p>
-      ) : (
-        <p className="muted">No game accounts were found.</p>
-      )}
-      <h5 className="simple-subhead">Chat accounts</h5>
-      {discordAccounts.length ? (
-        <ul className="simple-program-list">
-          {discordAccounts.map((account) => (
-            <li key={account.user_id}>
-              <div>
-                <strong>{account.display_name || `User ${account.user_id}`}</strong>
-                <p className="muted">Discord ID {account.user_id}</p>
-              </div>
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p className="muted">No chat accounts were found in local client data.</p>
-      )}
-      </div>
-    </section>
-  );
-}
+function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 }) {
+  const [view, setView] = useState("timeline");
+  const block = review.last_computer_activity ?? {};
+  let events = block.events ?? [];
+  if (!events.length && (activity?.events ?? []).length) {
+    events = (activity.events ?? [])
+      .filter((e) => e.occurred_at || e.category === "execution" || e.time_unknown)
+      .map((e) => ({
+        occurred_at: e.occurred_at,
+        summary: activityEventSummary(e),
+        path: e.path,
+        category: e.category,
+        time_unknown: e.time_unknown,
+      }));
+  }
+  events = [...events].sort((a, b) => {
+    const aMs = a.occurred_at ? new Date(a.occurred_at).getTime() : 0;
+    const bMs = b.occurred_at ? new Date(b.occurred_at).getTime() : 0;
+    return bMs - aMs;
+  });
 
-function DownloadsTab({ review, formatGmtPlus3 }) {
-  const block = review.download_history ?? {};
-  const items = block.items ?? [];
-  const [onlyFlagged, setOnlyFlagged] = useState(false);
-  let shown = onlyFlagged ? items.filter((i) => i.suspicious) : items;
-  shown = [...shown].sort((a, b) => {
+  const downloads = [...(review.download_history?.items ?? [])].sort((a, b) => {
     if (a.suspicious !== b.suspicious) return a.suspicious ? -1 : 1;
     const aMs = a.started_at ? new Date(a.started_at).getTime() : 0;
     const bMs = b.started_at ? new Date(b.started_at).getTime() : 0;
     return bMs - aMs;
   });
 
+  const executions = [...(review.execution_activity?.items ?? [])].sort((a, b) => {
+    if (a.suspicious !== b.suspicious) return a.suspicious ? -1 : 1;
+    const aMs = a.occurred_at ? new Date(a.occurred_at).getTime() : 0;
+    const bMs = b.occurred_at ? new Date(b.occurred_at).getTime() : 0;
+    return bMs - aMs;
+  });
+
   return (
     <section className="ws-panel">
-      <PanelHeader icon="file_down" title="Download history" text="Browser downloads from this device." />
+      <PanelHeader icon="history" title="Activity" text="Recent events on this PC." />
       <div className="ws-panel__body">
-      <div className="simple-filter-row">
-        <button type="button" className={!onlyFlagged ? "active" : ""} onClick={() => setOnlyFlagged(false)}>
-          All downloads ({block.download_count ?? 0})
-        </button>
-        <button type="button" className={onlyFlagged ? "active" : ""} onClick={() => setOnlyFlagged(true)}>
-          Flagged ({block.suspicious_count ?? 0})
-        </button>
-      </div>
-      {shown.length ? (
-        <ul className="simple-timeline">
-          {shown.slice(0, 50).map((row, index) => (
-            <li
-              key={`${row.target_path}-${row.started_at}-${index}`}
-              className={row.suspicious ? "simple-timeline--warn" : ""}
+        <div className="ws-filter-row">
+          {ACTIVITY_VIEWS.map((row) => (
+            <button
+              key={row.id}
+              type="button"
+              className={view === row.id ? "active" : ""}
+              onClick={() => setView(row.id)}
             >
-              <time title={row.timestamp_label || "Download time"}>
-                {row.started_at ? formatGmtPlus3(row.started_at) : "Time unknown"}
-              </time>
-              <p>
-                <strong>{row.file_name || "Download"}</strong> via {row.browser || "browser"}
-                {row.state ? ` (${row.state})` : ""}
-              </p>
-              {row.executor_site ? (
-                <p className="muted">
-                  Downloaded from a site associated with <strong>{row.executor_site}</strong>
-                </p>
-              ) : null}
-              {row.matched_labels?.length ? (
-                <p className="muted">{publicFindingLabels(row.matched_labels).join(", ")}</p>
-              ) : null}
-              {row.url && row.suspicious ? (
-                <details className="simple-path-fold">
-                  <summary>Show download page link</summary>
-                  <code>{row.url}</code>
-                </details>
-              ) : null}
-              <LocationHint row={row} path={row.target_path} />
-            </li>
+              {row.label}
+            </button>
           ))}
-        </ul>
-      ) : (
-        <p className="muted">
-          No browser download records were read. The browser may be closed, profiles encrypted, or history cleared.
-        </p>
-      )}
-      </div>
-    </section>
-  );
-}
-
-function ExecutionTab({ review, formatGmtPlus3 }) {
-  const block = review.execution_activity ?? {};
-  const items = block.items ?? [];
-
-  return (
-    <section className="ws-panel">
-      <PanelHeader icon="play" title="Execution activity" text="Programs that appear to have run on this PC." />
-      <div className="ws-panel__body">
-      <p className="muted panel-intro">
-        {block.suspicious_count ?? 0} flagged · {block.event_count ?? 0} total runs traced
-      </p>
-      {items.length ? (
-        <ul className="simple-timeline">
-          {items.slice(0, 40).map((row, index) => (
-            <li
-              key={`${row.path}-${row.occurred_at}-${index}`}
-              className={row.suspicious ? "simple-timeline--warn" : ""}
-            >
-              <time>{row.occurred_at ? formatGmtPlus3(row.occurred_at) : "Time unknown"}</time>
-              <p>
-                <strong>{row.name || row.file_name || "Program"}</strong> {row.summary}
-              </p>
-              <LocationHint row={row} path={row.path} />
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p className="muted">No execution traces were recorded.</p>
-      )}
-      </div>
-    </section>
-  );
-}
-
-function ProgramsTab({ review, formatGmtPlus3 }) {
-  const block = review.executable_inventory ?? {};
-  const items = block.items ?? [];
-  const [onlyFlagged, setOnlyFlagged] = useState(true);
-  const shown = onlyFlagged ? items.filter((i) => i.suspicious) : items;
-
-  return (
-    <section className="ws-panel">
-      <PanelHeader icon="file_code" title="Program list" text="Executables found on this PC." />
-      <div className="ws-panel__body">
-      <div className="simple-filter-row">
-        <button
-          type="button"
-          className={onlyFlagged ? "active" : ""}
-          onClick={() => setOnlyFlagged(true)}
-        >
-          Flagged only ({block.suspicious_count ?? 0})
-        </button>
-        <button
-          type="button"
-          className={!onlyFlagged ? "active" : ""}
-          onClick={() => setOnlyFlagged(false)}
-        >
-          All found ({block.total_count ?? 0})
-        </button>
-      </div>
-      {shown.length ? (
-        <ul className="simple-program-list">
-          {shown.slice(0, 50).map((row, index) => (
-            <li key={`${row.path}-${index}`} className={row.suspicious ? "simple-program--warn" : ""}>
-              <div>
-                <strong>{row.name || row.file_name || "File"}</strong>
-                {row.labels?.length ? (
-                  <span className="simple-tag">{row.labels.slice(0, 2).join(", ")}</span>
-                ) : null}
-                <p className="muted">
-                  {row.file_exists === false ? "Removed from disk · " : ""}
-                  {row.sources?.includes("removed_artifact")
-                    ? "Recovered from system traces after Recycle Bin cleanup · "
-                    : ""}
-                  Last seen {row.last_seen ? formatGmtPlus3(row.last_seen) : "unknown"}
-                </p>
-              </div>
-              <LocationHint row={row} path={row.path} />
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p className="muted">No programs in this filter. Try showing all found.</p>
-      )}
-      </div>
-    </section>
-  );
-}
-
-function SecurityTab({ report, formatGmtPlus3 }) {
-  const sec = report.security_integrity_signals ?? {};
-  const defenderView = defenderSummary(sec.defender);
-  const quarantine = defenderView.quarantine ?? [];
-  const serviceEvents = sec.windows_service_change_events?.events ?? [];
-  const psEvents = sec.powershell_operational_events?.events ?? [];
-
-  return (
-    <section className="ws-panel">
-      <PanelHeader icon="shield" title="Security" text="Defender status, quarantine, and system change logs." />
-      <div className="ws-panel__body">
-      {defenderView.available ? (
-        <p className={`simple-verdict-line simple-verdict-line--${defenderView.tone}`}>
-          {defenderView.statusLabel}
-        </p>
-      ) : (
-        <p className="muted">{defenderView.detail}</p>
-      )}
-      <div className="simple-stats-row">
-        <SimpleStat label="Threat records" value={defenderView.threatCount ?? 0} />
-        <SimpleStat label="Quarantine" value={defenderView.quarantineCount ?? 0} />
-        <SimpleStat label="PowerShell events" value={psEvents.length} />
-        <SimpleStat label="Service changes" value={serviceEvents.length} />
-      </div>
-      {quarantine.length ? (
-        <ul className="simple-timeline">
-          {quarantine.slice(0, 15).map((row, index) => (
-            <li key={`q-${index}`} className="simple-timeline--warn">
-              <time>{row.DetectionTime || row.InitialDetectionTime || "Unknown time"}</time>
-              <p>
-                <strong>{row.ThreatName || "Threat"}</strong>
-                {row.ProcessName ? ` — ${row.ProcessName}` : ""}
-              </p>
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p className="muted">No quarantine rows were recorded on this scan.</p>
-      )}
-      {serviceEvents.length ? (
-        <>
-          <h5 className="simple-subhead">Recent service changes</h5>
-          <ul className="simple-timeline">
-            {serviceEvents.slice(0, 8).map((row, index) => (
-              <li key={`svc-${index}`}>
-                <time>{row.TimeCreated ? formatGmtPlus3(row.TimeCreated) : "—"}</time>
-                <p>{(row.Message || "").slice(0, 200)}</p>
-              </li>
-            ))}
-          </ul>
-        </>
-      ) : null}
-      </div>
-    </section>
-  );
-}
-
-function StringsTab({ review, formatGmtPlus3 }) {
-  const block = review.string_detection ?? {};
-  const items = block.items ?? [];
-
-  return (
-    <section className="ws-panel">
-      <PanelHeader icon="search" title="Keyword matches" text="Review words found in logs and command history." />
-      <div className="ws-panel__body">
-      {items.length ? (
-        <ul className="simple-string-list">
-          {items.slice(0, 40).map((row, index) => (
-            <li key={`${row.file_path}-${index}`}>
-              <p className="simple-string-snippet">"{row.snippet}"</p>
-              <p className="muted">
-                Suspicious text pattern detected
-                {row.occurred_at ? ` · ${formatGmtPlus3(row.occurred_at)}` : ""}
-              </p>
-              <LocationHint row={row} path={row.file_path} />
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <div className="ws-empty-state">
-          <MaterialIcon name="check_circle" size={28} />
-          <p>No keyword matches in scanned text.</p>
         </div>
-      )}
+
+        {view === "timeline" ? (
+          events.length ? (
+            <ul className="ws-timeline">
+              {events.slice(0, 40).map((event, index) => (
+                <li key={`${event.path}-${event.occurred_at}-${index}`}>
+                  <time>{event.occurred_at ? formatGmtPlus3(event.occurred_at) : "—"}</time>
+                  <div>
+                    <p>{event.summary || "Activity recorded"}</p>
+                    <LocationHint row={event} path={event.path} />
+                  </div>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="muted">No timeline events on this scan.</p>
+          )
+        ) : null}
+
+        {view === "downloads" ? (
+          downloads.length ? (
+            <ul className="simple-timeline">
+              {downloads.slice(0, 40).map((row, index) => (
+                <li
+                  key={`${row.target_path}-${row.started_at}-${index}`}
+                  className={row.suspicious ? "simple-timeline--warn" : ""}
+                >
+                  <time>{row.started_at ? formatGmtPlus3(row.started_at) : "—"}</time>
+                  <p>
+                    <strong>{row.file_name || "Download"}</strong> via {row.browser || "browser"}
+                  </p>
+                  {row.matched_labels?.length ? (
+                    <p className="muted">{publicFindingLabels(row.matched_labels).join(", ")}</p>
+                  ) : null}
+                  <LocationHint row={row} path={row.target_path} />
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="muted">No download history found.</p>
+          )
+        ) : null}
+
+        {view === "programs" ? (
+          executions.length ? (
+            <ul className="simple-timeline">
+              {executions.slice(0, 40).map((row, index) => (
+                <li
+                  key={`${row.path}-${row.occurred_at}-${index}`}
+                  className={row.suspicious ? "simple-timeline--warn" : ""}
+                >
+                  <time>{row.occurred_at ? formatGmtPlus3(row.occurred_at) : "—"}</time>
+                  <p>
+                    <strong>{row.name || row.file_name || "Program"}</strong> {row.summary}
+                  </p>
+                  <LocationHint row={row} path={row.path} />
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="muted">No program execution traces found.</p>
+          )
+        ) : null}
       </div>
     </section>
   );
 }
 
-export function SimpleResults({
-  report,
-  summary,
-  activity,
-  activityEventSummary,
-  formatGmtPlus3,
-  token,
-  onExpertMode,
-  onDownload,
-  onPrintPdf,
-}) {
-  const [tab, setTab] = useState("overview");
+function robloxHeadshotUrl(account) {
+  return account.headshot_url || null;
+}
+
+function discordAvatarUrl(account) {
+  const userId = String(account.user_id || "");
+  if (!userId) return null;
+  const hash = account.avatar_hash;
+  if (hash) return `https://cdn.discordapp.com/avatars/${userId}/${hash}.png?size=128`;
+  const avatarIndex = (BigInt(userId) >> 22n) % 6n;
+  return `https://cdn.discordapp.com/embed/avatars/${avatarIndex}.png`;
+}
+
+function AccountsTab({ report, token }) {
+  const roblox = report.application_diagnostics?.roblox ?? {};
+  const discord = report.application_diagnostics?.discord ?? {};
+  const robloxAccounts = useMemo(() => collectRobloxAccountsFromReport(roblox), [roblox]);
+  const discordAccounts = useMemo(
+    () => collectDiscordAccountsFromReport(discord, report),
+    [discord, report],
+  );
+  const [profiles, setProfiles] = useState({});
+
+  useEffect(() => {
+    const userIds = robloxAccounts.map((a) => a.user_id).filter(Boolean);
+    if (!token || !userIds.length) {
+      setProfiles({});
+      return undefined;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await fetch(`${API_URL}/roblox/profiles`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ user_ids: userIds }),
+        });
+        if (!response.ok || cancelled) return;
+        const payload = await response.json();
+        const next = {};
+        for (const profile of payload.profiles ?? []) {
+          if (profile?.user_id) next[String(profile.user_id)] = profile;
+        }
+        if (!cancelled) setProfiles(next);
+      } catch {
+        if (!cancelled) setProfiles({});
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [robloxAccounts, token]);
+
+  return (
+    <>
+      <section className="ws-panel">
+        <PanelHeader
+          icon="sports_esports"
+          title="Roblox accounts"
+          text="Found in the game client, browser, or local storage."
+        />
+        <div className="ws-panel__body">
+          {robloxAccounts.length ? (
+            <div className="ws-account-grid">
+              {robloxAccounts.slice(0, 24).map((account) => {
+                const resolved = profiles[account.user_id] ?? {};
+                const displayName = account.username || resolved.username || `Account ${account.user_id}`;
+                const avatar = robloxHeadshotUrl({ ...account, headshot_url: resolved.headshot_url });
+                return (
+                  <a
+                    key={account.user_id}
+                    href={`https://www.roblox.com/users/${encodeURIComponent(account.user_id)}/profile`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="ws-account-card"
+                  >
+                    {avatar ? (
+                      <img src={avatar} alt="" className="ws-account-card__avatar" loading="lazy" />
+                    ) : (
+                      <span className="ws-account-card__avatar" aria-hidden />
+                    )}
+                    <span className="ws-account-card__body">
+                      <span className="ws-account-card__name">{displayName}</span>
+                      <span className="ws-account-card__link">View profile</span>
+                    </span>
+                  </a>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="muted">No Roblox accounts found on this device.</p>
+          )}
+        </div>
+      </section>
+
+      <section className="ws-panel">
+        <PanelHeader
+          icon="forum"
+          title="Discord accounts"
+          text="Found in the Discord app or browser login."
+        />
+        <div className="ws-panel__body">
+          {discordAccounts.length ? (
+            <div className="ws-account-grid">
+              {discordAccounts.slice(0, 24).map((account) => {
+                const userId = String(account.user_id || "");
+                const displayName = account.display_name || `User ${userId}`;
+                const avatar = account.avatar_url || discordAvatarUrl(account);
+                return (
+                  <div key={userId} className="ws-account-card ws-account-card--static">
+                    {avatar ? (
+                      <img src={avatar} alt="" className="ws-account-card__avatar" loading="lazy" />
+                    ) : (
+                      <span className="ws-account-card__avatar" aria-hidden />
+                    )}
+                    <span className="ws-account-card__body">
+                      <span className="ws-account-card__name">{displayName}</span>
+                      <span className="ws-account-card__link">Discord account</span>
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="muted">No Discord accounts found on this device.</p>
+          )}
+        </div>
+      </section>
+    </>
+  );
+}
+
+export function SimpleResults({ report, summary, activity, activityEventSummary, formatGmtPlus3, token }) {
+  const [tab, setTab] = useState("summary");
   const sec = report.security_integrity_signals ?? {};
   const bypass = sec.bypass_resilience ?? {};
   const review = useMemo(() => scanReviewFromReport(report), [report]);
@@ -700,18 +532,37 @@ export function SimpleResults({
     () => simpleVerdict(summary.score, bypass.risk_score ?? 0),
     [summary.score, bypass.risk_score],
   );
-  const problems = useMemo(() => buildSimpleProblems(report, summary), [report, summary]);
+  const problems = useMemo(() => buildProblems(report, summary), [report, summary]);
 
   return (
     <div className="ws-simple">
+      <nav className="ws-review-nav" aria-label="Review sections">
+        {TABS.map(({ id, label, icon }) => (
+          <button
+            key={id}
+            type="button"
+            className={`ws-review-nav__tab ${tab === id ? "ws-review-nav__tab--active" : ""}`}
+            onClick={() => setTab(id)}
+          >
+            <MaterialIcon name={icon} size={16} />
+            {label}
+          </button>
+        ))}
+      </nav>
+
       <div className="ws-simple__content">
-        {tab === "overview" ? (
-          <OverviewTab verdict={verdict} problems={problems} review={review} formatGmtPlus3={formatGmtPlus3} />
+        {tab === "summary" ? (
+          <SummaryTab
+            verdict={verdict}
+            problems={problems}
+            review={review}
+            report={report}
+            formatGmtPlus3={formatGmtPlus3}
+          />
         ) : null}
-        {tab === "accounts" ? (
-          <AccountsTab report={report} token={token} formatGmtPlus3={formatGmtPlus3} />
+        {tab === "findings" ? (
+          <FindingsTab problems={problems} review={review} formatGmtPlus3={formatGmtPlus3} />
         ) : null}
-        {tab === "chains" ? <EvidenceChainsTab review={review} formatGmtPlus3={formatGmtPlus3} /> : null}
         {tab === "activity" ? (
           <ActivityTab
             review={review}
@@ -720,26 +571,8 @@ export function SimpleResults({
             formatGmtPlus3={formatGmtPlus3}
           />
         ) : null}
-        {tab === "downloads" ? <DownloadsTab review={review} formatGmtPlus3={formatGmtPlus3} /> : null}
-        {tab === "execution" ? <ExecutionTab review={review} formatGmtPlus3={formatGmtPlus3} /> : null}
-        {tab === "programs" ? <ProgramsTab review={review} formatGmtPlus3={formatGmtPlus3} /> : null}
-        {tab === "strings" ? <StringsTab review={review} formatGmtPlus3={formatGmtPlus3} /> : null}
-        {tab === "security" ? <SecurityTab report={report} formatGmtPlus3={formatGmtPlus3} /> : null}
+        {tab === "accounts" ? <AccountsTab report={report} token={token} /> : null}
       </div>
-
-      <nav className="ws-dock" aria-label="Report sections">
-        {TABS.map(({ id, label, icon }) => (
-          <button
-            key={id}
-            type="button"
-            className={`ws-dock__tab ${tab === id ? "ws-dock__tab--active" : ""}`}
-            onClick={() => setTab(id)}
-          >
-            <MaterialIcon name={icon} size={15} />
-            {label}
-          </button>
-        ))}
-      </nav>
     </div>
   );
 }

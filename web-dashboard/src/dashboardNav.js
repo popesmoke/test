@@ -1,86 +1,34 @@
-/** Expert-mode sidebar grouped by reviewer workflow (labels only — icons stay on sections). */
-export const EXPERT_NAV_GROUPS = [
-  {
-    id: "start",
-    label: "1 · Overview",
-    description: "Verdict, timeline, and recent PC activity.",
-    sectionIds: ["starter", "user-activity", "accounts"],
-  },
-  {
-    id: "evidence",
-    label: "2 · Findings",
-    description: "Deletes, flagged files, cover-up signs, and cross-source proof.",
-    sectionIds: ["deletions", "forensic-findings", "forensic-corr", "suspicious", "file-analysis", "bypass"],
-  },
-  {
-    id: "system",
-    label: "3 · System",
-    description: "OS traces, security, Roblox, and crash logs.",
-    sectionIds: ["security", "system", "registry", "memory", "roblox", "crash"],
-  },
-  {
-    id: "raw",
-    label: "4 · Deep dive",
-    description: "Extra detail for experienced reviewers.",
-    sectionIds: ["forensic-artifacts"],
-  },
-];
-
+/** Reviewer workspace navigation guide (streamlined single workflow). */
 export const SIMPLE_TAB_GUIDE = [
   {
-    id: "overview",
+    id: "summary",
     step: 1,
     title: "Summary",
-    summary: "Verdict, warning signs, and what to read first.",
-    searchHint: "Search concern level or problem titles.",
+    summary: "Overall assessment and the most important concerns.",
+    searchHint: "Check the concern level and top warning signs.",
   },
   {
-    id: "accounts",
+    id: "findings",
     step: 2,
-    title: "Linked accounts",
-    summary: "Roblox and Discord accounts found on this device.",
-    searchHint: "Search usernames.",
+    title: "Findings",
+    summary: "All warning signs, linked traces, and flagged programs.",
+    searchHint: "Review items sorted by importance.",
   },
   {
     id: "activity",
     step: 3,
-    title: "Activity timeline",
-    summary: "Suspicious activity in time order, highest priority first.",
-    searchHint: "Search program names, deleted, or file paths.",
+    title: "Activity",
+    summary: "Timeline, downloads, and programs that ran on this PC.",
+    searchHint: "Look for suspicious downloads or program runs.",
   },
   {
-    id: "downloads",
+    id: "accounts",
     step: 4,
-    title: "Downloads",
-    summary: "Files downloaded in common browsers.",
-    searchHint: "Search file names or site labels.",
-  },
-  {
-    id: "execution",
-    step: 5,
-    title: "Programs run",
-    summary: "Programs that ran recently on this PC.",
-    searchHint: "Search program names or file paths.",
-  },
-  {
-    id: "programs",
-    step: 6,
-    title: "Program list",
-    summary: "Programs found on disk or still logged after delete.",
-    searchHint: "Filter flagged items or search for a name.",
-  },
-  {
-    id: "strings",
-    step: 7,
-    title: "Keyword matches",
-    summary: "Watch-list words found in logs and history.",
-    searchHint: "Search keywords from your watch lists.",
-  },
-  {
-    id: "security",
-    step: 8,
-    title: "Security & AV",
-    summary: "Defender status, quarantine, PowerShell log, and service changes.",
-    searchHint: "Search threat, quarantine, Defender, or service names.",
+    title: "Accounts",
+    summary: "Roblox and Discord accounts found on this device.",
+    searchHint: "Check linked game and chat accounts.",
   },
 ];
+
+/** @deprecated Expert mode removed — kept for tutorial compatibility. */
+export const EXPERT_NAV_GROUPS = [];

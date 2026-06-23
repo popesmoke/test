@@ -13,7 +13,9 @@ def main() -> int:
     if OUT_DIR.exists():
         shutil.rmtree(OUT_DIR)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(ROOT / "app.py", OUT_DIR / "app.py")
+    scanner_src = ROOT / "scanner_main.py"
+    app_src = scanner_src if scanner_src.is_file() else ROOT / "app.py"
+    shutil.copy2(app_src, OUT_DIR / "app.py")
     shutil.copy2(ROOT / "runtime_config.py", OUT_DIR / "runtime_config.py")
     for module_name in ("evidence_engine.py", "roblox_runtime.py"):
         module_path = ROOT / module_name

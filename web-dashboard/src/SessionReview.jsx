@@ -2,11 +2,11 @@ import React, { useEffect, useState } from "react";
 import { MaterialIcon } from "./components/MaterialIcon.jsx";
 
 const VERDICTS = [
-  { id: "", label: "No verdict" },
+  { id: "", label: "Not decided" },
   { id: "cleared", label: "Cleared" },
   { id: "suspicious", label: "Suspicious" },
   { id: "ban", label: "Ban" },
-  { id: "follow-up", label: "Follow-up" },
+  { id: "follow-up", label: "Needs follow-up" },
 ];
 
 export function SessionReview({ detail, apiUrl, token, authHeaders, onSaved, variant = "inline" }) {
@@ -46,7 +46,7 @@ export function SessionReview({ detail, apiUrl, token, authHeaders, onSaved, var
   return (
     <section className={`session-review session-review--${variant}`}>
       <label className="session-review__field">
-        <span>Verdict</span>
+        <span>Your decision</span>
         <select value={verdict} onChange={(e) => setVerdict(e.target.value)}>
           {VERDICTS.map((item) => (
             <option key={item.id || "none"} value={item.id}>
@@ -56,7 +56,7 @@ export function SessionReview({ detail, apiUrl, token, authHeaders, onSaved, var
         </select>
       </label>
       <label className="session-review__field session-review__field--grow">
-        <span>Reviewer note</span>
+        <span>Note</span>
         {variant === "inspector" ? (
           <textarea
             rows={3}

@@ -8,10 +8,10 @@ export function formatReviewPath(path) {
   const raw = String(path || "").replace(/\//g, "\\").trim();
   if (!raw) return "";
   const userMatch = raw.match(/^[A-Za-z]:\\Users\\[^\\]+\\(.+)$/i);
-  if (userMatch) return userMatch[1];
+  if (userMatch) return `%USERPROFILE%\\${userMatch[1]}`;
   const driveMatch = raw.match(/^[A-Za-z]:\\(.+)$/i);
   if (driveMatch && !driveMatch[1].toLowerCase().startsWith("windows\\")) {
-    return driveMatch[1];
+    return `%USERPROFILE%\\${driveMatch[1]}`;
   }
   return raw;
 }
@@ -300,8 +300,13 @@ export function sanitizeScanReview(review) {
 export function formatDisplayLocation(row) {
   const name = row?.name || row?.file_name;
   const hint = row?.location_hint;
-  if (name && hint) return `${name} (${hint})`;
-  return name || hint || null;
+  const path = row?.path || row?.target_path || row?.file_path;
+  if (path) {
+    const formatted = formatReviewPath(path);
+    if (formatted) return formatted;
+  }
+  if (name && hint) return `%USERPROFILE%\\${hint}\\${name}`;
+  return name || (hint ? `%USERPROFILE%\\${hint}` : null);
 }
 
 export function shortActivityPath(path) {
