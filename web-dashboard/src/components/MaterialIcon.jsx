@@ -56,11 +56,11 @@ const ICONS8_SLUGS = {
   gpp_maybe: "privacy",
   play: "play",
   list_checks: "checklist",
-  git_branch: "git",
+  git_branch: "link",
   file_code: "source-code",
   file_down: "download-from-cloud",
   users: "conference-call",
-  shield_alert: "high-risk",
+  shield_alert: "high-importance",
   alert_triangle: "warning-shield",
   help_circle: "help",
   check_circle: "checkmark",
@@ -73,7 +73,7 @@ const ICONS8_SLUGS = {
 };
 
 function icons8Url(slug, size) {
-  return `https://img.icons8.com/windows/${size}/${slug}.png`;
+  return `https://img.icons8.com/ios-glyphs/${size}/ffffff/${slug}.png`;
 }
 
 export function MaterialIcon({ name, size = 20, className = "" }) {
