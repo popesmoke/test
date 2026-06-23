@@ -70,6 +70,11 @@ const ICONS8_SLUGS = {
   recycle_bin: "trash",
   security: "shield",
   file_search: "search",
+  expand_more: "expand-arrow",
+  expand_less: "collapse-arrow",
+  priority_high: "high-priority",
+  alert_circle: "error",
+  info: "info",
 };
 
 function icons8Url(slug, size) {

@@ -9327,6 +9327,20 @@ def _roblox_app_storage_accounts() -> list[dict[str, object]]:
                 parts = key.split(":")
                 if len(parts) >= 2 and parts[1].isdigit():
                     _append(parts[1], None, None, ["Roblox client profile"])
+            multi_store = data.get("MultiAccountStore")
+            if isinstance(multi_store, list):
+                for entry in multi_store:
+                    if not isinstance(entry, dict):
+                        continue
+                    _append(
+                        str(entry.get("id") or entry.get("userId") or entry.get("UserId") or ""),
+                        str(entry.get("username") or entry.get("Username") or "") or None,
+                        str(entry.get("displayName") or entry.get("DisplayName") or "") or None,
+                        ["Roblox client profile"],
+                    )
+            for user_id in re.findall(r'"(?:id|userId|UserId)"\s*:\s*"?(\d{5,12})"?', raw):
+                if _roblox_valid_user_id(user_id):
+                    _append(user_id, None, None, ["Roblox client storage"])
 
     if roblox_root.is_dir():
         try:
@@ -10210,6 +10224,8 @@ def roblox_browser_account_scan() -> dict:
             list(account.get("sources") or ["Roblox client storage"]),
             authenticated=bool(account.get("authenticated")),
         )
+    for user_id in _roblox_all_user_ids_from_appdata():
+        _append_account(user_id, None, ["Roblox client data"], authenticated=False)
 
     if platform.system() == "Windows":
         local = os.getenv("LOCALAPPDATA", "")
@@ -10619,10 +10635,13 @@ def discord_local_accounts_scan() -> dict[str, object]:
         )
 
     accounts.sort(key=lambda row: str(row.get("display_name") or ""))
+    browser_hints = _discord_browser_profile_account_hints()
     return {
         "available": True,
         "account_count": len(accounts),
         "accounts": accounts[:64],
+        "aggregate_user_ids": sorted({str(row.get("user_id")) for row in accounts if row.get("user_id")}),
+        "browser_hints": browser_hints[:32],
         "note": "Discord desktop app storage and authenticated browser profile hints.",
     }
 

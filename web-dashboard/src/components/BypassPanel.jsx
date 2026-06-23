@@ -1,7 +1,7 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo } from "react";
 import { MaterialIcon } from "./MaterialIcon.jsx";
 import { SeverityBadge } from "./SeverityBadge.jsx";
-import { buildBypassReport, BYPASS_TECHNIQUES } from "../bypassDetection.js";
+import { buildBypassReport } from "../bypassDetection.js";
 
 function PanelHeader({ icon, title, text }) {
   return (
@@ -23,15 +23,12 @@ function BypassFindingRow({ finding }) {
           <strong>{finding.title}</strong>
           <p className="muted">{finding.techniqueLabel}</p>
         </div>
-        <SeverityBadge severity={finding.severity || "medium"} compact />
+        <SeverityBadge severity={finding.severity || "medium"} compact showIcon={false} />
       </div>
       <p className="ws-bypass-action">
-        <span className="ws-bypass-action__label">What they did</span>
+        <span className="ws-bypass-action__label">What happened</span>
         {finding.whatTheyDid}
       </p>
-      {finding.detail && finding.detail !== finding.whatTheyDid ? (
-        <p className="ws-bypass-finding__detail muted">{finding.detail}</p>
-      ) : null}
     </article>
   );
 }
@@ -39,7 +36,6 @@ function BypassFindingRow({ finding }) {
 export function BypassPanel({ report }) {
   const bypass = report?.security_integrity_signals?.bypass_resilience ?? {};
   const view = useMemo(() => buildBypassReport(bypass), [bypass]);
-  const [showMonitored, setShowMonitored] = useState(false);
 
   const riskTone =
     view.riskLevel === "high" ? "bad" : view.riskLevel === "medium" ? "watch" : "clean";
@@ -48,17 +44,17 @@ export function BypassPanel({ report }) {
     <>
       <section className={`ws-bypass-hero ws-bypass-hero--${riskTone}`}>
         <div>
-          <p className="ws-bypass-hero__label">Bypass detection</p>
-          <h3>{view.findingCount ? "Suspicious hiding activity found" : "No bypass attempts detected"}</h3>
+          <p className="ws-bypass-hero__label">Hiding activity</p>
+          <h3>{view.findingCount ? "Signs of hiding activity found" : "No hiding activity detected"}</h3>
           <p className="muted">
             {view.findingCount
-              ? `${view.findingCount} signal${view.findingCount === 1 ? "" : "s"} across ${view.detected.length} technique${view.detected.length === 1 ? "" : "s"}.`
-              : "Windows logging, Defender, shell history, and forensic traces all looked normal."}
+              ? `${view.findingCount} concern${view.findingCount === 1 ? "" : "s"} found across ${view.detected.length} area${view.detected.length === 1 ? "" : "s"}.`
+              : "Nothing suggested that someone tried to hide or clean up suspicious activity."}
           </p>
         </div>
-        <div className="ws-bypass-hero__meter" aria-label={`Bypass risk ${view.riskScore} out of 100`}>
+        <div className="ws-bypass-hero__meter" aria-label={`Concern level ${view.riskScore} out of 100`}>
           <strong>{view.riskScore}</strong>
-          <span>bypass risk</span>
+          <span>concern level</span>
         </div>
       </section>
 
@@ -66,8 +62,8 @@ export function BypassPanel({ report }) {
         <section className="ws-panel">
           <PanelHeader
             icon="shield_alert"
-            title="Detected bypass activity"
-            text="Each item explains what was done and which evasion category it matches."
+            title="Detected hiding activity"
+            text="Each item explains what looked unusual in plain language."
           />
           <div className="ws-panel__body">
             {view.detected.map((group) => (
@@ -79,7 +75,7 @@ export function BypassPanel({ report }) {
                     <p className="muted">{group.technique.description}</p>
                   </div>
                   <span className="ws-bypass-group__count">
-                    {group.findings.length} hit{group.findings.length === 1 ? "" : "s"}
+                    {group.findings.length} item{group.findings.length === 1 ? "" : "s"}
                   </span>
                 </header>
                 <div className="ws-bypass-finding-list">
@@ -94,28 +90,9 @@ export function BypassPanel({ report }) {
       ) : (
         <div className="ws-empty-state">
           <MaterialIcon name="verified_user" size={28} />
-          <p>No signs of log wiping, Defender tampering, or trace cleanup on this scan.</p>
+          <p>No signs of log wiping, security changes, or trace cleanup on this scan.</p>
         </div>
       )}
-
-      <section className="ws-panel ws-panel--compact">
-        <button type="button" className="ws-bypass-monitored-toggle" onClick={() => setShowMonitored((v) => !v)}>
-          <MaterialIcon name={showMonitored ? "expand_less" : "expand_more"} size={18} />
-          <span>
-            {showMonitored ? "Hide" : "Show"} monitored bypass techniques ({BYPASS_TECHNIQUES.length})
-          </span>
-        </button>
-        {showMonitored ? (
-          <ul className="ws-bypass-monitored-list">
-            {view.monitored.map((technique) => (
-              <li key={technique.id}>
-                <strong>{technique.label}</strong>
-                <span className="muted">{technique.description}</span>
-              </li>
-            ))}
-          </ul>
-        ) : null}
-      </section>
     </>
   );
 }

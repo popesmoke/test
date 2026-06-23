@@ -22,7 +22,7 @@ export function CollapseCard({
           {subtitle ? <span className="ws-collapse-card__sub">{subtitle}</span> : null}
         </span>
         {badge}
-        <MaterialIcon name="expand_more" size={20} className="ws-collapse-card__chevron" />
+        <span className="ws-collapse-card__chevron" aria-hidden />
       </button>
       {open ? <div className="ws-collapse-card__content">{children}</div> : null}
     </article>

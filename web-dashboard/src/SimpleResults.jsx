@@ -11,14 +11,14 @@ import {
 import { CollapseCard } from "./components/CollapseCard.jsx";
 import { BypassPanel } from "./components/BypassPanel.jsx";
 import { buildBypassReport } from "./bypassDetection.js";
-import { genericReasonLabel, genericReasonDetail } from "./reviewerCopy.js";
+import { genericReasonLabel, genericReasonDetail, plainDisplayText } from "./reviewerCopy.js";
 
 const API_URL = import.meta.env.VITE_API_URL || "https://virello-secure.onrender.com";
 
 const TABS = [
   { id: "summary", label: "Summary", icon: "description" },
   { id: "findings", label: "Findings", icon: "shield_alert" },
-  { id: "bypass", label: "Bypass detection", icon: "gpp_maybe" },
+  { id: "bypass", label: "Hiding activity", icon: "gpp_maybe" },
   { id: "activity", label: "Activity", icon: "history" },
   { id: "accounts", label: "Accounts", icon: "users" },
 ];
@@ -26,7 +26,7 @@ const TABS = [
 const VERDICT_META = {
   clean: { label: "Looks clear", tone: "clean", blurb: "Nothing major stood out on this scan." },
   watch: { label: "Review recommended", tone: "watch", blurb: "Some warning signs need a closer look." },
-  bad: { label: "High concern", tone: "bad", blurb: "Multiple warning signs — review carefully." },
+  bad: { label: "High concern", tone: "bad", blurb: "Multiple warning signs. Review carefully." },
 };
 
 function simpleVerdict(score, bypassRisk) {
@@ -96,7 +96,7 @@ function ProgramGroup({ group, formatGmtPlus3 }) {
     latest ? `last seen ${formatGmtPlus3(latest)}` : null,
   ]
     .filter(Boolean)
-    .join(" · ");
+    .join(", ");
 
   return (
     <CollapseCard
@@ -124,7 +124,7 @@ function ProgramGroup({ group, formatGmtPlus3 }) {
 
 function LinkedTraceCard({ chain, formatGmtPlus3 }) {
   const steps = chain.steps ?? [];
-  const title = chain.labels?.length ? chain.labels.join(" · ") : "Related activity";
+  const title = chain.labels?.length ? chain.labels.join(", ") : "Related activity";
   const latest = steps.reduce((best, step) => {
     if (!step.occurred_at) return best;
     if (!best || step.occurred_at > best) return step.occurred_at;
@@ -135,7 +135,7 @@ function LinkedTraceCard({ chain, formatGmtPlus3 }) {
     latest ? `latest ${formatGmtPlus3(latest)}` : null,
   ]
     .filter(Boolean)
-    .join(" · ");
+    .join(", ");
 
   return (
     <CollapseCard
@@ -143,7 +143,7 @@ function LinkedTraceCard({ chain, formatGmtPlus3 }) {
       title={title}
       subtitle={subtitle}
       severity={chain.confidence === "high" ? "high" : "medium"}
-      badge={<SeverityBadge severity={chain.confidence === "high" ? "high" : "medium"} compact />}
+      badge={<SeverityBadge severity={chain.confidence === "high" ? "high" : "medium"} compact showIcon={false} />}
     >
       {chain.summary ? <p className="ws-collapse-list__lead">{chain.summary}</p> : null}
       <ol className="ws-collapse-steps">
@@ -311,6 +311,15 @@ const ACTIVITY_VIEWS = [
   { id: "programs", label: "Programs run" },
 ];
 
+function ActivityCard({ time, warn, children }) {
+  return (
+    <li className={`ws-activity-card${warn ? " ws-activity-card--warn" : ""}`}>
+      <time className="ws-activity-card__time">{time}</time>
+      <div className="ws-activity-card__body">{children}</div>
+    </li>
+  );
+}
+
 function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 }) {
   const [view, setView] = useState("timeline");
   const block = review.last_computer_activity ?? {};
@@ -365,15 +374,15 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
 
         {view === "timeline" ? (
           events.length ? (
-            <ul className="ws-timeline">
+            <ul className="ws-activity-list">
               {events.slice(0, 40).map((event, index) => (
-                <li key={`${event.path}-${event.occurred_at}-${index}`}>
-                  <time>{event.occurred_at ? formatGmtPlus3(event.occurred_at) : "—"}</time>
-                  <div>
-                    <p>{event.summary || "Activity recorded"}</p>
-                    <LocationHint row={event} path={event.path} />
-                  </div>
-                </li>
+                <ActivityCard
+                  key={`${event.path}-${event.occurred_at}-${index}`}
+                  time={event.occurred_at ? formatGmtPlus3(event.occurred_at) : "Time unknown"}
+                >
+                  <p className="ws-activity-card__title">{plainDisplayText(event.summary || "Activity recorded")}</p>
+                  <LocationHint row={event} path={event.path} />
+                </ActivityCard>
               ))}
             </ul>
           ) : (
@@ -383,23 +392,22 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
 
         {view === "downloads" ? (
           downloads.length ? (
-            <ul className="simple-timeline">
+            <ul className="ws-activity-list">
               {downloads.slice(0, 40).map((row, index) => (
-                <li
+                <ActivityCard
                   key={`${row.target_path}-${row.started_at}-${index}`}
-                  className={row.suspicious ? "simple-timeline--warn" : ""}
+                  warn={row.suspicious}
+                  time={row.started_at ? formatGmtPlus3(row.started_at) : "Time unknown"}
                 >
-                  <time>{row.started_at ? formatGmtPlus3(row.started_at) : "—"}</time>
-                  <div>
-                    <p>
-                      <strong>{row.file_name || "Download"}</strong> via {row.browser || "browser"}
-                    </p>
-                    {row.matched_labels?.length ? (
-                      <p className="muted">{publicFindingTitle(row.matched_labels, row)}</p>
-                    ) : null}
-                    <LocationHint row={row} path={row.target_path} />
-                  </div>
-                </li>
+                  <p className="ws-activity-card__title">
+                    <strong>{row.file_name || "Download"}</strong>
+                    <span className="ws-activity-card__via"> via {row.browser || "browser"}</span>
+                  </p>
+                  {row.matched_labels?.length ? (
+                    <p className="ws-activity-card__meta muted">{publicFindingTitle(row.matched_labels, row)}</p>
+                  ) : null}
+                  <LocationHint row={row} path={row.target_path} />
+                </ActivityCard>
               ))}
             </ul>
           ) : (
@@ -409,20 +417,21 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
 
         {view === "programs" ? (
           executions.length ? (
-            <ul className="simple-timeline">
+            <ul className="ws-activity-list">
               {executions.slice(0, 40).map((row, index) => (
-                <li
+                <ActivityCard
                   key={`${row.path}-${row.occurred_at}-${index}`}
-                  className={row.suspicious ? "simple-timeline--warn" : ""}
+                  warn={row.suspicious}
+                  time={row.occurred_at ? formatGmtPlus3(row.occurred_at) : "Time unknown"}
                 >
-                  <time>{row.occurred_at ? formatGmtPlus3(row.occurred_at) : "Time unknown"}</time>
-                  <div>
-                    <p>
-                      <strong>{row.name || row.file_name || "Program"}</strong> {row.summary}
-                    </p>
-                    <LocationHint row={row} path={row.path} />
-                  </div>
-                </li>
+                  <p className="ws-activity-card__title">
+                    <strong>{row.name || row.file_name || "Program"}</strong>
+                  </p>
+                  {row.summary ? (
+                    <p className="ws-activity-card__meta muted">{plainDisplayText(row.summary)}</p>
+                  ) : null}
+                  <LocationHint row={row} path={row.path} />
+                </ActivityCard>
               ))}
             </ul>
           ) : (
@@ -521,7 +530,7 @@ function AccountsTab({ report, token }) {
                     <span className="ws-account-card__body">
                       <span className="ws-account-card__name">{displayName}</span>
                       <span className="ws-account-card__link">
-                        {(account.sources ?? []).slice(0, 2).join(" · ") || "View profile"}
+                        {(account.sources ?? []).slice(0, 2).join(", ") || "View profile"}
                       </span>
                     </span>
                   </a>
@@ -557,7 +566,7 @@ function AccountsTab({ report, token }) {
                     <span className="ws-account-card__body">
                       <span className="ws-account-card__name">{displayName}</span>
                       <span className="ws-account-card__link">
-                        {(account.sources ?? []).slice(0, 2).join(" · ") || "Discord account"}
+                        {(account.sources ?? []).slice(0, 2).join(", ") || "Discord account"}
                       </span>
                     </span>
                   </div>

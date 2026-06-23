@@ -2,10 +2,19 @@ const ROBLOX_ID_PATTERNS = [
   /\b(?:userId|UserId|userid|uid)[=: ]+(\d{5,12})\b/g,
   /"UserId"\s*:\s*"?(\d{5,12})"?/g,
   /"userId"\s*:\s*"?(\d{5,12})"?/g,
+  /"id"\s*:\s*"?(\d{5,12})"?/g,
 ];
 
 const DISCORD_PROFILE_PATTERN =
   /"id"\s*:\s*"(\d{17,20})"\s*,\s*"(?:username|global_name|avatar|discriminator|email)"/gi;
+
+const DISCORD_ID_PATTERNS = [
+  /"id"\s*:\s*"(\d{17,20})"/g,
+  /"user_id"\s*:\s*"(\d{17,20})"/gi,
+  /"currentUserId"\s*:\s*"(\d{17,20})"/gi,
+  /"current_user_id"\s*:\s*"(\d{17,20})"/gi,
+  /"remote_id"\s*:\s*"(\d{17,20})"/gi,
+];
 
 function collectIdsFromText(text, patterns) {
   const ids = new Set();
@@ -18,6 +27,13 @@ function collectIdsFromText(text, patterns) {
     }
   }
   return ids;
+}
+
+function isPlausibleRobloxId(userId) {
+  const id = String(userId || "").trim();
+  if (!/^\d{5,12}$/.test(id)) return false;
+  const numeric = Number(id);
+  return Number.isFinite(numeric) && numeric > 0;
 }
 
 function isPlausibleDiscordId(userId) {
@@ -37,28 +53,31 @@ function isTrustedRobloxSource(source) {
   const label = String(source || "").toLowerCase();
   return (
     label.includes("roblox client")
+    || label.includes("roblox profile")
     || label.includes("session")
     || label.includes("storage")
     || label.includes("profile")
     || label.includes("guac")
+    || label.includes("browser")
+    || label.includes("web login")
   );
 }
 
 function robloxAccountScore(account) {
   let score = 0;
   if (account.authenticated) score += 100;
+  if (account.username) score += 20;
   for (const source of account.sources ?? []) {
     if (isTrustedRobloxSource(source)) score += 40;
     if (String(source).toLowerCase().includes("session")) score += 30;
-    if (String(source).toLowerCase().includes("history")) score -= 50;
+    if (String(source).toLowerCase().includes("history")) score -= 20;
   }
-  if (account.username) score += 10;
   return score;
 }
 
 function mergeRobloxAccount(map, account, sourceLabel) {
   const userId = account?.user_id ? String(account.user_id) : "";
-  if (!userId) return;
+  if (!userId || !isPlausibleRobloxId(userId)) return;
   const existing = map.get(userId) ?? {
     user_id: userId,
     username: null,
@@ -84,9 +103,17 @@ export function collectRobloxAccountsFromReport(roblox) {
     mergeRobloxAccount(byId, account);
   }
 
+  for (const userId of roblox.aggregate_user_ids ?? []) {
+    mergeRobloxAccount(byId, { user_id: String(userId), sources: ["Roblox client"] });
+  }
+
   const browserScan = roblox.browser_scan ?? {};
   for (const account of browserScan.accounts ?? []) {
     mergeRobloxAccount(byId, account, "Browser profile");
+  }
+
+  for (const userId of browserScan.aggregate_user_ids ?? []) {
+    mergeRobloxAccount(byId, { user_id: String(userId), sources: ["Browser profile"] });
   }
 
   for (const artifact of browserScan.artifacts ?? []) {
@@ -114,20 +141,52 @@ export function collectRobloxAccountsFromReport(roblox) {
         );
       }
     }
+    for (const userId of artifact.user_ids ?? []) {
+      mergeRobloxAccount(
+        byId,
+        {
+          user_id: String(userId),
+          username: artifact.session_username,
+          authenticated: Boolean(artifact.authenticated),
+          sources: [sourceLabel],
+        },
+      );
+    }
+    for (const username of artifact.usernames ?? []) {
+      if (!username) continue;
+      const blob = JSON.stringify(artifact);
+      for (const userId of collectIdsFromText(blob, ROBLOX_ID_PATTERNS)) {
+        mergeRobloxAccount(byId, {
+          user_id: userId,
+          username,
+          authenticated: Boolean(artifact.authenticated),
+          sources: [sourceLabel],
+        });
+      }
+    }
   }
 
   for (const log of roblox.logs ?? []) {
     const source = `Client log:${log.name || "log"}`;
-    if (!isTrustedRobloxSource(source)) continue;
     const blob = [log.tail, log.content, log.sample, JSON.stringify(log.signals ?? {})].join("\n");
     for (const userId of collectIdsFromText(blob, ROBLOX_ID_PATTERNS)) {
-      mergeRobloxAccount(byId, { user_id: userId, sources: [source], authenticated: false });
+      mergeRobloxAccount(byId, {
+        user_id: userId,
+        sources: [source],
+        authenticated: false,
+      });
     }
+  }
+
+  const diagnosticsBlob = JSON.stringify(roblox);
+  for (const userId of collectIdsFromText(diagnosticsBlob, ROBLOX_ID_PATTERNS)) {
+    if (!isPlausibleRobloxId(userId)) continue;
+    mergeRobloxAccount(byId, { user_id: userId, sources: ["Roblox client data"] });
   }
 
   const ranked = [...byId.values()]
     .map((account) => ({ ...account, _score: robloxAccountScore(account) }))
-    .filter((account) => account._score >= 30)
+    .filter((account) => account._score >= 0)
     .sort((left, right) => {
       if (right._score !== left._score) return right._score - left._score;
       const leftId = Number(left.user_id);
@@ -164,9 +223,31 @@ export function collectDiscordAccountsFromReport(discord, report) {
     addAccount(account, "Discord app");
   }
 
-  const settingsBlob = JSON.stringify(discord?.accounts ?? []);
+  for (const userId of discord?.aggregate_user_ids ?? []) {
+    addAccount({ user_id: String(userId) }, "Discord app");
+  }
+
+  const settingsBlob = JSON.stringify(discord ?? {});
   for (const match of settingsBlob.matchAll(DISCORD_PROFILE_PATTERN)) {
     addAccount({ user_id: match[1] }, "Discord app storage");
+  }
+  for (const userId of collectIdsFromText(settingsBlob, DISCORD_ID_PATTERNS)) {
+    addAccount({ user_id: userId }, "Discord app storage");
+  }
+
+  for (const hint of discord?.browser_hints ?? []) {
+    addAccount(
+      {
+        user_id: hint.user_id,
+        display_name: hint.display_name,
+      },
+      hint.source ? `${hint.source} web login` : "Browser profile",
+    );
+  }
+
+  const diagnosticsBlob = JSON.stringify(report?.application_diagnostics?.discord ?? {});
+  for (const userId of collectIdsFromText(diagnosticsBlob, DISCORD_ID_PATTERNS)) {
+    addAccount({ user_id: userId }, "Discord app data");
   }
 
   return [...byId.values()].sort((left, right) => {

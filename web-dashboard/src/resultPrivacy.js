@@ -178,13 +178,13 @@ export function publicFindingTitle(labels, row) {
 
 export function publicFindingDetail(row) {
   if (row?.file_exists === false) {
-    return "Ran on this PC, was deleted or removed, but Windows traces still prove it was there.";
+    return "This program ran on this PC and was later deleted, but traces of it still remain.";
   }
   if (row?.trace_note?.toLowerCase?.().includes("removed from disk")) {
-    return "Ran on this PC, was deleted or removed, but Windows traces still prove it was there.";
+    return "This program ran on this PC and was later deleted, but traces of it still remain.";
   }
   if (row?.file_exists === true) {
-    return "Matched on this PC. System traces show it ran or was stored here.";
+    return "This program matched on this PC and appears in system activity records.";
   }
   return row?.trace_note || "Activity was recorded on this PC.";
 }
@@ -238,7 +238,7 @@ function sanitizeInventoryRow(row) {
     file_exists: row?.file_exists,
     trace_note: row?.trace_note
       || (row?.file_exists === false
-        ? "Ran on this PC, was deleted or removed, but Windows traces still prove it was there."
+        ? "This program ran on this PC and was later deleted, but traces of it still remain."
         : row?.sources?.length
           ? "Flagged from system activity records."
           : undefined),
@@ -287,10 +287,20 @@ function sanitizeStringHit(row) {
 
 function sanitizeExecutionRow(row) {
   const path = row?.path || "";
+  const rawSummary = String(row?.summary || "").trim();
+  let summary = "Program activity was recorded.";
+  if (rawSummary.toLowerCase().includes("removed") || rawSummary.toLowerCase().includes("deleted")) {
+    summary = "This program ran and was later removed, but traces still remain.";
+  } else if (rawSummary.toLowerCase().includes("suspicious") || rawSummary.toLowerCase().includes("flagged")) {
+    summary = "This program matched review keywords.";
+  } else if (rawSummary && rawSummary.length <= 96) {
+    summary = rawSummary;
+  }
   return {
     ...displayPathFields(path),
+    name: row?.name || row?.file_name || pathBasename(path) || "Program",
     occurred_at: row?.occurred_at,
-    summary: row?.summary || "Program execution recorded.",
+    summary,
     suspicious: Boolean(row?.suspicious),
   };
 }

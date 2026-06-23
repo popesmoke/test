@@ -3,103 +3,103 @@ import { genericFindingTitle, genericReasonDetail } from "./reviewerCopy.js";
 export const BYPASS_TECHNIQUES = [
   {
     id: "process_spoofing",
-    label: "Process name spoofing",
-    description: "Renaming or masquerading cheat processes as trusted programs.",
+    label: "Fake program names",
+    description: "Renaming suspicious programs to look like trusted software.",
   },
   {
     id: "file_hash_changes",
-    label: "File hash changes",
-    description: "Modified builds that no longer match known file signatures.",
+    label: "Changed file signatures",
+    description: "Modified files that no longer match known versions.",
   },
   {
     id: "code_injection",
-    label: "Code injection into legitimate processes",
-    description: "Running cheat logic inside a trusted application.",
+    label: "Code hidden inside other apps",
+    description: "Running suspicious code inside a trusted application.",
   },
   {
     id: "memory_loading",
-    label: "Reflective or memory-only loading",
-    description: "Executing code without leaving a normal installed executable.",
+    label: "Running without a normal install",
+    description: "Executing code without leaving a normal installed program.",
   },
   {
     id: "dll_hiding",
-    label: "DLL / module hiding",
-    description: "Concealing loaded components from basic inspection.",
+    label: "Hidden components",
+    description: "Concealing loaded parts of a program from basic inspection.",
   },
   {
     id: "user_mode_api",
-    label: "User-mode API manipulation",
-    description: "Disabling or weakening Windows logging that records program activity.",
+    label: "Changed activity logging",
+    description: "Turning off or weakening how Windows records program activity.",
   },
   {
     id: "kernel_interference",
-    label: "Kernel-level interference",
-    description: "Privileged software trying to hide activity from user-mode scans.",
+    label: "Deep system changes",
+    description: "Privileged software trying to hide activity from normal checks.",
   },
   {
     id: "driver_abuse",
-    label: "Driver abuse",
-    description: "Using vulnerable or signed drivers for elevated access.",
+    label: "Misused drivers",
+    description: "Using drivers to get elevated access to the system.",
   },
   {
     id: "virtualization",
-    label: "Virtualization and emulation",
+    label: "Virtual machines or emulation",
     description: "Behaving differently when analysis or scanning is detected.",
   },
   {
     id: "scanner_detection",
-    label: "Debugger and scanner detection",
+    label: "Avoiding monitoring tools",
     description: "Changing behavior when monitoring tools are present.",
   },
   {
     id: "memory_obfuscation",
-    label: "Memory protection and obfuscation",
+    label: "Hidden memory activity",
     description: "Making memory inspection and signature matching harder.",
   },
   {
     id: "process_hollowing",
-    label: "Process hollowing / masquerading",
+    label: "Disguised processes",
     description: "Hosting different code inside a legitimate-looking process.",
   },
   {
     id: "dma_attacks",
-    label: "DMA attacks",
-    description: "Hardware-assisted access that bypasses normal OS visibility.",
+    label: "Hardware-assisted access",
+    description: "Using hardware to bypass normal system visibility.",
   },
   {
     id: "anticheat_tamper",
-    label: "Tampering with the anti-cheat itself",
+    label: "Security software changes",
     description: "Disabling, weakening, or excluding paths from security tools.",
   },
   {
     id: "network_manipulation",
-    label: "Network-layer manipulation",
+    label: "Network traffic changes",
     description: "Altering client-server traffic instead of local game memory.",
   },
   {
     id: "behavioral_evasion",
-    label: "Behavioral evasion",
-    description: "Deleting traces, emptying bins, or cleaning logs after cheating.",
+    label: "Covering tracks",
+    description: "Deleting traces, emptying bins, or cleaning logs after suspicious activity.",
   },
   {
     id: "signature_evasion",
-    label: "Signature evasion",
-    description: "Deleting or renaming files while forensic traces remain.",
+    label: "Hiding deleted programs",
+    description: "Deleting or renaming files while traces still remain.",
   },
   {
     id: "containerization",
-    label: "Containerization / isolation",
+    label: "Isolated environments",
     description: "Running tools in environments that limit scanner visibility.",
   },
   {
     id: "handle_hiding",
-    label: "Handle and object hiding",
+    label: "Hidden system links",
     description: "Hiding relationships between processes and system resources.",
   },
   {
     id: "lolbins",
-    label: "Living-off-the-land techniques",
-    description: "Abusing trusted Windows tools to clean up or disable logging.",
+    label: "Abuse of built-in tools",
+    description: "Using trusted Windows tools to clean up or disable logging.",
   },
 ];
 
@@ -155,12 +155,14 @@ export function techniqueMeta(techniqueId) {
 export function normalizeBypassFinding(finding) {
   const techniqueId = inferBypassTechnique(finding);
   const technique = techniqueMeta(techniqueId);
+  const title = genericFindingTitle(finding.title);
+  const detailSource = finding.action_summary || finding.detail;
   return {
     ...finding,
     techniqueId,
     techniqueLabel: technique.label,
-    title: genericFindingTitle(finding.title),
-    whatTheyDid: finding.action_summary || genericReasonDetail(finding.title, finding.detail),
+    title,
+    whatTheyDid: genericReasonDetail(finding.title, detailSource),
     detail: genericReasonDetail(finding.title, finding.detail),
   };
 }
