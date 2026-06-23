@@ -3,7 +3,7 @@ import { MaterialIcon } from "./components/MaterialIcon.jsx";
 import { defenderSummary } from "./defenderSignals.js";
 import { scanReviewFromReport } from "./reportDigest.js";
 import { formatDisplayLocation, privacyPath } from "./resultPrivacy.js";
-import { sortBySuspicion } from "./reviewerCopy.js";
+import { sortBySuspicion, genericFindingTitle, genericReasonLabel, genericReasonDetail } from "./reviewerCopy.js";
 
 const TABS = [
   { id: "overview", label: "Summary", icon: "description" },
@@ -26,12 +26,12 @@ const VERDICT_META = {
   watch: {
     label: "Needs review",
     tone: "watch",
-    blurb: "A few unusual signals — worth a closer look.",
+    blurb: "A few unusual signals. Worth a closer look.",
   },
   bad: {
     label: "High risk",
     tone: "bad",
-    blurb: "Multiple warning signs — review carefully.",
+    blurb: "Multiple warning signs. Review carefully.",
   },
 };
 
@@ -66,27 +66,7 @@ function simpleVerdict(score, bypassRisk) {
 }
 
 function friendlyReason(label, detail) {
-  const map = {
-    "Known executor binary hash": "A file matched a known cheat program fingerprint.",
-    "Roblox integrity signals": "Something around Roblox looked wrong.",
-    "Executor / cheat path matches": "A file or folder looked like a cheat or loader.",
-    "Executor / cheat-tagged recent files": "A recent file looked like a cheat or loader.",
-    "Prefetch execution traces": "The PC recently ran a program on our watch list.",
-    "Profile folder hits": "A suspicious file was in Downloads, Desktop, or Documents.",
-    "Cheat-like filename hints": "A file name looked like a common cheat label.",
-    "Weird filename pattern": "A file name looked randomly generated or disguised.",
-    "Persistence entry": "Something was set to start automatically with Windows.",
-    "Cross-source stem match": "The same program name showed up in more than one place.",
-    "BAM activity": "The PC recently ran a program on our watch list.",
-    "Defender signal": "Windows security settings or history looked unusual.",
-    "Deletion or log clearing": "Signs appeared that logs or traces may have been cleaned up.",
-    "Deleted cheat/executor traces recovered": "Cheat or executor files were deleted, but Windows still had traces of them.",
-    "Executor artifact evidence": "Windows still has traces of a known executor even if the folder was deleted.",
-    "Suspicious Recycle Bin items": "The Recycle Bin still holds files whose names look like cheats or loaders.",
-    "Bypass / cover-up signals": "Signs appeared that someone may have tried to hide activity.",
-    "No matched indicators": "Nothing major matched our watch lists on this scan.",
-  };
-  return map[label] || detail || label;
+  return genericReasonLabel(label) || label;
 }
 
 function buildSimpleProblems(report, summary) {
@@ -98,7 +78,7 @@ function buildSimpleProblems(report, summary) {
     problems.push({
       id: `bypass-${row.title}`,
       severity: row.severity || "medium",
-      title: row.title,
+      title: genericFindingTitle(row.title),
       detail: row.detail,
     });
   }
@@ -164,7 +144,7 @@ function ProblemCard({ problem }) {
         <strong>{problem.title}</strong>
         <MaterialIcon name="chevron_right" size={16} className={open ? "open" : ""} />
       </button>
-      {open ? <p className="ws-finding__detail">{problem.detail}</p> : null}
+      {open ? <p className="ws-finding__detail">{genericReasonDetail(problem.title, problem.detail)}</p> : null}
     </article>
   );
 }
@@ -283,7 +263,7 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
       <PanelHeader
         icon="history"
         title="Recent activity"
-        text="Flagged events only — newest first."
+        text="Flagged events only, newest first."
       />
       <div className="ws-panel__body">
       <div className="ws-filter-row">
@@ -428,7 +408,7 @@ function AccountsTab({ report, token, formatGmtPlus3 }) {
       <PanelHeader
         icon="users"
         title="Linked accounts"
-        text="Accounts found on this device — usernames and profile links only."
+        text="Accounts found on this device. Usernames and profile links only."
       />
       <div className="ws-panel__body">
       <h5 className="simple-subhead">Game accounts</h5>
@@ -492,7 +472,7 @@ function DownloadsTab({ review, formatGmtPlus3 }) {
                 {row.started_at ? formatGmtPlus3(row.started_at) : "Time unknown"}
               </time>
               <p>
-                <strong>{row.file_name || "Download"}</strong> — via {row.browser || "browser"}
+                <strong>{row.file_name || "Download"}</strong> via {row.browser || "browser"}
                 {row.state ? ` (${row.state})` : ""}
               </p>
               {row.executor_site ? (
@@ -543,7 +523,7 @@ function ExecutionTab({ review, formatGmtPlus3 }) {
             >
               <time>{row.occurred_at ? formatGmtPlus3(row.occurred_at) : "Time unknown"}</time>
               <p>
-                <strong>{row.name || row.file_name || "Program"}</strong> — {row.summary}
+                <strong>{row.name || row.file_name || "Program"}</strong> {row.summary}
               </p>
               <LocationHint row={row} path={row.path} />
             </li>

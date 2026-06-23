@@ -1,5 +1,42 @@
 {
-  "version": 2,
-  "description": "SHA256 (lowercase hex) of verified executor binaries. Renamed copies match by hash. Add hashes after confirming samples. Tracked brands: Volt, Potassium, Wave, Synapse Z, Seliware, Madium, Cosmic, Velocity, SirHurt, Solara, Xeno, Serotonin, Severe, RbxCli, Lumen, Matcha, Matrix Hub, Photon, DX9WARE V2, MacSploit, Opiumware, Delta, Vega X, Codex.",
-  "entries": []
+  "version": 3,
+  "description": "Verified executor binary fingerprints. Hash-only matching; no execution required.",
+  "entries": [
+    {
+      "sha256": "9e15fdf969122fa4129b542602144e690d3105586d11b391f9556ffe5ad667d4",
+      "label": "Wave"
+    },
+    {
+      "sha256": "e5e08e06805507504311242781e7a892aae60c3b5c318cd579d710d31e529b50",
+      "label": "Synapse Z"
+    },
+    {
+      "sha256": "ee2d3b38ad33c93e937637b684bf2755083b326ebdb61cc2cf0ae7943bee27f5",
+      "label": "Xeno"
+    },
+    {
+      "sha256": "831bff95f6eb27d3da6b0def8b5dc994a0bfb3b284be73e4e9bf47882e8f1190",
+      "label": "Xeno"
+    },
+    {
+      "sha256": "bbe77d09f56ad5bfa862b7b90323083d7e60fe7c2d62308a4950eeea583a5367",
+      "label": "Xeno"
+    },
+    {
+      "sha256": "6c6f0d98f676af272b1a3fab6ec4dd6f683d0b3681eea10a56b6b0782bf296f0",
+      "label": "Xeno"
+    },
+    {
+      "sha256": "873fd333cd8e687b874af8dca2f043c50ea1f4bc64d496015ca038da383b91f0",
+      "label": "Velocity"
+    },
+    {
+      "sha256": "7f8b8d05d22c24e9444e8c5da63e5631c762971f4ba6e79ba823fe3880fa95df",
+      "label": "Velocity"
+    },
+    {
+      "sha256": "32c23117961e1c5e56d108f087314151f1c714be5015b5622871a2cb346fb0f7",
+      "label": "Potassium"
+    }
+  ]
 }

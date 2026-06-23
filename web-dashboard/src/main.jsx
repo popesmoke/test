@@ -4,7 +4,7 @@ import "./styles.css";
 import "./desk.css";
 import { formatDisplayDate, normalizeIsoDateString } from "./dateFormat.js";
 import { sanitizeEventTimestamp } from "./activityTime.js";
-import { privacyPath, privacyAccountLabel, redactProfilePrefix, publicFindingLabels } from "./resultPrivacy.js";
+import { privacyPath, privacyAccountLabel, redactProfilePrefix, publicFindingLabels, formatReviewPath } from "./resultPrivacy.js";
 import { AdminPanel } from "./AdminPanel.jsx";
 import { defenderHasActionableSignal, defenderSummary } from "./defenderSignals.js";
 import { exportReportPdf } from "./exportReportPdf.js";
@@ -18,7 +18,7 @@ import { consumeAuthCallback } from "./lib/authCallback.js";
 import { MaterialIcon, renderIcon } from "./components/MaterialIcon.jsx";
 import { ConfirmModal } from "./components/ConfirmModal.jsx";
 import { EXPERT_NAV_GROUPS } from "./dashboardNav.js";
-import { reviewerSafeText, sortBySuspicion } from "./reviewerCopy.js";
+import { genericReasonLabel, genericReasonDetail, genericFindingTitle } from "./reviewerCopy.js";
 
 const AUTH_CALLBACK = consumeAuthCallback();
 
@@ -1115,7 +1115,7 @@ function UserActivitySection({ report, query }) {
                   </span>
                   <span className="activity-category-pill">{ACTIVITY_CATEGORY_LABELS[event.category] ?? event.category}</span>
                   <p className="plain-summary">{activityEventSummary(event)}</p>
-                  {event.path ? <p className="executor-event-path">{event.path}</p> : null}
+                  {event.path ? <p className="executor-event-path">{formatReviewPath(event.path)}</p> : null}
                 </div>
                 <div className="activity-time-col">
                   <time>{event.occurred_at ? formatGmtPlus3(event.occurred_at) : "—"}</time>
@@ -1186,12 +1186,11 @@ function ExecutorActivityCard({ report }) {
           <strong>{verdictLabel}</strong>
           <span>
             {activity.recent_event_count ?? 0} event(s) in the last {activity.recent_window_hours ?? 72}h
-            {(activity.hash_hit_count ?? 0) > 0 ? ` · ${activity.hash_hit_count} hash match(es)` : ""}
+            {(activity.hash_hit_count ?? 0) > 0 ? " · fingerprint match" : ""}
           </span>
         </div>
         <p className="muted executor-activity-note">
-          One place for downloads, execution traces, renamed binaries (SHA256), Prefetch, and BAM — no need to search
-          other tabs for executor signals.
+          Downloads, execution traces, fingerprints, and program activity gathered in one place.
         </p>
         {activity.events?.length ? (
           <div className="executor-event-list">
@@ -1203,15 +1202,15 @@ function ExecutorActivityCard({ report }) {
                   </span>
                   <span className="activity-category-pill">{EXECUTOR_KIND_LABELS[event.kind] ?? event.kind}</span>
                   <p className="plain-summary">{executorEventSummary(event)}</p>
-                  <p className="executor-event-path">{event.path}</p>
-                  <small className="muted">{event.detail}</small>
+                  <p className="executor-event-path">{formatReviewPath(event.path)}</p>
+                  <small className="muted">{reviewerSafeText(event.detail) || null}</small>
                 </div>
                 <time>{event.occurred_at ? formatGmtPlus3(event.occurred_at) : "—"}</time>
               </div>
             ))}
           </div>
         ) : (
-          <p className="muted">No executor, cheat-hint, or known-hash activity was aggregated for this session.</p>
+          <p className="muted">No flagged program activity was aggregated for this session.</p>
         )}
         {activity.note ? <p className="muted small-note">{activity.note}</p> : null}
       </div>
@@ -1234,13 +1233,13 @@ function StarterSection({ report }) {
           </div>
           <div>
             <p className="score-band">{band} suspicion</p>
-            <p className="muted">Score is based on executor or cheat-like filename matches, profile-folder scans, Prefetch hits, crash/log text, registry activity, Defender signals, and deletion or clearing signals.</p>
+            <p className="muted">Score reflects flagged files, recent activity, security signals, and cleanup signs found on this scan.</p>
           </div>
         </div>
         <div className="signal-grid">
           <span>File hits <strong>{summary.counts.fileHits}</strong></span>
           <span>Recent matches <strong>{summary.counts.recentMatched}</strong></span>
-          <span>Prefetch hits <strong>{summary.counts.prefetchHits}</strong></span>
+          <span>Program activity <strong>{summary.counts.prefetchHits}</strong></span>
           <span>Runtime modules <strong>{summary.counts.runtimeModules}</strong></span>
         </div>
       </Card>
@@ -1250,8 +1249,8 @@ function StarterSection({ report }) {
             <div className="reason-row" key={reason.label}>
               <span>{reason.points > 0 ? `+${reason.points}` : "0"}</span>
               <div>
-                <strong>{reason.label}</strong>
-                <p>{reason.detail}</p>
+                <strong>{genericReasonLabel(reason.label)}</strong>
+                <p>{genericReasonDetail(reason.label, reason.detail)}</p>
               </div>
             </div>
           ))}
@@ -1269,7 +1268,7 @@ function StarterSection({ report }) {
               <div className="opened-file-row" key={`${item.path}-${index}`}>
                 <div>
                   <p className="plain-summary">{openedFilePlainSummary(item)}</p>
-                  <p className="executor-event-path">{item.path}</p>
+                  <p className="executor-event-path">{formatReviewPath(item.path)}</p>
                 </div>
                 <div className="opened-file-times">
                   <time>{formatGmtPlus3(item.displayAt)}</time>
@@ -1741,8 +1740,8 @@ function BypassSection({ report, query }) {
                 key={`${row.title}-${index}`}
               >
                 <div className="evidence-row-main">
-                  <strong className="evidence-row-title">{row.title}</strong>
-                  <p className="evidence-row-path">{row.detail}</p>
+                  <strong className="evidence-row-title">{genericFindingTitle(row.title)}</strong>
+                  <p className="evidence-row-path">{genericReasonDetail(row.title, row.detail)}</p>
                 </div>
                 <span className={`ws-tag ws-tag--${row.severity === "high" || row.severity === "critical" ? "bad" : "warn"}`}>
                   {row.severity || "medium"}
@@ -1833,8 +1832,8 @@ function RegistrySection({ report, query }) {
         )}
       </Card>
       {shownBam.length ? (
-        <Card icon="memory" title="Administrator activity log (BAM)">
-          <p className="muted panel-intro">Programs recorded by Windows Background Activity Moderator — event time when available.</p>
+        <Card icon="memory" title="Recent launch activity">
+          <p className="muted panel-intro">Programs Windows recorded recently. Event time when available.</p>
           <div className="evidence-list">
             {shownBam.map((row, index) => (
               <div className="evidence-row evidence-row--static" key={`bam-${row.normalized_path}-${index}`}>
@@ -1977,7 +1976,7 @@ function DeletionsSection({ report, query }) {
                       "Deletion"}
                   </span>
                   <p className="plain-summary">{row.summary || activityEventSummary(row)}</p>
-                  <p className="executor-event-path">{row.path}</p>
+                  <p className="executor-event-path">{formatReviewPath(row.path)}</p>
                   {row.gap_human ? (
                     <small className="muted">
                       Time between delete and cleanup: <strong>{row.gap_human}</strong>
@@ -2023,7 +2022,7 @@ function DeletionsSection({ report, query }) {
                     {(event.recency ?? "unknown").replace(/_/g, " ")}
                   </span>
                   <p className="plain-summary">{event.summary || activityEventSummary(event)}</p>
-                  <p className="executor-event-path">{event.path}</p>
+                  <p className="executor-event-path">{formatReviewPath(event.path)}</p>
                   {event.gap_human ? (
                     <small className="muted">
                       Recycle Bin cleanup followed <strong>{event.gap_human}</strong> later.
@@ -2237,7 +2236,7 @@ function ForensicFindingsSection({ report, query }) {
                           ? `Review item for “${basenameOf(d.file_path)}”.`
                           : "Review item with no file path attached."}
                       </p>
-                      <p className="evidence-row-path">{privacyPath(d.file_path) || "—"}</p>
+                      <p className="evidence-row-path">{privacyPath(d.file_path) || "n/a"}</p>
                       <small className="evidence-row-meta">
                         {d.artifact_source ?? "—"} · risk {d.risk_score ?? 0}
                         {src ? ` · ${formatTimestampSource(src)}` : ""}

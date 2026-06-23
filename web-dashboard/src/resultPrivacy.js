@@ -4,6 +4,18 @@ function pathBasename(path) {
   return i >= 0 ? key.slice(i + 1) : key;
 }
 
+export function formatReviewPath(path) {
+  const raw = String(path || "").replace(/\//g, "\\").trim();
+  if (!raw) return "";
+  const userMatch = raw.match(/^[A-Za-z]:\\Users\\[^\\]+\\(.+)$/i);
+  if (userMatch) return userMatch[1];
+  const driveMatch = raw.match(/^[A-Za-z]:\\(.+)$/i);
+  if (driveMatch && !driveMatch[1].toLowerCase().startsWith("windows\\")) {
+    return driveMatch[1];
+  }
+  return raw;
+}
+
 export function locationHint(path) {
   const low = String(path || "").toLowerCase().replace(/\//g, "\\");
   for (const [marker, label] of [
@@ -292,6 +304,8 @@ export function formatDisplayLocation(row) {
 }
 
 export function privacyPath(path) {
+  const relative = formatReviewPath(path);
+  if (relative) return relative;
   return formatDisplayLocation(displayPathFields(path)) || null;
 }
 

@@ -2823,7 +2823,7 @@ EXECUTOR_ALIASES: dict[str, list[str]] = {
     "Velocity": ["velocity", "velocityexecutor", "velocity 1", "velocity.exe"],
     "SirHurt": ["sirhurt", "sir_hurt", "sirhurt.exe", "sirhurt v5"],
     "Solara": ["solara", "solarav3", "solarav2", "solara 3"],
-    "Xeno": ["xenoexecutor", "xeno.exe", "xeno 1", "xeno135"],
+    "Xeno": ["xenoexecutor", "xeno.exe", "xeno 1", "xeno135", "xeno.now"],
     "Serotonin": ["serotonin", "serotonin.exe", "serotonin v2", "serotoninv2"],
     "Severe": ["severe", "severe.exe", "severe v2", "severev2"],
     "RbxCli": ["rbxcli", "rbxcli.exe", "rbx cli", "rbxcli-beta"],
@@ -3024,7 +3024,7 @@ EXECUTOR_DOWNLOAD_DOMAIN_HINTS: dict[str, list[str]] = {
     "Seliware": ["seliware", "seliware.com"],
     "SirHurt": ["sirhurt", "sirhurt.net"],
     "Solara": ["solara", "solarexecutor", "wearedevs"],
-    "Xeno": ["xenoexecutor", "xeno.onl"],
+    "Xeno": ["xenoexecutor", "xeno.onl", "xeno.now", "xeno-executor"],
     "Velocity": ["velocityexecutor"],
     "Cosmic": ["cosmicexecutor", "cosmic-executor"],
     "Madium": ["madiumexecutor"],
@@ -8953,7 +8953,13 @@ def _roblox_user_ids_from_text(text: str) -> list[str]:
 
 _ROBLOX_RBXID_FROM_TRACKER = re.compile(r"rbxid=(\d+)", re.IGNORECASE)
 _ROBLOX_SESSION_COOKIE_NAMES = frozenset({".ROBLOSECURITY", "RBXEVENTTRACKERV2"})
-_ROBLOX_USER_ID_TEXT = re.compile(r"\buserId[=: ]+(\d{6,})\b", re.IGNORECASE)
+_ROBLOX_USER_ID_TEXT = re.compile(
+    r'(?:"UserId"|userId)\s*:\s*"?(\d{6,})"?|\buserId\s*[=:]\s*(\d{6,})\b',
+    re.IGNORECASE,
+)
+_ROBLOX_APP_STORAGE_USER_ID = re.compile(r'"UserId"\s*:\s*"(\d{6,})"', re.IGNORECASE)
+_ROBLOX_APP_STORAGE_USERNAME = re.compile(r'"Username"\s*:\s*"([^"\\]{2,32})"', re.IGNORECASE)
+_ROBLOX_APP_STORAGE_DISPLAY_NAME = re.compile(r'"DisplayName"\s*:\s*"([^"\\]{1,32})"', re.IGNORECASE)
 
 
 def _windows_dpapi_decrypt(encrypted_bytes: bytes) -> bytes | None:
@@ -9133,13 +9139,96 @@ def _roblox_all_user_ids_from_text_blob(text: str) -> list[str]:
     for candidate in _ROBLOX_RBXID_FROM_TRACKER.findall(str(text or "")):
         if _roblox_valid_user_id(candidate):
             found.add(str(candidate))
-    for candidate in _ROBLOX_USER_ID_TEXT.findall(str(text or "")):
-        if _roblox_valid_user_id(candidate):
-            found.add(str(candidate))
+    for match in _ROBLOX_USER_ID_TEXT.finditer(str(text or "")):
+        for candidate in match.groups():
+            if candidate and _roblox_valid_user_id(candidate):
+                found.add(str(candidate))
     for candidate in _ROBLOX_URL_USER_ID.findall(str(text or "")):
         if _roblox_valid_user_id(candidate):
             found.add(str(candidate))
+    for candidate in _ROBLOX_APP_STORAGE_USER_ID.findall(str(text or "")):
+        if _roblox_valid_user_id(candidate):
+            found.add(str(candidate))
     return sorted(found, key=lambda value: int(value))
+
+
+def _roblox_app_storage_accounts() -> list[dict[str, object]]:
+    """Read active and switched Roblox accounts from the desktop client app storage."""
+    if platform.system() != "Windows":
+        return []
+    local = os.getenv("LOCALAPPDATA", "")
+    if not local:
+        return []
+    roblox_root = Path(local) / "Roblox"
+    storage_path = roblox_root / "LocalStorage" / "appStorage.json"
+    accounts: list[dict[str, object]] = []
+    seen: set[str] = set()
+
+    def _append(
+        user_id: str | None,
+        username: str | None,
+        display_name: str | None,
+        sources: list[str],
+    ) -> None:
+        uid = str(user_id or "").strip()
+        if not uid or not _roblox_valid_user_id(uid) or uid in seen:
+            return
+        seen.add(uid)
+        accounts.append(
+            {
+                "user_id": uid,
+                "username": username if username and _roblox_is_plausible_username(username) else None,
+                "display_name": display_name or username,
+                "sources": sources,
+                "authenticated": True,
+            }
+        )
+
+    if storage_path.is_file():
+        try:
+            raw = storage_path.read_text(encoding="utf-8", errors="ignore")
+            data = json.loads(raw)
+        except (OSError, json.JSONDecodeError):
+            data = {}
+        if isinstance(data, dict):
+            _append(
+                str(data.get("UserId") or ""),
+                str(data.get("Username") or "") or None,
+                str(data.get("DisplayName") or "") or None,
+                ["Roblox client storage"],
+            )
+            hydration = data.get("PlayerHydrationBlob")
+            if isinstance(hydration, str) and hydration.strip():
+                try:
+                    blob = json.loads(hydration)
+                except json.JSONDecodeError:
+                    blob = {}
+                if isinstance(blob, dict):
+                    _append(
+                        str(blob.get("userId") or ""),
+                        None,
+                        None,
+                        ["Roblox client session"],
+                    )
+            for key in data:
+                if not isinstance(key, str) or not key.startswith("GUAC:"):
+                    continue
+                parts = key.split(":")
+                if len(parts) >= 2 and parts[1].isdigit():
+                    _append(parts[1], None, None, ["Roblox client profile"])
+            for user_id in _roblox_all_user_ids_from_text_blob(raw):
+                _append(user_id, None, None, ["Roblox client storage"])
+
+    if roblox_root.is_dir():
+        try:
+            for entry in roblox_root.iterdir():
+                if not entry.is_dir() or not entry.name.isdigit():
+                    continue
+                _append(entry.name, None, None, [f"Roblox profile {entry.name}"])
+        except OSError:
+            pass
+
+    return accounts
 
 
 def _roblox_rbxid_from_text_blob(text: str) -> str | None:
@@ -9406,6 +9495,14 @@ def _roblox_all_user_ids_from_appdata() -> list[str]:
 
 
 def _roblox_client_session_user() -> dict | None:
+    for account in _roblox_app_storage_accounts():
+        if account.get("user_id"):
+            return {
+                "user_id": str(account["user_id"]),
+                "username": account.get("username") or account.get("display_name"),
+                "sources": list(account.get("sources") or ["Roblox client storage"]),
+                "authenticated": bool(account.get("authenticated")),
+            }
     for log in _roblox_read_client_logs():
         signals = log.get("signals") or {}
         user_ids = signals.get("user_ids") or []
@@ -9922,6 +10019,12 @@ def roblox_browser_account_scan() -> dict:
         if user_id:
             uid = str(user_id)
             if uid in seen_ids:
+                for account in accounts:
+                    if str(account.get("user_id") or "") == uid:
+                        account["sources"] = sorted(set(account.get("sources") or []) | set(sources))
+                        if username and _roblox_is_plausible_username(username) and not account.get("username"):
+                            account["username"] = username
+                        return
                 return
             seen_ids.add(uid)
             accounts.append(
@@ -9968,6 +10071,12 @@ def roblox_browser_account_scan() -> dict:
             client_session.get("user_id"),
             client_session.get("username"),
             list(client_session.get("sources") or ["Roblox client session"]),
+        )
+    for account in _roblox_app_storage_accounts():
+        _append_account(
+            account.get("user_id"),
+            account.get("username") or account.get("display_name"),
+            list(account.get("sources") or ["Roblox client storage"]),
         )
     for user_id in _roblox_all_user_ids_from_appdata():
         _append_account(user_id, None, ["Roblox client storage"])
@@ -10092,8 +10201,17 @@ def _discord_extract_user_profiles(text: str) -> list[dict[str, str | None]]:
             r'(?:"premium_type"|"public_flags"|"discriminator"|"avatar")[^}]{0,800}?"id"\s*:\s*"(\d{17,20})"',
             re.IGNORECASE | re.DOTALL,
         ),
-        re.compile(r'"MultiAccountStore"[^[]{0,200}\[[^\]]{0,2000}?"id"\s*:\s*"(\d{17,20})"', re.IGNORECASE | re.DOTALL),
+        re.compile(r'"remote_id"\s*:\s*"(\d{17,20})"', re.IGNORECASE),
+        re.compile(r'"currentUserId"\s*:\s*"(\d{17,20})"', re.IGNORECASE),
+        re.compile(r'"current_user_id"\s*:\s*"(\d{17,20})"', re.IGNORECASE),
     )
+    multi_store = re.search(r'"MultiAccountStore"\s*:\s*\[(.*?)\]', text, re.IGNORECASE | re.DOTALL)
+    if multi_store:
+        for user_id in re.findall(r'"id"\s*:\s*"(\d{17,20})"', multi_store.group(1)):
+            if user_id in seen or not _discord_is_plausible_user_id(user_id):
+                continue
+            seen.add(user_id)
+            profiles.append({"user_id": user_id, "display_name": None, "avatar_hash": None})
     for pattern in profile_patterns:
         for user_id in pattern.findall(text):
             if user_id in seen or not _discord_is_plausible_user_id(user_id):
@@ -10122,6 +10240,10 @@ def _discord_all_user_ids_from_text(text: str) -> list[str]:
         if user_id and _discord_is_plausible_user_id(user_id):
             found.add(user_id)
     for match in re.finditer(r'"id"\s*:\s*"(\d{17,20})"', text):
+        user_id = match.group(1)
+        if _discord_is_plausible_user_id(user_id):
+            found.add(user_id)
+    for match in re.finditer(r'"user_id"\s*:\s*"(\d{17,20})"', text, re.IGNORECASE):
         user_id = match.group(1)
         if _discord_is_plausible_user_id(user_id):
             found.add(user_id)
@@ -10221,14 +10343,22 @@ def discord_local_accounts_scan() -> dict[str, object]:
         return {"available": False, "accounts": [], "reason": "Scan time budget exhausted"}
 
     appdata = Path(os.environ.get("APPDATA", ""))
-    discord_roots = [appdata / name for name in ("discord", "discordcanary", "discordptb")]
+    local = Path(os.environ.get("LOCALAPPDATA", ""))
+    discord_roots = [
+        appdata / "discord",
+        appdata / "discordcanary",
+        appdata / "discordptb",
+        local / "Discord",
+        local / "DiscordCanary",
+        local / "DiscordPTB",
+    ]
     accounts_by_id: dict[str, dict[str, object]] = {}
 
     for root in discord_roots:
         if not root.is_dir():
             continue
         blobs = _discord_collect_storage_blobs(root)
-        for blob in blobs[:72]:
+        for blob in blobs[:96]:
             if scan_collect_phase_exhausted():
                 break
             try:
@@ -10294,7 +10424,7 @@ def discord_local_accounts_scan() -> dict[str, object]:
     return {
         "available": True,
         "account_count": len(accounts),
-        "accounts": accounts[:32],
+        "accounts": accounts[:48],
         "note": "Local client storage only.",
     }
 

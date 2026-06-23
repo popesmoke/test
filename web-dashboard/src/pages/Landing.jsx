@@ -8,33 +8,33 @@ const FEATURES = [
   {
     icon: "search",
     title: "Activity timeline",
-    text: "Recent PC activity in order — highest-priority signals surface first.",
+    text: "Recent PC activity in order. The strongest signals rise to the top.",
     wide: true,
   },
   {
     icon: "download",
     title: "Download history",
-    text: "Browser downloads collected and checked against your review rules.",
+    text: "Browser downloads checked against your review rules.",
   },
   {
     icon: "hash",
     title: "File fingerprinting",
-    text: "Known signatures still match even when a file was renamed or moved.",
+    text: "Known signatures still match after renames or folder moves.",
   },
   {
     icon: "folder",
     title: "Profile folder scan",
-    text: "Common user folders checked for items that match your watch lists.",
+    text: "Common user folders checked against your watch lists.",
   },
   {
     icon: "group",
     title: "Linked accounts",
-    text: "Game and chat accounts on the device, grouped for quick context.",
+    text: "Game and chat accounts on the device, grouped for context.",
   },
   {
     icon: "speed",
     title: "Priority scoring",
-    text: "Findings ranked so reviewers see what matters most, not everything at once.",
+    text: "Findings ranked so reviewers see what matters first.",
   },
   {
     icon: "lock",
@@ -57,7 +57,7 @@ export function LandingPage() {
           <h1>Structured PC scans for live reviews</h1>
           <p className="hero__lead">
             Virello collects system signals with the user&apos;s consent, ranks what matters,
-            and hands reviewers a clear case file — not a wall of raw logs.
+            and hands reviewers a clear case file, not a wall of raw logs.
           </p>
           <div className="hero__actions">
             <Link to="/download" className="btn btn--primary btn--lg">
@@ -86,11 +86,11 @@ export function LandingPage() {
             </div>
             <div className="hero__stat">
               <span className="hero__stat-value">Multi</span>
-              <span className="hero__stat-label">Signal layers — files, logs, registry, and runtime</span>
+              <span className="hero__stat-label">Signal layers across files, logs, registry, and runtime</span>
             </div>
             <div className="hero__stat">
               <span className="hero__stat-value">Win 10+</span>
-              <span className="hero__stat-label">Desktop scanner — Windows 10 and 11</span>
+              <span className="hero__stat-label">Desktop scanner for Windows 10 and 11</span>
             </div>
             <div className="hero__stat hero__stat--muted">
               <span className="hero__stat-value">PIN</span>
