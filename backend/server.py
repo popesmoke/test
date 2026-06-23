@@ -19,6 +19,7 @@ from urllib import request as urlrequest
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 import backup
+import discord_sync
 import rate_limit
 
 DB_PATH = Path(__file__).resolve().parent / "diagnostics.db"
@@ -172,10 +173,9 @@ def init_db() -> None:
             )
             """
         )
-        db_execute(
-            conn,
-            f"""
-            CREATE TABLE IF NOT EXISTS users (
+        ensure_column(conn, "discord_users", "admin_banned", "INTEGER NOT NULL DEFAULT 0")
+        ensure_column(conn, "discord_users", "admin_notes", "TEXT")
+        ensure_column(conn, "discord_users", "access_override", "INTEGER")
                 id {id_column},
                 email TEXT NOT NULL UNIQUE,
                 username TEXT NOT NULL,
@@ -558,6 +558,10 @@ def exchange_discord_code(code: str) -> dict:
         return json.loads(response.read().decode("utf-8"))
 
 
+def db_changed() -> None:
+    discord_sync.notify_db_changed()
+
+
 def save_discord_user(user: dict, roles: list[str]) -> None:
     with connect() as conn:
         db_execute(
@@ -579,6 +583,7 @@ def save_discord_user(user: dict, roles: list[str]) -> None:
                 to_iso(utc_now()),
             ),
         )
+    db_changed()
 
 
 def save_user_discord_access(user_id: int, user: dict, roles: list[str]) -> bool:
@@ -658,6 +663,20 @@ def get_discord_profile(discord_id: str) -> dict | None:
     if row is None:
         return None
     roles = json.loads(row["roles_json"] or "[]")
+    keys = row.keys()
+    admin_banned = bool(row["admin_banned"]) if "admin_banned" in keys else False
+    access_override = row["access_override"] if "access_override" in keys else None
+    has_role_access = DISCORD_ACCESS_ROLE_ID in roles
+    if access_override == 0:
+        has_access = False
+    elif access_override == 1:
+        has_access = True
+    else:
+        has_access = has_role_access
+    if admin_banned:
+        has_access = False
+    if is_super_admin_discord_id(discord_id):
+        has_access = True
     avatar = row["avatar"]
     avatar_url = None
     if avatar:
@@ -666,7 +685,10 @@ def get_discord_profile(discord_id: str) -> dict | None:
         "discord_id": discord_id,
         "username": row["username"],
         "avatar_url": avatar_url,
-        "has_access": DISCORD_ACCESS_ROLE_ID in roles,
+        "has_access": has_access,
+        "admin_banned": admin_banned,
+        "admin_notes": row["admin_notes"] if "admin_notes" in keys else None,
+        "access_override": access_override,
         "is_super_admin": is_super_admin_discord_id(discord_id),
     }
 
@@ -677,6 +699,8 @@ def subject_has_dashboard_access(subject: str) -> bool:
     discord_id = discord_id_from_subject(subject)
     if not discord_id:
         return False
+    if is_super_admin_discord_id(discord_id):
+        return True
     profile = get_discord_profile(discord_id)
     return bool(profile and profile["has_access"])
 
@@ -849,6 +873,25 @@ class Handler(BaseHTTPRequestHandler):
     def do_DELETE(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
+
+        if path.startswith("/admin/sessions/"):
+            if not self.require_super_admin():
+                return
+            try:
+                session_id = int(path.split("/")[-1])
+            except ValueError:
+                self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Invalid session id"})
+                return
+            with connect() as conn:
+                cursor = db_execute(conn, "DELETE FROM sessions WHERE id = ?", (session_id,))
+                deleted = cursor.rowcount
+            if deleted == 0:
+                self.send_json(HTTPStatus.NOT_FOUND, {"detail": "Session not found"})
+                return
+            db_changed()
+            self.send_json(HTTPStatus.OK, {"status": "deleted"})
+            return
+
         if not path.startswith("/sessions/"):
             self.send_json(HTTPStatus.NOT_FOUND, {"detail": "Not found"})
             return
@@ -873,6 +916,7 @@ class Handler(BaseHTTPRequestHandler):
         if deleted == 0:
             self.send_json(HTTPStatus.NOT_FOUND, {"detail": "Session not found"})
             return
+        db_changed()
         self.send_json(HTTPStatus.OK, {"status": "deleted"})
 
     def read_json(self) -> dict:
@@ -1003,11 +1047,18 @@ class Handler(BaseHTTPRequestHandler):
                 return
             with connect() as conn:
                 expire_stale_pending_sessions(conn)
-                rows = db_execute(conn, "SELECT status, completed_at FROM sessions").fetchall()
+                rows = db_execute(conn, "SELECT status, completed_at, created_by, reviewer_verdict FROM sessions").fetchall()
+                user_rows = db_execute(conn, "SELECT discord_id, admin_banned, access_override, roles_json FROM discord_users").fetchall()
             counts: dict[str, int] = {}
+            verdict_counts: dict[str, int] = {}
             for row in rows:
                 status = row["status"]
                 counts[status] = counts.get(status, 0) + 1
+                verdict = row["reviewer_verdict"] if "reviewer_verdict" in row.keys() else None
+                if verdict:
+                    verdict_counts[verdict] = verdict_counts.get(verdict, 0) + 1
+            banned_users = sum(1 for row in user_rows if row["admin_banned"])
+            forced_access = sum(1 for row in user_rows if row["access_override"] == 1)
             recent = sorted(
                 [dict(row) for row in rows if row["status"] == "completed" and row["completed_at"]],
                 key=lambda item: item["completed_at"] or "",
@@ -1018,21 +1069,82 @@ class Handler(BaseHTTPRequestHandler):
                 {
                     "total_sessions": len(rows),
                     "by_status": counts,
+                    "by_verdict": verdict_counts,
+                    "discord_users": len(user_rows),
+                    "banned_users": banned_users,
+                    "forced_access_users": forced_access,
                     "recent_completions": recent,
+                    "storage": discord_sync.get_status(),
                 },
             )
+            return
+
+        if path == "/admin/health":
+            if not self.require_super_admin():
+                return
+            sync_status = discord_sync.get_status()
+            if sync_status["mode"] == "discord":
+                payload = {
+                    "status": "ok" if sync_status["configured"] else "degraded",
+                    "storage": sync_status,
+                }
+            else:
+                status_code, payload = backup.get_health_status()
+                payload = {**payload, "storage": sync_status}
+            self.send_json(HTTPStatus.OK, payload)
             return
 
         if path == "/admin/sessions":
             if not self.require_super_admin():
                 return
+            status_filter = (query.get("status") or [""])[0].strip()
+            search = (query.get("q") or [""])[0].strip().lower()
+            try:
+                limit = min(int((query.get("limit") or ["200"])[0]), 500)
+            except ValueError:
+                limit = 200
             with connect() as conn:
                 expire_stale_pending_sessions(conn)
                 rows = db_execute(
                     conn,
-                    "SELECT id, pin, status, created_at, expires_at, completed_at, reviewer_verdict, reviewer_note, reviewed_at, reviewed_by FROM sessions ORDER BY id DESC LIMIT 200",
+                    "SELECT id, pin, status, created_at, expires_at, completed_at, reviewer_verdict, reviewer_note, reviewed_at, reviewed_by, created_by FROM sessions ORDER BY id DESC",
                 ).fetchall()
-            self.send_json(HTTPStatus.OK, [row_to_summary(row) for row in rows])
+            items = []
+            for row in rows:
+                summary = row_to_summary(row)
+                if status_filter and summary["status"] != status_filter:
+                    continue
+                if search:
+                    haystack = " ".join(
+                        str(summary.get(key) or "")
+                        for key in ("pin", "reviewer_verdict", "reviewer_note", "created_by")
+                    ).lower()
+                    if search not in haystack:
+                        continue
+                items.append(summary)
+                if len(items) >= limit:
+                    break
+            self.send_json(HTTPStatus.OK, items)
+            return
+
+        if path.startswith("/admin/sessions/"):
+            if not self.require_super_admin():
+                return
+            try:
+                session_id = int(path.split("/")[-1])
+            except ValueError:
+                self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Invalid session id"})
+                return
+            with connect() as conn:
+                row = db_execute(conn, "SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            if row is None:
+                self.send_json(HTTPStatus.NOT_FOUND, {"detail": "Session not found"})
+                return
+            result = dict(row)
+            result["status"] = effective_session_status(row)
+            result["collected_categories"] = json.loads(result.get("collected_categories") or "[]")
+            result["report"] = json.loads(result.pop("report_json") or "{}")
+            self.send_json(HTTPStatus.OK, result)
             return
 
         if path == "/admin/users":
@@ -1041,17 +1153,31 @@ class Handler(BaseHTTPRequestHandler):
             with connect() as conn:
                 rows = db_execute(
                     conn,
-                    "SELECT discord_id, username, roles_json, last_login_at FROM discord_users ORDER BY last_login_at DESC LIMIT 200",
+                    "SELECT discord_id, username, roles_json, last_login_at, admin_banned, admin_notes, access_override FROM discord_users ORDER BY last_login_at DESC LIMIT 500",
                 ).fetchall()
             users = []
             for row in rows:
                 roles = json.loads(row["roles_json"] or "[]")
+                access_override = row["access_override"]
+                has_role = DISCORD_ACCESS_ROLE_ID in roles
+                if access_override == 0:
+                    has_access = False
+                elif access_override == 1:
+                    has_access = True
+                else:
+                    has_access = has_role
+                if row["admin_banned"]:
+                    has_access = False
                 users.append(
                     {
                         "discord_id": row["discord_id"],
                         "username": row["username"],
                         "last_login_at": row["last_login_at"],
-                        "has_access": DISCORD_ACCESS_ROLE_ID in roles,
+                        "has_access": has_access,
+                        "has_role_access": has_role,
+                        "admin_banned": bool(row["admin_banned"]),
+                        "admin_notes": row["admin_notes"],
+                        "access_override": access_override,
                     }
                 )
             self.send_json(HTTPStatus.OK, users)
@@ -1110,6 +1236,123 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         parts = [part for part in path.split("/") if part]
+
+        if len(parts) == 4 and parts[0] == "admin" and parts[1] == "sessions" and parts[3] == "review":
+            if not self.require_super_admin():
+                return
+            try:
+                session_id = int(parts[2])
+            except ValueError:
+                self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Invalid session id"})
+                return
+            verdict = str(payload.get("verdict") or "").strip().lower()
+            note = str(payload.get("note") or "").strip()
+            allowed_verdicts = {"", "cleared", "suspicious", "ban", "follow-up"}
+            if verdict not in allowed_verdicts:
+                self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Invalid verdict"})
+                return
+            subject = self.require_auth_subject()
+            with connect() as conn:
+                row = db_execute(conn, "SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+                if row is None:
+                    self.send_json(HTTPStatus.NOT_FOUND, {"detail": "Session not found"})
+                    return
+                db_execute(
+                    conn,
+                    """
+                    UPDATE sessions
+                    SET reviewer_verdict = ?, reviewer_note = ?, reviewed_at = ?, reviewed_by = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        verdict or None,
+                        note[:4000] if note else None,
+                        to_iso(utc_now()),
+                        subject,
+                        session_id,
+                    ),
+                )
+                row = db_execute(conn, "SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            db_changed()
+            self.send_json(HTTPStatus.OK, row_to_summary(row))
+            return
+
+        if path == "/admin/sessions/purge":
+            if not self.require_super_admin():
+                return
+            status = str(payload.get("status") or "expired").strip()
+            with connect() as conn:
+                cursor = db_execute(conn, "DELETE FROM sessions WHERE status = ?", (status,))
+                deleted = cursor.rowcount
+            db_changed()
+            self.send_json(HTTPStatus.OK, {"status": "purged", "deleted": deleted})
+            return
+
+        if path == "/admin/backup":
+            if not self.require_super_admin():
+                return
+            try:
+                if discord_sync.storage_mode() == "discord":
+                    discord_sync.persist_all()
+                else:
+                    backup.create_and_upload_backup()
+                self.send_json(HTTPStatus.OK, {"status": "backed_up", "storage": discord_sync.get_status()})
+            except Exception as error:
+                self.send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"detail": str(error)})
+            return
+
+        if len(parts) == 3 and parts[0] == "admin" and parts[1] == "users":
+            if not self.require_super_admin():
+                return
+            discord_id = parts[2]
+            admin_banned = payload.get("admin_banned")
+            admin_notes = payload.get("admin_notes")
+            access_override = payload.get("access_override")
+            with connect() as conn:
+                row = db_execute(conn, "SELECT * FROM discord_users WHERE discord_id = ?", (discord_id,)).fetchone()
+                if row is None:
+                    self.send_json(HTTPStatus.NOT_FOUND, {"detail": "User not found"})
+                    return
+                updates = []
+                params: list = []
+                if admin_banned is not None:
+                    updates.append("admin_banned = ?")
+                    params.append(1 if admin_banned else 0)
+                if admin_notes is not None:
+                    updates.append("admin_notes = ?")
+                    params.append(str(admin_notes)[:2000] or None)
+                if "access_override" in payload:
+                    if access_override is None or access_override == "":
+                        updates.append("access_override = ?")
+                        params.append(None)
+                    else:
+                        updates.append("access_override = ?")
+                        params.append(int(access_override))
+                if not updates:
+                    self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "No fields to update"})
+                    return
+                params.append(discord_id)
+                db_execute(
+                    conn,
+                    f"UPDATE discord_users SET {', '.join(updates)} WHERE discord_id = ?",
+                    tuple(params),
+                )
+                row = db_execute(conn, "SELECT * FROM discord_users WHERE discord_id = ?", (discord_id,)).fetchone()
+            db_changed()
+            roles = json.loads(row["roles_json"] or "[]")
+            self.send_json(
+                HTTPStatus.OK,
+                {
+                    "discord_id": row["discord_id"],
+                    "username": row["username"],
+                    "admin_banned": bool(row["admin_banned"]),
+                    "admin_notes": row["admin_notes"],
+                    "access_override": row["access_override"],
+                    "has_access": DISCORD_ACCESS_ROLE_ID in roles and not row["admin_banned"],
+                },
+            )
+            return
+
         if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "review":
             subject = self.require_checker()
             if not subject:
@@ -1149,6 +1392,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(HTTPStatus.NOT_FOUND, {"detail": "Session not found"})
                     return
                 row = db_execute(conn, "SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            db_changed()
             self.send_json(HTTPStatus.OK, row_to_summary(row))
             return
 
@@ -1183,6 +1427,7 @@ class Handler(BaseHTTPRequestHandler):
                     (pin, "pending", to_iso(now), to_iso(expires_at), subject),
                 )
                 row = db_execute(conn, "SELECT * FROM sessions WHERE pin = ?", (pin,)).fetchone()
+            db_changed()
             self.send_json(HTTPStatus.OK, row_to_summary(row))
             return
 
@@ -1226,6 +1471,7 @@ class Handler(BaseHTTPRequestHandler):
                         row["id"],
                     ),
                 )
+            db_changed()
             self.send_json(HTTPStatus.OK, {"status": "submitted"})
             return
 
@@ -1236,15 +1482,20 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    discord_sync.configure(connect=connect, db_execute=db_execute, using_postgres=using_postgres)
     init_db()
-    backup.configure(
-        connect=connect,
-        db_execute=db_execute,
-        using_postgres=using_postgres,
-        to_iso=to_iso,
-        utc_now=utc_now,
-    )
-    backup.initialize_backup_system()
+    if discord_sync.storage_mode() == "discord":
+        discord_sync.initialize()
+        print(f"Storage mode: Discord txt sync (channel {os.getenv('DISCORD_SYNC_CHANNEL_ID', '')})")
+    else:
+        backup.configure(
+            connect=connect,
+            db_execute=db_execute,
+            using_postgres=using_postgres,
+            to_iso=to_iso,
+            utc_now=utc_now,
+        )
+        backup.initialize_backup_system()
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", "8000"))
     print(f"Virello Scanner backend running at http://{host}:{port}")

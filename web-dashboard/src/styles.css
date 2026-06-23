@@ -3845,3 +3845,186 @@ kbd {
   from { opacity: 0; transform: translateY(8px) scale(0.98); }
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
+
+.ws-pagination {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid #24171c;
+}
+
+.ws-pagination__btn {
+  border: 1px solid #2a2226;
+  background: rgba(8, 7, 9, 0.65);
+  color: #f3f4f6;
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.ws-pagination__btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.ws-pagination__meta {
+  color: #9ca3af;
+  font-size: 13px;
+}
+
+.pricing-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+  margin: 24px 0;
+}
+
+.pricing-card {
+  border: 1px solid #2a2226;
+  border-radius: 14px;
+  padding: 20px;
+  background: rgba(8, 7, 9, 0.55);
+  display: grid;
+  gap: 12px;
+  position: relative;
+}
+
+.pricing-card--featured {
+  border-color: rgba(239, 35, 60, 0.55);
+  box-shadow: 0 0 0 1px rgba(239, 35, 60, 0.15);
+}
+
+.pricing-card__badge {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #ffd5da;
+  background: rgba(239, 35, 60, 0.18);
+  border: 1px solid rgba(239, 35, 60, 0.35);
+  border-radius: 999px;
+  padding: 4px 8px;
+}
+
+.pricing-card__blurb {
+  color: #9ca3af;
+  margin: 0;
+  line-height: 1.5;
+}
+
+.pricing-card__price {
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.pricing-card__price strong {
+  font-size: 1.8rem;
+}
+
+.pricing-card__features {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 6px;
+  color: #d1d5db;
+}
+
+.pricing-cta {
+  margin-top: 28px;
+  padding: 20px;
+  border: 1px solid #2a2226;
+  border-radius: 12px;
+  background: rgba(8, 7, 9, 0.45);
+  display: grid;
+  gap: 12px;
+}
+
+.admin-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.admin-tabs button {
+  border: 1px solid #2a2226;
+  background: rgba(8, 7, 9, 0.55);
+  color: #d1d5db;
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.admin-tabs button.active {
+  border-color: rgba(239, 35, 60, 0.45);
+  color: #fff;
+  background: rgba(239, 35, 60, 0.14);
+}
+
+.admin-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.admin-toolbar input,
+.admin-toolbar select,
+.admin-field input,
+.admin-field select,
+.admin-field textarea {
+  border: 1px solid #2a2226;
+  background: rgba(8, 7, 9, 0.65);
+  color: #f3f4f6;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font: inherit;
+}
+
+.admin-split-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.admin-actions-cell {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.admin-drawer {
+  display: grid;
+  gap: 12px;
+}
+
+.admin-drawer__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
+.admin-field {
+  display: grid;
+  gap: 6px;
+}
+
+.admin-field--checkbox {
+  grid-template-columns: auto 1fr;
+  align-items: center;
+}
+
+.admin-storage-hint {
+  margin: 0;
+  line-height: 1.5;
+}

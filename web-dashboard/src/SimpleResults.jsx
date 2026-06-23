@@ -10,7 +10,9 @@ import {
 } from "./accountExtract.js";
 import { CollapseCard } from "./components/CollapseCard.jsx";
 import { BypassPanel } from "./components/BypassPanel.jsx";
+import { Pagination } from "./components/Pagination.jsx";
 import { buildBypassReport } from "./bypassDetection.js";
+import { usePagination } from "./hooks/usePagination.js";
 import { genericReasonLabel, genericReasonDetail, plainDisplayText } from "./reviewerCopy.js";
 
 const API_URL = import.meta.env.VITE_API_URL || "https://virello-secure.onrender.com";
@@ -18,7 +20,7 @@ const API_URL = import.meta.env.VITE_API_URL || "https://virello-secure.onrender
 const TABS = [
   { id: "summary", label: "Summary", icon: "description" },
   { id: "findings", label: "Findings", icon: "shield_alert" },
-  { id: "bypass", label: "Hiding activity", icon: "gpp_maybe" },
+  { id: "bypass", label: "Bypass attempts", icon: "gpp_maybe" },
   { id: "activity", label: "Activity", icon: "history" },
   { id: "accounts", label: "Accounts", icon: "users" },
 ];
@@ -258,6 +260,9 @@ function FindingsTab({ problems, review, formatGmtPlus3 }) {
     const bHigh = b.confidence === "high" ? 0 : 1;
     return aHigh - bHigh;
   });
+  const problemsPage = usePagination(problems, 6);
+  const chainsPage = usePagination(sortedChains, 5);
+  const programsPage = usePagination(programGroups, 5);
 
   return (
     <>
@@ -265,7 +270,12 @@ function FindingsTab({ problems, review, formatGmtPlus3 }) {
         <PanelHeader icon="list_checks" title="Warning signs" text="Sorted by importance." />
         <div className="ws-panel__body">
           {problems.length ? (
-            problems.map((problem) => <WarningRow key={problem.id} problem={problem} />)
+            <>
+              {problemsPage.slice.map((problem) => (
+                <WarningRow key={problem.id} problem={problem} />
+              ))}
+              <Pagination {...problemsPage} onPageChange={problemsPage.goTo} />
+            </>
           ) : (
             <p className="muted">No warning signs on this scan.</p>
           )}
@@ -280,9 +290,10 @@ function FindingsTab({ problems, review, formatGmtPlus3 }) {
             text="Related activity grouped together. Tap a card to expand the timeline."
           />
           <div className="ws-panel__body ws-collapse-stack">
-            {sortedChains.map((chain, index) => (
+            {chainsPage.slice.map((chain, index) => (
               <LinkedTraceCard key={`${chain.stem}-${index}`} chain={chain} formatGmtPlus3={formatGmtPlus3} />
             ))}
+            <Pagination {...chainsPage} onPageChange={chainsPage.goTo} />
           </div>
         </section>
       ) : null}
@@ -295,9 +306,10 @@ function FindingsTab({ problems, review, formatGmtPlus3 }) {
             text="Grouped by what matched. Tap a card to see each trace."
           />
           <div className="ws-panel__body ws-collapse-stack">
-            {programGroups.map((group) => (
+            {programsPage.slice.map((group) => (
               <ProgramGroup key={group.title} group={group} formatGmtPlus3={formatGmtPlus3} />
             ))}
+            <Pagination {...programsPage} onPageChange={programsPage.goTo} />
           </div>
         </section>
       ) : null}
@@ -355,6 +367,16 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
     return bMs - aMs;
   });
 
+  const timelinePage = usePagination(events, 8);
+  const downloadsPage = usePagination(downloads, 8);
+  const programsPage = usePagination(executions, 8);
+
+  useEffect(() => {
+    timelinePage.reset();
+    downloadsPage.reset();
+    programsPage.reset();
+  }, [view]);
+
   return (
     <section className="ws-panel">
       <PanelHeader icon="history" title="Activity" text="Recent events on this PC." />
@@ -374,17 +396,20 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
 
         {view === "timeline" ? (
           events.length ? (
-            <ul className="ws-activity-list">
-              {events.slice(0, 40).map((event, index) => (
-                <ActivityCard
-                  key={`${event.path}-${event.occurred_at}-${index}`}
-                  time={event.occurred_at ? formatGmtPlus3(event.occurred_at) : "Time unknown"}
-                >
-                  <p className="ws-activity-card__title">{plainDisplayText(event.summary || "Activity recorded")}</p>
-                  <LocationHint row={event} path={event.path} />
-                </ActivityCard>
-              ))}
-            </ul>
+            <>
+              <ul className="ws-activity-list">
+                {timelinePage.slice.map((event, index) => (
+                  <ActivityCard
+                    key={`${event.path}-${event.occurred_at}-${index}`}
+                    time={event.occurred_at ? formatGmtPlus3(event.occurred_at) : "Time unknown"}
+                  >
+                    <p className="ws-activity-card__title">{plainDisplayText(event.summary || "Activity recorded")}</p>
+                    <LocationHint row={event} path={event.path} />
+                  </ActivityCard>
+                ))}
+              </ul>
+              <Pagination {...timelinePage} onPageChange={timelinePage.goTo} />
+            </>
           ) : (
             <p className="muted">No timeline events on this scan.</p>
           )
@@ -392,24 +417,27 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
 
         {view === "downloads" ? (
           downloads.length ? (
-            <ul className="ws-activity-list">
-              {downloads.slice(0, 40).map((row, index) => (
-                <ActivityCard
-                  key={`${row.target_path}-${row.started_at}-${index}`}
-                  warn={row.suspicious}
-                  time={row.started_at ? formatGmtPlus3(row.started_at) : "Time unknown"}
-                >
-                  <p className="ws-activity-card__title">
-                    <strong>{row.file_name || "Download"}</strong>
-                    <span className="ws-activity-card__via"> via {row.browser || "browser"}</span>
-                  </p>
-                  {row.matched_labels?.length ? (
-                    <p className="ws-activity-card__meta muted">{publicFindingTitle(row.matched_labels, row)}</p>
-                  ) : null}
-                  <LocationHint row={row} path={row.target_path} />
-                </ActivityCard>
-              ))}
-            </ul>
+            <>
+              <ul className="ws-activity-list">
+                {downloadsPage.slice.map((row, index) => (
+                  <ActivityCard
+                    key={`${row.target_path}-${row.started_at}-${index}`}
+                    warn={row.suspicious}
+                    time={row.started_at ? formatGmtPlus3(row.started_at) : "Time unknown"}
+                  >
+                    <p className="ws-activity-card__title">
+                      <strong>{row.file_name || "Download"}</strong>
+                      <span className="ws-activity-card__via"> via {row.browser || "browser"}</span>
+                    </p>
+                    {row.matched_labels?.length ? (
+                      <p className="ws-activity-card__meta muted">{publicFindingTitle(row.matched_labels, row)}</p>
+                    ) : null}
+                    <LocationHint row={row} path={row.target_path} />
+                  </ActivityCard>
+                ))}
+              </ul>
+              <Pagination {...downloadsPage} onPageChange={downloadsPage.goTo} />
+            </>
           ) : (
             <p className="muted">No download history found.</p>
           )
@@ -417,23 +445,26 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
 
         {view === "programs" ? (
           executions.length ? (
-            <ul className="ws-activity-list">
-              {executions.slice(0, 40).map((row, index) => (
-                <ActivityCard
-                  key={`${row.path}-${row.occurred_at}-${index}`}
-                  warn={row.suspicious}
-                  time={row.occurred_at ? formatGmtPlus3(row.occurred_at) : "Time unknown"}
-                >
-                  <p className="ws-activity-card__title">
-                    <strong>{row.name || row.file_name || "Program"}</strong>
-                  </p>
-                  {row.summary ? (
-                    <p className="ws-activity-card__meta muted">{plainDisplayText(row.summary)}</p>
-                  ) : null}
-                  <LocationHint row={row} path={row.path} />
-                </ActivityCard>
-              ))}
-            </ul>
+            <>
+              <ul className="ws-activity-list">
+                {programsPage.slice.map((row, index) => (
+                  <ActivityCard
+                    key={`${row.path}-${row.occurred_at}-${index}`}
+                    warn={row.suspicious}
+                    time={row.occurred_at ? formatGmtPlus3(row.occurred_at) : "Time unknown"}
+                  >
+                    <p className="ws-activity-card__title">
+                      <strong>{row.name || row.file_name || "Program"}</strong>
+                    </p>
+                    {row.summary ? (
+                      <p className="ws-activity-card__meta muted">{plainDisplayText(row.summary)}</p>
+                    ) : null}
+                    <LocationHint row={row} path={row.path} />
+                  </ActivityCard>
+                ))}
+              </ul>
+              <Pagination {...programsPage} onPageChange={programsPage.goTo} />
+            </>
           ) : (
             <p className="muted">No program execution traces found.</p>
           )
@@ -499,6 +530,9 @@ function AccountsTab({ report, token }) {
     };
   }, [robloxAccounts, token]);
 
+  const robloxPage = usePagination(robloxAccounts, 12);
+  const discordPage = usePagination(discordAccounts, 12);
+
   return (
     <>
       <section className="ws-panel">
@@ -509,8 +543,9 @@ function AccountsTab({ report, token }) {
         />
         <div className="ws-panel__body">
           {robloxAccounts.length ? (
-            <div className="ws-account-grid">
-              {robloxAccounts.slice(0, 24).map((account) => {
+            <>
+              <div className="ws-account-grid">
+                {robloxPage.slice.map((account) => {
                 const resolved = profiles[account.user_id] ?? {};
                 const displayName = account.username || resolved.username || `Account ${account.user_id}`;
                 const avatar = robloxHeadshotUrl({ ...account, headshot_url: resolved.headshot_url });
@@ -536,7 +571,9 @@ function AccountsTab({ report, token }) {
                   </a>
                 );
               })}
-            </div>
+              </div>
+              <Pagination {...robloxPage} onPageChange={robloxPage.goTo} />
+            </>
           ) : (
             <p className="muted">No Roblox accounts found on this device.</p>
           )}
@@ -551,8 +588,9 @@ function AccountsTab({ report, token }) {
         />
         <div className="ws-panel__body">
           {discordAccounts.length ? (
-            <div className="ws-account-grid">
-              {discordAccounts.slice(0, 24).map((account) => {
+            <>
+              <div className="ws-account-grid">
+                {discordPage.slice.map((account) => {
                 const userId = String(account.user_id || "");
                 const displayName = account.display_name || `User ${userId}`;
                 const avatar = account.avatar_url || discordAvatarUrl(account);
@@ -572,7 +610,9 @@ function AccountsTab({ report, token }) {
                   </div>
                 );
               })}
-            </div>
+              </div>
+              <Pagination {...discordPage} onPageChange={discordPage.goTo} />
+            </>
           ) : (
             <p className="muted">No Discord accounts found on this device.</p>
           )}

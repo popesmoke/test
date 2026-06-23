@@ -1,7 +1,9 @@
 import React, { useMemo } from "react";
 import { MaterialIcon } from "./MaterialIcon.jsx";
 import { SeverityBadge } from "./SeverityBadge.jsx";
+import { Pagination } from "./Pagination.jsx";
 import { buildBypassReport } from "../bypassDetection.js";
+import { usePagination } from "../hooks/usePagination.js";
 
 function PanelHeader({ icon, title, text }) {
   return (
@@ -36,6 +38,7 @@ function BypassFindingRow({ finding }) {
 export function BypassPanel({ report }) {
   const bypass = report?.security_integrity_signals?.bypass_resilience ?? {};
   const view = useMemo(() => buildBypassReport(bypass), [bypass]);
+  const groupsPage = usePagination(view.detected, 3);
 
   const riskTone =
     view.riskLevel === "high" ? "bad" : view.riskLevel === "medium" ? "watch" : "clean";
@@ -44,12 +47,12 @@ export function BypassPanel({ report }) {
     <>
       <section className={`ws-bypass-hero ws-bypass-hero--${riskTone}`}>
         <div>
-          <p className="ws-bypass-hero__label">Hiding activity</p>
-          <h3>{view.findingCount ? "Signs of hiding activity found" : "No hiding activity detected"}</h3>
+          <p className="ws-bypass-hero__label">Bypass attempts</p>
+          <h3>{view.findingCount ? "Bypass attempts detected" : "No bypass attempts detected"}</h3>
           <p className="muted">
             {view.findingCount
               ? `${view.findingCount} concern${view.findingCount === 1 ? "" : "s"} found across ${view.detected.length} area${view.detected.length === 1 ? "" : "s"}.`
-              : "Nothing suggested that someone tried to hide or clean up suspicious activity."}
+              : "Nothing suggested that someone tried to hide activity or clean up suspicious traces."}
           </p>
         </div>
         <div className="ws-bypass-hero__meter" aria-label={`Concern level ${view.riskScore} out of 100`}>
@@ -62,11 +65,11 @@ export function BypassPanel({ report }) {
         <section className="ws-panel">
           <PanelHeader
             icon="shield_alert"
-            title="Detected hiding activity"
+            title="Detected bypass attempts"
             text="Each item explains what looked unusual in plain language."
           />
           <div className="ws-panel__body">
-            {view.detected.map((group) => (
+            {groupsPage.slice.map((group) => (
               <div key={group.techniqueId} className="ws-bypass-group">
                 <header className="ws-bypass-group__head">
                   <MaterialIcon name="security" size={18} />
@@ -85,6 +88,7 @@ export function BypassPanel({ report }) {
                 </div>
               </div>
             ))}
+            <Pagination {...groupsPage} onPageChange={groupsPage.goTo} />
           </div>
         </section>
       ) : (
