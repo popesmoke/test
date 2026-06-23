@@ -1300,7 +1300,14 @@ class Handler(BaseHTTPRequestHandler):
                     discord_sync.persist_all()
                 else:
                     backup.create_and_upload_backup()
-                self.send_json(HTTPStatus.OK, {"status": "backed_up", "storage": discord_sync.get_status()})
+                self.send_json(
+                    HTTPStatus.OK,
+                    {
+                        "status": "backed_up",
+                        "file": discord_sync.SNAPSHOT_FILENAME,
+                        "storage": discord_sync.get_status(),
+                    },
+                )
             except Exception as error:
                 self.send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"detail": str(error)})
             return

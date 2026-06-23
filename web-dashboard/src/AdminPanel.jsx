@@ -432,13 +432,17 @@ export function AdminPanel({ apiUrl, token, authHeaders }) {
               <strong>{storage.channel_id || "n/a"}</strong>
             </li>
             <li>
+              <span>Backup file</span>
+              <strong>{storage.snapshot_file || "virello-scanner-backup.txt"}</strong>
+            </li>
+            <li>
               <span>Last sync</span>
               <strong>{formatWhen(storage.last_sync_at)}</strong>
             </li>
           </ul>
           <p className="muted admin-storage-hint">
-            Data is stored as txt JSON attachments in your Discord sync channel. Every redeploy pulls the latest
-            files from that channel automatically.
+            One backup file is uploaded per change (debounced ~2.5s). On redeploy the latest backup file is restored
+            from Discord automatically.
           </p>
         </div>
       ) : null}

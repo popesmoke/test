@@ -17,16 +17,18 @@ DISCORD_SYNC_CHANNEL_ID = os.getenv("DISCORD_SYNC_CHANNEL_ID") or os.getenv(
 )
 
 DATA_DIR = Path(__file__).resolve().parent / "sync_data"
+SNAPSHOT_FILENAME = "virello-scanner-backup.txt"
+SNAPSHOT_VERSION = 1
 
-FILE_MAP = {
+TABLES = ("sessions", "discord_users", "users", "pending_registration_otps")
+
+LEGACY_FILE_MAP = {
     "sessions": "virello-sessions.txt",
     "discord_users": "virello-discord-users.txt",
     "users": "virello-users.txt",
     "pending_registration_otps": "virello-pending-otps.txt",
     "meta": "virello-meta.txt",
 }
-
-TABLES = ("sessions", "discord_users", "users", "pending_registration_otps")
 
 _connect: Callable = None  # type: ignore[assignment]
 _db_execute: Callable = None  # type: ignore[assignment]
@@ -62,12 +64,11 @@ def storage_mode() -> str:
     return "sqlite"
 
 
-def _local_path(filename: str) -> Path:
-    return DATA_DIR / filename
+def _local_snapshot_path() -> Path:
+    return DATA_DIR / SNAPSHOT_FILENAME
 
 
-def _read_local_json(filename: str, fallback):
-    path = _local_path(filename)
+def _read_json_file(path: Path, fallback):
     if not path.exists():
         return fallback
     try:
@@ -76,9 +77,48 @@ def _read_local_json(filename: str, fallback):
         return fallback
 
 
-def _write_local_json(filename: str, data) -> None:
+def _pack_snapshot(snapshot: dict) -> dict:
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return {
+        "version": SNAPSHOT_VERSION,
+        "exported_at": now,
+        "sessions": snapshot.get("sessions", []),
+        "discord_users": snapshot.get("discord_users", []),
+        "users": snapshot.get("users", []),
+        "pending_registration_otps": snapshot.get("pending_registration_otps", []),
+        "meta": {
+            **(snapshot.get("meta") or {}),
+            "last_sync_at": now,
+        },
+    }
+
+
+def _unpack_snapshot(data: dict | None) -> dict:
+    if not isinstance(data, dict):
+        return {table: [] for table in TABLES} | {"meta": {}}
+    return {
+        "sessions": data.get("sessions", []),
+        "discord_users": data.get("discord_users", []),
+        "users": data.get("users", []),
+        "pending_registration_otps": data.get("pending_registration_otps", []),
+        "meta": data.get("meta", {}),
+    }
+
+
+def _write_local_snapshot(packed: dict) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    _local_path(filename).write_text(json.dumps(data, indent=2), encoding="utf-8")
+    _local_snapshot_path().write_text(json.dumps(packed, indent=2), encoding="utf-8")
+
+
+def _read_local_snapshot() -> dict | None:
+    raw = _read_json_file(_local_snapshot_path(), None)
+    if raw is None:
+        return None
+    return _unpack_snapshot(raw)
+
+
+def _has_data(snapshot: dict) -> bool:
+    return any(isinstance(snapshot.get(table), list) and snapshot[table] for table in TABLES)
 
 
 def _discord_request(method: str, api_path: str, *, body: bytes | None = None, headers: dict | None = None) -> dict | list | None:
@@ -126,17 +166,19 @@ def _download_text(url: str) -> str:
         return response.read().decode("utf-8")
 
 
-def _upload_text(filename: str, text: str, label: str) -> None:
+def _upload_snapshot(packed: dict) -> None:
+    global _last_sync_at
+    text = json.dumps(packed, indent=2)
     boundary = f"----VirelloSync{int(time.time() * 1000)}"
     payload = json.dumps(
-        {"content": f"Virello Scanner data sync: {label} ({datetime.now(timezone.utc).isoformat()})"}
+        {"content": f"Virello Scanner backup ({packed.get('exported_at', 'unknown')})"}
     )
     body = (
         f"--{boundary}\r\n"
         f'Content-Disposition: form-data; name="payload_json"\r\n\r\n'
         f"{payload}\r\n"
         f"--{boundary}\r\n"
-        f'Content-Disposition: form-data; name="files[0]"; filename="{filename}"\r\n'
+        f'Content-Disposition: form-data; name="files[0]"; filename="{SNAPSHOT_FILENAME}"\r\n'
         f"Content-Type: text/plain\r\n\r\n"
         f"{text}\r\n"
         f"--{boundary}--\r\n"
@@ -147,6 +189,7 @@ def _upload_text(filename: str, text: str, label: str) -> None:
         body=body,
         headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
     )
+    _last_sync_at = packed.get("meta", {}).get("last_sync_at") or packed.get("exported_at")
 
 
 def _export_table(conn, table: str) -> list:
@@ -161,7 +204,7 @@ def export_snapshot() -> dict:
             "discord_users": _export_table(conn, "discord_users"),
             "users": _export_table(conn, "users"),
             "pending_registration_otps": _export_table(conn, "pending_registration_otps"),
-            "meta": {"last_sync_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")},
+            "meta": {},
         }
 
 
@@ -193,15 +236,12 @@ def _import_snapshot(snapshot: dict) -> None:
 
 
 def persist_all(snapshot: dict | None = None) -> None:
-    global _last_sync_at
     if snapshot is None:
         snapshot = export_snapshot()
-    for key, filename in FILE_MAP.items():
-        payload = snapshot.get(key, {} if key == "meta" else [])
-        _write_local_json(filename, payload)
-        if is_configured():
-            _upload_text(filename, json.dumps(payload, indent=2), key)
-    _last_sync_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    packed = _pack_snapshot(snapshot)
+    _write_local_snapshot(packed)
+    if is_configured():
+        _upload_snapshot(packed)
 
 
 def schedule_persist() -> None:
@@ -226,33 +266,56 @@ def notify_db_changed() -> None:
         schedule_persist()
 
 
-def load_key_from_discord(key: str):
-    filename = FILE_MAP[key]
-    attachment = _find_latest_attachment(filename)
+def _load_snapshot_from_discord() -> dict | None:
+    attachment = _find_latest_attachment(SNAPSHOT_FILENAME)
     if not attachment:
         return None
     text = _download_text(attachment["url"])
-    return json.loads(text)
+    return _unpack_snapshot(json.loads(text))
+
+
+def _load_legacy_from_discord() -> dict | None:
+    snapshot: dict = {table: [] for table in TABLES} | {"meta": {}}
+    loaded = False
+    for key, filename in LEGACY_FILE_MAP.items():
+        try:
+            attachment = _find_latest_attachment(filename)
+            if not attachment:
+                continue
+            text = _download_text(attachment["url"])
+            remote = json.loads(text)
+            if key == "meta" or (isinstance(remote, list) and remote):
+                snapshot[key] = remote
+                loaded = True
+        except Exception as error:
+            print(f"Discord legacy sync load failed for {key}: {error}")
+    return snapshot if loaded else None
 
 
 def load_from_discord() -> bool:
     if not is_configured():
         return False
-    loaded = False
-    snapshot: dict = {}
-    for key in FILE_MAP:
-        try:
-            remote = load_key_from_discord(key)
-            if remote is not None and (key == "meta" or (isinstance(remote, list) and remote)):
-                snapshot[key] = remote
-                _write_local_json(FILE_MAP[key], remote)
-                loaded = True
-        except Exception as error:
-            print(f"Discord sync load failed for {key}: {error}")
-    if loaded and any(snapshot.get(table) for table in TABLES):
-        _import_snapshot(snapshot)
-        print("Discord sync: restored database from channel txt files.")
-        return True
+
+    try:
+        remote = _load_snapshot_from_discord()
+        if remote and _has_data(remote):
+            _write_local_snapshot(_pack_snapshot(remote))
+            _import_snapshot(remote)
+            print("Discord sync: restored from unified backup file.")
+            return True
+    except Exception as error:
+        print(f"Discord unified backup load failed: {error}")
+
+    try:
+        legacy = _load_legacy_from_discord()
+        if legacy and _has_data(legacy):
+            persist_all(legacy)
+            _import_snapshot(legacy)
+            print("Discord sync: migrated legacy multi-file backup to unified file.")
+            return True
+    except Exception as error:
+        print(f"Discord legacy backup load failed: {error}")
+
     return False
 
 
@@ -262,15 +325,13 @@ def initialize() -> None:
     if not is_configured():
         print("Discord sync: STORAGE_MODE=discord but channel/token not configured.")
         return
-    local_has_data = any(
-        isinstance(_read_local_json(FILE_MAP[table], []), list) and _read_local_json(FILE_MAP[table], [])
-        for table in TABLES
-    )
+    local = _read_local_snapshot()
+    local_has_data = bool(local and _has_data(local))
     if load_from_discord():
         return
     if local_has_data:
         try:
-            persist_all()
+            persist_all(local)
             print("Discord sync: uploaded local data to channel (first-time seed).")
         except Exception as error:
             print(f"Discord sync seed upload failed: {error}")
@@ -283,5 +344,6 @@ def get_status() -> dict:
         "mode": storage_mode(),
         "configured": is_configured(),
         "channel_id": DISCORD_SYNC_CHANNEL_ID or None,
+        "snapshot_file": SNAPSHOT_FILENAME,
         "last_sync_at": _last_sync_at,
     }
