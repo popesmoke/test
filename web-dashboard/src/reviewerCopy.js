@@ -55,7 +55,7 @@ const GENERIC_REASON_DETAILS = {
   "Executor / cheat path matches": "One or more file paths matched the watch list.",
   "Executor / cheat-tagged recent files": "Recent files matched review keywords.",
   "Prefetch execution traces": "Recent program activity matched the watch list.",
-  "Profile folder executor filenames": "Files in common user folders matched the watch list.",
+  "Profile folder executor filenames": "Files in common folders matched the watch list.",
   "Profile folder cheat-like filenames": "Some file names looked like common cheat labels.",
   "Profile folder odd filenames": "Some file names looked randomly generated.",
   "Deleted cheat/executor traces recovered": "Removed files still left traces on the system.",

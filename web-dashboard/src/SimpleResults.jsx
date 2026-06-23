@@ -2,7 +2,7 @@
 import { MaterialIcon } from "./components/MaterialIcon.jsx";
 import { defenderSummary } from "./defenderSignals.js";
 import { scanReviewFromReport } from "./reportDigest.js";
-import { formatDisplayLocation, privacyPath } from "./resultPrivacy.js";
+import { formatDisplayLocation, privacyPath, publicFindingLabels } from "./resultPrivacy.js";
 import { sortBySuspicion, genericFindingTitle, genericReasonLabel, genericReasonDetail } from "./reviewerCopy.js";
 
 const TABS = [
@@ -481,7 +481,7 @@ function DownloadsTab({ review, formatGmtPlus3 }) {
                 </p>
               ) : null}
               {row.matched_labels?.length ? (
-                <p className="muted">Matched: {row.matched_labels.join(", ")}</p>
+                <p className="muted">{publicFindingLabels(row.matched_labels).join(", ")}</p>
               ) : null}
               {row.url && row.suspicious ? (
                 <details className="simple-path-fold">
