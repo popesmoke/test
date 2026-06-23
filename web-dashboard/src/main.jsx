@@ -4,7 +4,7 @@ import "./styles.css";
 import "./desk.css";
 import { formatDisplayDate, normalizeIsoDateString } from "./dateFormat.js";
 import { sanitizeEventTimestamp } from "./activityTime.js";
-import { privacyPath, privacyAccountLabel, redactProfilePrefix, publicFindingLabels, formatReviewPath } from "./resultPrivacy.js";
+import { privacyPath, privacyAccountLabel, redactProfilePrefix, publicFindingLabels, shortActivityPath } from "./resultPrivacy.js";
 import { AdminPanel } from "./AdminPanel.jsx";
 import { defenderHasActionableSignal, defenderSummary } from "./defenderSignals.js";
 import { exportReportPdf } from "./exportReportPdf.js";
@@ -25,6 +25,13 @@ import {
   reviewerSafeText,
   sortBySuspicion,
 } from "./reviewerCopy.js";
+import { collectRobloxAccountsFromReport, collectDiscordAccountsFromReport } from "./accountExtract.js";
+import {
+  formatSystemOverviewLines,
+  formatRecycleBinItems,
+  formatPersistenceEntries,
+  formatRobloxIntegrity,
+} from "./dashboardDisplay.js";
 
 const AUTH_CALLBACK = consumeAuthCallback();
 
@@ -717,10 +724,6 @@ function activityEventSummary(event) {
     removed_executor_artifact: `Evidence remains for ${quoted} even though it was removed from disk and the Recycle Bin.`,
   };
   let summary = byKind[event?.kind] || `${ACTIVITY_KIND_LABELS[event?.kind] ?? event?.kind ?? "Activity"} involving ${quoted}.`;
-  const label = String(event?.label || "").trim();
-  if (label && !["GUI launch", "keyword", "Compatibility Assistant", "Run trace"].includes(label)) {
-    summary += ` Matched: ${label}.`;
-  }
   return summary;
 }
 
@@ -738,8 +741,6 @@ function executorEventSummary(event) {
     persistence: `Startup or auto-run references ${quoted}.`,
   };
   let summary = byKind[event?.kind] || `Flagged program activity involving ${quoted}.`;
-  const label = String(event?.label || "").trim();
-  if (label) summary += ` Matched: ${label}.`;
   return summary;
 }
 
@@ -1121,7 +1122,7 @@ function UserActivitySection({ report, query }) {
                   </span>
                   <span className="activity-category-pill">{ACTIVITY_CATEGORY_LABELS[event.category] ?? event.category}</span>
                   <p className="plain-summary">{activityEventSummary(event)}</p>
-                  {event.path ? <p className="executor-event-path">{formatReviewPath(event.path)}</p> : null}
+                  {event.path ? <p className="executor-event-path">{shortActivityPath(event.path)}</p> : null}
                 </div>
                 <div className="activity-time-col">
                   <time>{event.occurred_at ? formatGmtPlus3(event.occurred_at) : "—"}</time>
@@ -1208,7 +1209,7 @@ function ExecutorActivityCard({ report }) {
                   </span>
                   <span className="activity-category-pill">{EXECUTOR_KIND_LABELS[event.kind] ?? event.kind}</span>
                   <p className="plain-summary">{executorEventSummary(event)}</p>
-                  <p className="executor-event-path">{formatReviewPath(event.path)}</p>
+                  <p className="executor-event-path">{shortActivityPath(event.path)}</p>
                   <small className="muted">{reviewerSafeText(event.detail) || null}</small>
                 </div>
                 <time>{event.occurred_at ? formatGmtPlus3(event.occurred_at) : "—"}</time>
@@ -1274,7 +1275,7 @@ function StarterSection({ report }) {
               <div className="opened-file-row" key={`${item.path}-${index}`}>
                 <div>
                   <p className="plain-summary">{openedFilePlainSummary(item)}</p>
-                  <p className="executor-event-path">{formatReviewPath(item.path)}</p>
+                  <p className="executor-event-path">{shortActivityPath(item.path)}</p>
                 </div>
                 <div className="opened-file-times">
                   <time>{formatGmtPlus3(item.displayAt)}</time>
@@ -1309,64 +1310,7 @@ function robloxHeadshotUrl(account) {
 }
 
 function collectRobloxAccounts(roblox) {
-  const byId = new Map();
-
-  const mergeAccount = (account, sourceLabel) => {
-    const userId = account?.user_id ? String(account.user_id) : "";
-    if (!userId) return;
-    const existing = byId.get(userId) ?? {
-      user_id: userId,
-      username: null,
-      headshot_url: null,
-      sources: [],
-      authenticated: false,
-    };
-    if (account.username) existing.username = account.username;
-    if (account.headshot_url) existing.headshot_url = account.headshot_url;
-    if (account.authenticated) existing.authenticated = true;
-    const sources = account.sources?.length ? account.sources : sourceLabel ? [sourceLabel] : [];
-    if (sources.length) {
-      existing.sources = [...new Set([...existing.sources, ...sources])];
-    }
-    byId.set(userId, existing);
-  };
-
-  for (const account of roblox.accounts ?? []) {
-    mergeAccount(account);
-  }
-
-  for (const userId of roblox.aggregate_user_ids ?? []) {
-    mergeAccount({ user_id: String(userId), sources: ["Scan summary"] });
-  }
-
-  for (const artifact of roblox.browser_scan?.artifacts ?? []) {
-    for (const userId of artifact.user_ids ?? []) {
-      mergeAccount(
-        {
-          user_id: String(userId),
-          username: artifact.session_username,
-          authenticated: Boolean(artifact.authenticated),
-          sources: artifact.sources,
-        },
-        `Browser: ${artifact.browser ?? "unknown"}`,
-      );
-    }
-    if (artifact.session_user_id) {
-      mergeAccount({
-        user_id: String(artifact.session_user_id),
-        username: artifact.session_username,
-        authenticated: Boolean(artifact.authenticated),
-        sources: artifact.sources,
-      });
-    }
-  }
-
-  return [...byId.values()].sort((left, right) => {
-    const leftId = Number(left.user_id);
-    const rightId = Number(right.user_id);
-    if (Number.isFinite(leftId) && Number.isFinite(rightId)) return leftId - rightId;
-    return String(left.user_id).localeCompare(String(right.user_id));
-  });
+  return collectRobloxAccountsFromReport(roblox);
 }
 
 function robloxDisplayName(account) {
@@ -1470,7 +1414,10 @@ function discordAvatarUrl(account) {
 }
 
 function DiscordAccountsCard({ report }) {
-  const accounts = report.application_diagnostics?.discord?.accounts ?? [];
+  const accounts = collectDiscordAccountsFromReport(
+    report.application_diagnostics?.discord ?? {},
+    report,
+  );
 
   return (
     <Card icon="forum" title="Discord accounts">
@@ -1647,31 +1594,36 @@ function SystemSection({ report, query }) {
   const system = report.system_overview ?? {};
   const perf = report.performance_environment ?? {};
   const sec = report.security_integrity_signals ?? {};
+  const recycleRows = formatRecycleBinItems(perf.trash?.items);
   return (
     <>
       <Card icon="memory" title="System Overview">
-        <TerminalBlock query={query}>
-          {[
-            `OS: ${system.os ?? "unknown"}`,
-            `Hardware Model: ${system.hardware?.hardware_model ?? system.machine ?? "unknown"}`,
-            `Architecture: ${system.machine ?? "unknown"}`,
-            `CPU Cores: ${system.cpu_count_physical ?? "unknown"} physical / ${system.cpu_count_logical ?? "unknown"} logical`,
-            `Boot Time: ${formatGmtPlus3(perf.boot_time)}`,
-            `Hashed Hostname: ${system.hostname_hash ?? "unknown"}`,
-            `Hashed Hardware UUID: ${system.hardware?.uuid_hash ?? "unknown"}`,
-          ].join("\n")}
-        </TerminalBlock>
-      </Card>
-      <Card icon="memory" title="Services">
-        <TerminalBlock query={query}>{sec.services?.raw}</TerminalBlock>
+        <div className="simple-summary-list">
+          {formatSystemOverviewLines(system, perf, formatGmtPlus3).map((line) => (
+            <p key={line}>{line}</p>
+          ))}
+        </div>
       </Card>
       <Card icon="delete" title="Recycle Bin">
-        <TerminalBlock query={query}>{asJson(perf.trash)}</TerminalBlock>
+        {recycleRows.length ? (
+          <div className="evidence-list">
+            {recycleRows.map((row) => (
+              <div className="evidence-row evidence-row--static" key={row.key}>
+                <div className="evidence-row-main">
+                  <strong className="evidence-row-title">{row.name}</strong>
+                  <p className="evidence-row-path">{row.note}</p>
+                </div>
+                <time className="evidence-row-time">{row.when ? formatGmtPlus3(row.when) : "Unknown time"}</time>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="muted">Recycle Bin is empty or nothing useful was logged.</p>
+        )}
       </Card>
       <Card icon="terminal" title="Shell History">
         <p className="muted panel-intro">
-          PowerShell PSReadLine does not store per-command UTC. The time shown is when the history file was last
-          updated — usually when recent commands (low &quot;lines from end&quot;) were entered.
+          Recent PowerShell commands that matched review keywords. Times reflect when the history file was last updated.
         </p>
         {(sec.command_history_keyword_hits?.hits ?? []).length ? (
           <div className="evidence-list">
@@ -1686,12 +1638,9 @@ function SystemSection({ report, query }) {
                 <div className="evidence-row evidence-row--static" key={`sh-${index}`}>
                   <div className="evidence-row-main">
                     <strong className="evidence-row-title">
-                      {publicFindingLabels(hit.matched ?? []).join(", ") || "Suspicious activity"}
+                      {publicFindingLabels(hit.matched ?? []).join(", ") || "Keyword match"}
                     </strong>
                     <p className="evidence-row-path">{redactProfilePrefix(hit.line)}</p>
-                    <small className="evidence-row-meta">
-                      {hit.lines_from_end != null ? `${hit.lines_from_end} line(s) from end of history` : "history match"}
-                    </small>
                   </div>
                   <time className="evidence-row-time">
                     {hit.occurred_at || hit.history_file_modified_utc
@@ -1704,10 +1653,6 @@ function SystemSection({ report, query }) {
         ) : (
           <p className="muted">No matching shell history lines.</p>
         )}
-        <details className="raw-fold">
-          <summary>View raw shell history JSON</summary>
-          <TerminalBlock query={query}>{asJson(sec.command_history_keyword_hits)}</TerminalBlock>
-        </details>
       </Card>
     </>
   );
@@ -1845,9 +1790,10 @@ function RegistrySection({ report, query }) {
               <div className="evidence-row evidence-row--static" key={`bam-${row.normalized_path}-${index}`}>
                 <div className="evidence-row-main">
                   <strong className="evidence-row-title">
-                    {(row.executor_name_hits ?? row.cheat_filename_hints ?? ["Program"]).join(", ")}
+                    {publicFindingLabels(row.executor_name_hits ?? row.cheat_filename_hints ?? []).join(", ") ||
+                      "Program"}
                   </strong>
-                  <p className="evidence-row-path">{privacyPath(row.normalized_path || row.registry_path_value)}</p>
+                  <p className="evidence-row-path">{shortActivityPath(row.normalized_path || row.registry_path_value)}</p>
                 </div>
                 <time className="evidence-row-time">
                   {row.last_execution_utc ? formatGmtPlus3(row.last_execution_utc) : "Time unknown"}
@@ -1892,10 +1838,11 @@ function FileAnalysisSection({ report, query }) {
           {rows.slice(0, 40).map((row, index) => (
             <div className="evidence-row evidence-row--static" key={`file-${row.path || row.name}-${index}`}>
               <div className="evidence-row-main">
-                <strong className="evidence-row-title">
-                  {(row.executor_name_hits ?? row.matched_indicator_names ?? ["File match"]).slice(0, 2).join(", ")}
-                </strong>
-                <p className="evidence-row-path">{privacyPath(row.path || row.name)}</p>
+                  <strong className="evidence-row-title">
+                    {publicFindingLabels(row.executor_name_hits ?? row.matched_indicator_names ?? []).join(", ") ||
+                      "File match"}
+                  </strong>
+                  <p className="evidence-row-path">{shortActivityPath(row.path || row.name)}</p>
               </div>
               <time className="evidence-row-time">
                 {row.modified || row.last_run ? formatGmtPlus3(row.modified || row.last_run) : "Time unknown"}
@@ -1926,8 +1873,10 @@ function SuspiciousFilesSection({ report, query }) {
           {rows.slice(0, 40).map((row, index) => (
             <div className="evidence-row evidence-row--static" key={`recent-${row.path}-${index}`}>
               <div className="evidence-row-main">
-                <strong className="evidence-row-title">{(row.matched_indicator_names ?? []).join(", ")}</strong>
-                <p className="evidence-row-path">{privacyPath(row.path)}</p>
+                <strong className="evidence-row-title">
+                  {publicFindingLabels(row.matched_indicator_names ?? []).join(", ") || "Flagged file"}
+                </strong>
+                <p className="evidence-row-path">{shortActivityPath(row.path)}</p>
               </div>
               <time className="evidence-row-time">
                 {row.modified ? formatGmtPlus3(row.modified) : "Time unknown"}
@@ -1982,7 +1931,7 @@ function DeletionsSection({ report, query }) {
                       "Deletion"}
                   </span>
                   <p className="plain-summary">{row.summary || activityEventSummary(row)}</p>
-                  <p className="executor-event-path">{formatReviewPath(row.path)}</p>
+                  <p className="executor-event-path">{shortActivityPath(row.path)}</p>
                   {row.gap_human ? (
                     <small className="muted">
                       Time between delete and cleanup: <strong>{row.gap_human}</strong>
@@ -2028,7 +1977,7 @@ function DeletionsSection({ report, query }) {
                     {(event.recency ?? "unknown").replace(/_/g, " ")}
                   </span>
                   <p className="plain-summary">{event.summary || activityEventSummary(event)}</p>
-                  <p className="executor-event-path">{formatReviewPath(event.path)}</p>
+                  <p className="executor-event-path">{shortActivityPath(event.path)}</p>
                   {event.gap_human ? (
                     <small className="muted">
                       Recycle Bin cleanup followed <strong>{event.gap_human}</strong> later.
@@ -2047,18 +1996,13 @@ function DeletionsSection({ report, query }) {
           </div>
         ) : trashItems.length ? (
           <div className="executor-event-list">
-            {trashItems.slice(0, 30).map((item, index) => (
-              <div className="executor-event-row" key={`trash-${item.name}-${index}`}>
+            {formatRecycleBinItems(trashItems).map((item) => (
+              <div className="executor-event-row" key={item.key}>
                 <div>
-                  <strong>{basenameOf(item.original_path || item.name) || "Deleted item"}</strong>
-                  <p className="executor-event-path">{item.location}</p>
-                  {item.timestamp_source ? (
-                    <small className="timestamp-source">Source: {formatTimestampSource(item.timestamp_source)}</small>
-                  ) : null}
+                  <strong>{item.name}</strong>
+                  <p className="executor-event-path">{item.note}</p>
                 </div>
-                <time>
-                  {formatGmtPlus3(item.display_at || item.deleted_at || item.modified)}
-                </time>
+                <time>{item.when ? formatGmtPlus3(item.when) : "Unknown time"}</time>
               </div>
             ))}
           </div>
@@ -2087,36 +2031,64 @@ function DeletionsSection({ report, query }) {
 }
 
 function MemorySection({ report, query }) {
-  const processes = report.process_overview?.items ?? [];
-  const robloxProcesses = processes.filter((proc) => (proc.name ?? "").toLowerCase().includes("roblox"));
   const runtime = report.security_integrity_signals?.roblox_runtime_integrity ?? {};
   const persistence = report.security_integrity_signals?.persistence_signals ?? {};
+  const integrity = formatRobloxIntegrity(runtime);
+  const persistenceView = formatPersistenceEntries(persistence);
   const shaBlocklist = report.security_integrity_signals?.executor_sha256_blocklist ?? {};
+  const knownHits = (shaBlocklist.hits ?? []).slice(0, 20);
+
   return (
     <>
-      <Card icon="sd_card" title="Roblox integrity (live + offline)">
-        <TerminalBlock query={query}>
-          {runtime.available === false
-            ? runtime.reason ?? "Roblox integrity scan not available on this host."
-            : runtime.suspicious_modules?.length
-              ? asJson(runtime)
-              : "[OK] No suspicious Roblox integrity signals were found in available artifacts."}
-        </TerminalBlock>
+      <Card icon="sd_card" title="Roblox check">
+        {integrity.empty ? (
+          <p className="muted">{integrity.message}</p>
+        ) : (
+          <div className="evidence-list">
+            {integrity.rows.map((row) => (
+              <div className="evidence-row evidence-row--static" key={row.key}>
+                <div className="evidence-row-main">
+                  <strong className="evidence-row-title">{row.title}</strong>
+                  <p className="evidence-row-path">{row.path}</p>
+                  <small className="muted">{row.mode}</small>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </Card>
-      <Card icon="sd_card" title="Persistence signals">
-        <TerminalBlock query={query}>
-          {persistence.available === false
-            ? persistence.reason ?? "Persistence scan not available."
-            : asJson(persistence)}
-        </TerminalBlock>
+      <Card icon="sd_card" title="Startup items">
+        {persistenceView.empty ? (
+          <p className="muted">{persistenceView.message}</p>
+        ) : (
+          <div className="evidence-list">
+            {persistenceView.rows.map((row) => (
+              <div className="evidence-row evidence-row--static" key={row.key}>
+                <div className="evidence-row-main">
+                  <strong className="evidence-row-title">{row.title}</strong>
+                  <p className="evidence-row-path">{row.detail}</p>
+                  <small className="muted">{row.target}</small>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </Card>
       <Card icon="sd_card" title="Known file matches">
-        <TerminalBlock query={query}>{asJson(shaBlocklist)}</TerminalBlock>
-      </Card>
-      <Card icon="sd_card" title="Process Snapshot">
-        <TerminalBlock query={query}>
-          {robloxProcesses.length ? asJson(robloxProcesses) : "[OK] Roblox Memory: No running Roblox process found"}
-        </TerminalBlock>
+        {knownHits.length ? (
+          <div className="evidence-list">
+            {knownHits.map((row, index) => (
+              <div className="evidence-row evidence-row--static" key={`sha-${index}`}>
+                <div className="evidence-row-main">
+                  <strong className="evidence-row-title">Known file match</strong>
+                  <p className="evidence-row-path">{shortActivityPath(row.path || row.name)}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="muted">No known file matches on this scan.</p>
+        )}
       </Card>
     </>
   );

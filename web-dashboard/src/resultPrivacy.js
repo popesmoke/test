@@ -101,6 +101,7 @@ const EXECUTOR_BRAND_NAMES = new Set([
   "Delta",
   "Vega X",
   "Codex",
+  "Swift",
 ]);
 
 export function publicFindingLabels(labels) {
@@ -303,10 +304,12 @@ export function formatDisplayLocation(row) {
   return name || hint || null;
 }
 
+export function shortActivityPath(path) {
+  return formatDisplayLocation(displayPathFields(path)) || pathBasename(path) || "User folder";
+}
+
 export function privacyPath(path) {
-  const relative = formatReviewPath(path);
-  if (relative) return relative;
-  return formatDisplayLocation(displayPathFields(path)) || null;
+  return shortActivityPath(path);
 }
 
 export function privacyAccountLabel(account) {
