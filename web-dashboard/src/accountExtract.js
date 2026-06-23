@@ -2,10 +2,10 @@ const ROBLOX_ID_PATTERNS = [
   /\b(?:userId|UserId|userid|uid)[=: ]+(\d{5,12})\b/g,
   /"UserId"\s*:\s*"?(\d{5,12})"?/g,
   /"userId"\s*:\s*"?(\d{5,12})"?/g,
-  /roblox\.com\/users\/(\d{5,12})\b/gi,
 ];
 
-const DISCORD_ID_PATTERN = /"(?:id|user_id|currentUserId|current_user_id|remote_id)"\s*:\s*"(\d{17,20})"/gi;
+const DISCORD_PROFILE_PATTERN =
+  /"id"\s*:\s*"(\d{17,20})"\s*,\s*"(?:username|global_name|avatar|discriminator|email)"/gi;
 
 function collectIdsFromText(text, patterns) {
   const ids = new Set();
@@ -31,6 +31,29 @@ function isPlausibleDiscordId(userId) {
   } catch {
     return false;
   }
+}
+
+function isTrustedRobloxSource(source) {
+  const label = String(source || "").toLowerCase();
+  return (
+    label.includes("roblox client")
+    || label.includes("session")
+    || label.includes("storage")
+    || label.includes("profile")
+    || label.includes("guac")
+  );
+}
+
+function robloxAccountScore(account) {
+  let score = 0;
+  if (account.authenticated) score += 100;
+  for (const source of account.sources ?? []) {
+    if (isTrustedRobloxSource(source)) score += 40;
+    if (String(source).toLowerCase().includes("session")) score += 30;
+    if (String(source).toLowerCase().includes("history")) score -= 50;
+  }
+  if (account.username) score += 10;
+  return score;
 }
 
 function mergeRobloxAccount(map, account, sourceLabel) {
@@ -61,88 +84,95 @@ export function collectRobloxAccountsFromReport(roblox) {
     mergeRobloxAccount(byId, account);
   }
 
-  for (const userId of roblox.aggregate_user_ids ?? []) {
-    mergeRobloxAccount(byId, { user_id: String(userId), sources: ["Scan summary"] });
-  }
-
   const browserScan = roblox.browser_scan ?? {};
   for (const account of browserScan.accounts ?? []) {
     mergeRobloxAccount(byId, account, "Browser profile");
   }
 
   for (const artifact of browserScan.artifacts ?? []) {
-    for (const userId of artifact.user_ids ?? []) {
-      mergeRobloxAccount(
-        byId,
-        {
-          user_id: String(userId),
-          username: artifact.session_username,
-          authenticated: Boolean(artifact.authenticated),
-          sources: artifact.sources,
-        },
-        `Browser: ${artifact.browser ?? "unknown"}`,
-      );
-    }
-    if (artifact.session_user_id) {
+    const browser = artifact.browser ?? "Browser";
+    const profile = artifact.profile ?? "Default";
+    const sourceLabel = `${browser} ${profile}`;
+    if (artifact.authenticated && artifact.session_user_id) {
       mergeRobloxAccount(byId, {
         user_id: String(artifact.session_user_id),
         username: artifact.session_username,
-        authenticated: Boolean(artifact.authenticated),
-        sources: artifact.sources,
+        authenticated: true,
+        sources: [`${sourceLabel} web login`],
       });
+    }
+    if (artifact.authenticated) {
+      for (const userId of artifact.user_ids ?? []) {
+        mergeRobloxAccount(
+          byId,
+          {
+            user_id: String(userId),
+            username: artifact.session_username,
+            authenticated: true,
+            sources: [`${sourceLabel} web login`],
+          },
+        );
+      }
     }
   }
 
   for (const log of roblox.logs ?? []) {
+    const source = `Client log:${log.name || "log"}`;
+    if (!isTrustedRobloxSource(source)) continue;
     const blob = [log.tail, log.content, log.sample, JSON.stringify(log.signals ?? {})].join("\n");
     for (const userId of collectIdsFromText(blob, ROBLOX_ID_PATTERNS)) {
-      mergeRobloxAccount(byId, { user_id: userId, sources: [`Client log:${log.name || "log"}`] });
+      mergeRobloxAccount(byId, { user_id: userId, sources: [source], authenticated: false });
     }
   }
 
-  const scanBlob = JSON.stringify(browserScan.artifacts ?? []);
-  for (const userId of collectIdsFromText(scanBlob, ROBLOX_ID_PATTERNS)) {
-    mergeRobloxAccount(byId, { user_id: userId, sources: ["Browser artifact"] });
-  }
+  const ranked = [...byId.values()]
+    .map((account) => ({ ...account, _score: robloxAccountScore(account) }))
+    .filter((account) => account._score >= 30)
+    .sort((left, right) => {
+      if (right._score !== left._score) return right._score - left._score;
+      const leftId = Number(left.user_id);
+      const rightId = Number(right.user_id);
+      if (Number.isFinite(leftId) && Number.isFinite(rightId)) return leftId - rightId;
+      return String(left.user_id).localeCompare(String(right.user_id));
+    });
 
-  return [...byId.values()].sort((left, right) => {
-    const leftId = Number(left.user_id);
-    const rightId = Number(right.user_id);
-    if (Number.isFinite(leftId) && Number.isFinite(rightId)) return leftId - rightId;
-    return String(left.user_id).localeCompare(String(right.user_id));
-  });
+  return ranked.map(({ _score, ...account }) => account);
 }
 
 export function collectDiscordAccountsFromReport(discord, report) {
   const byId = new Map();
 
-  const addAccount = (account) => {
+  const addAccount = (account, sourceLabel) => {
     const userId = String(account?.user_id || "").trim();
     if (!userId || !isPlausibleDiscordId(userId)) return;
     const existing = byId.get(userId) ?? {
       user_id: userId,
       display_name: null,
       avatar_hash: null,
+      sources: [],
     };
     if (account.display_name && !existing.display_name) existing.display_name = account.display_name;
     if (account.avatar_hash && !existing.avatar_hash) existing.avatar_hash = account.avatar_hash;
     if (account.avatar_url && !existing.avatar_url) existing.avatar_url = account.avatar_url;
+    if (sourceLabel) {
+      existing.sources = [...new Set([...(existing.sources ?? []), sourceLabel])];
+    }
     byId.set(userId, existing);
   };
 
   for (const account of discord?.accounts ?? []) {
-    addAccount(account);
+    addAccount(account, "Discord app");
   }
 
-  const blob = JSON.stringify({
-    discord,
-    diagnostics: report?.application_diagnostics ?? {},
+  const settingsBlob = JSON.stringify(discord?.accounts ?? []);
+  for (const match of settingsBlob.matchAll(DISCORD_PROFILE_PATTERN)) {
+    addAccount({ user_id: match[1] }, "Discord app storage");
+  }
+
+  return [...byId.values()].sort((left, right) => {
+    const leftScore = (left.sources?.length ?? 0) + (left.display_name ? 1 : 0);
+    const rightScore = (right.sources?.length ?? 0) + (right.display_name ? 1 : 0);
+    if (rightScore !== leftScore) return rightScore - leftScore;
+    return String(left.display_name || left.user_id).localeCompare(String(right.display_name || right.user_id));
   });
-  for (const match of blob.matchAll(DISCORD_ID_PATTERN)) {
-    addAccount({ user_id: match[1] });
-  }
-
-  return [...byId.values()].sort((left, right) =>
-    String(left.display_name || left.user_id).localeCompare(String(right.display_name || right.user_id)),
-  );
 }

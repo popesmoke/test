@@ -1113,9 +1113,19 @@
   box-shadow: none;
 }
 
-.ws-finding__toggle strong {
-  flex: 1;
-  font-size: 14px;
+.simple-row-meta {
+  margin-left: auto;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.simple-timeline > li {
+  list-style: none;
+  padding: 0;
+}
+
+.simple-timeline .ws-finding {
+  border-bottom: none;
 }
 
 .ws-finding--high .ws-finding__icon {

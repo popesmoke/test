@@ -3,7 +3,7 @@ import { MaterialIcon } from "./components/MaterialIcon.jsx";
 import { SeverityBadge, severityRank } from "./components/SeverityBadge.jsx";
 import { defenderSummary } from "./defenderSignals.js";
 import { scanReviewFromReport } from "./reportDigest.js";
-import { formatDisplayLocation, privacyPath, publicFindingLabels } from "./resultPrivacy.js";
+import { formatDisplayLocation, groupFlaggedPrograms, privacyPath, publicFindingDetail, publicFindingTitle } from "./resultPrivacy.js";
 import {
   collectRobloxAccountsFromReport,
   collectDiscordAccountsFromReport,
@@ -88,6 +88,55 @@ function FindingRow({ problem, defaultOpen = false }) {
         <MaterialIcon name="chevron_right" size={16} className={open ? "open" : ""} />
       </button>
       {open ? <p className="ws-finding__detail">{problem.detail}</p> : null}
+    </article>
+  );
+}
+
+function CollapsibleRow({ title, meta, children, defaultOpen = false, warn = false }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <article className={`ws-finding ${warn ? "ws-finding--high" : ""}`}>
+      <button type="button" className="ws-finding__toggle" onClick={() => setOpen((v) => !v)}>
+        <strong>{title}</strong>
+        {meta ? <span className="muted simple-row-meta">{meta}</span> : null}
+        <MaterialIcon name="chevron_right" size={16} className={open ? "open" : ""} />
+      </button>
+      {open ? <div className="ws-finding__detail">{children}</div> : null}
+    </article>
+  );
+}
+
+function ProgramGroup({ group, formatGmtPlus3 }) {
+  const [open, setOpen] = useState(false);
+  const latest = group.items.reduce((best, row) => {
+    if (!row.last_seen) return best;
+    if (!best || row.last_seen > best) return row.last_seen;
+    return best;
+  }, null);
+  return (
+    <article className="ws-finding ws-finding--high">
+      <button type="button" className="ws-finding__toggle" onClick={() => setOpen((v) => !v)}>
+        <strong>{group.title}</strong>
+        <span className="muted simple-row-meta">
+          {group.items.length} trace{group.items.length === 1 ? "" : "s"}
+          {latest ? ` · last seen ${formatGmtPlus3(latest)}` : ""}
+        </span>
+        <MaterialIcon name="chevron_right" size={16} className={open ? "open" : ""} />
+      </button>
+      {open ? (
+        <ul className="simple-program-list ws-finding__detail">
+          {group.items.map((row, index) => (
+            <li key={`${row.name}-${row.last_seen}-${index}`} className="simple-program--warn">
+              <p>{publicFindingDetail(row)}</p>
+              <p className="muted">
+                {row.file_exists === false ? "Removed from disk · " : ""}
+                Last seen {row.last_seen ? formatGmtPlus3(row.last_seen) : "unknown"}
+              </p>
+              <LocationHint row={row} path={row.path} />
+            </li>
+          ))}
+        </ul>
+      ) : null}
     </article>
   );
 }
@@ -177,9 +226,11 @@ const CHAIN_ACTION_LABELS = {
   traced: "Traced",
 };
 
-function FindingsTab({ problems, review, formatGmtPlus3 }) {
+function FindingsTab({ problems, review, report, formatGmtPlus3 }) {
   const chains = review.evidence_chains?.chains ?? [];
   const programs = (review.executable_inventory?.items ?? []).filter((row) => row.suspicious);
+  const programGroups = useMemo(() => groupFlaggedPrograms(programs), [programs]);
+  const bypassFindings = report.security_integrity_signals?.bypass_resilience?.findings ?? [];
   const sortedChains = [...chains].sort((a, b) => {
     const aHigh = a.confidence === "high" ? 0 : 1;
     const bHigh = b.confidence === "high" ? 0 : 1;
@@ -235,27 +286,39 @@ function FindingsTab({ problems, review, formatGmtPlus3 }) {
         </section>
       ) : null}
 
-      {programs.length ? (
+      {programGroups.length ? (
         <section className="ws-panel">
-          <PanelHeader icon="file_code" title="Flagged programs" text="Files that matched review rules." />
+          <PanelHeader
+            icon="file_code"
+            title="Flagged programs"
+            text="Grouped by what matched. Tap a group to see individual traces."
+          />
           <div className="ws-panel__body">
-            <ul className="simple-program-list">
-              {programs.slice(0, 30).map((row, index) => (
-                <li key={`${row.path}-${index}`} className="simple-program--warn">
-                  <div>
-                    <strong>{row.name || row.file_name || "File"}</strong>
-                    {row.labels?.length ? (
-                      <span className="simple-tag">{publicFindingLabels(row.labels).join(", ")}</span>
-                    ) : null}
-                    <p className="muted">
-                      {row.file_exists === false ? "Removed from disk · " : ""}
-                      Last seen {row.last_seen ? formatGmtPlus3(row.last_seen) : "unknown"}
-                    </p>
-                  </div>
-                  <LocationHint row={row} path={row.path} />
-                </li>
-              ))}
-            </ul>
+            {programGroups.map((group) => (
+              <ProgramGroup key={group.title} group={group} formatGmtPlus3={formatGmtPlus3} />
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {bypassFindings.length ? (
+        <section className="ws-panel">
+          <PanelHeader
+            icon="gpp_maybe"
+            title="Bypass attempts"
+            text="Signs someone may have tried to hide cheating activity."
+          />
+          <div className="ws-panel__body">
+            {bypassFindings.map((row, index) => (
+              <CollapsibleRow
+                key={`${row.title}-${index}`}
+                title={genericFindingTitle(row.title)}
+                meta={row.severity || "medium"}
+                warn={row.severity === "high" || row.severity === "critical"}
+              >
+                <p>{genericReasonDetail(row.title, row.detail)}</p>
+              </CollapsibleRow>
+            ))}
           </div>
         </section>
       ) : null}
@@ -347,14 +410,17 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
                   key={`${row.target_path}-${row.started_at}-${index}`}
                   className={row.suspicious ? "simple-timeline--warn" : ""}
                 >
-                  <time>{row.started_at ? formatGmtPlus3(row.started_at) : "—"}</time>
-                  <p>
-                    <strong>{row.file_name || "Download"}</strong> via {row.browser || "browser"}
-                  </p>
-                  {row.matched_labels?.length ? (
-                    <p className="muted">{publicFindingLabels(row.matched_labels).join(", ")}</p>
-                  ) : null}
-                  <LocationHint row={row} path={row.target_path} />
+                  <CollapsibleRow
+                    title={publicFindingTitle(row.matched_labels, row)}
+                    meta={row.started_at ? formatGmtPlus3(row.started_at) : "—"}
+                    warn={row.suspicious}
+                  >
+                    <p>
+                      <strong>{row.file_name || "Download"}</strong> via {row.browser || "browser"}
+                    </p>
+                    <p>{publicFindingDetail(row)}</p>
+                    <LocationHint row={row} path={row.target_path} />
+                  </CollapsibleRow>
                 </li>
               ))}
             </ul>
@@ -371,11 +437,16 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
                   key={`${row.path}-${row.occurred_at}-${index}`}
                   className={row.suspicious ? "simple-timeline--warn" : ""}
                 >
-                  <time>{row.occurred_at ? formatGmtPlus3(row.occurred_at) : "—"}</time>
-                  <p>
-                    <strong>{row.name || row.file_name || "Program"}</strong> {row.summary}
-                  </p>
-                  <LocationHint row={row} path={row.path} />
+                  <CollapsibleRow
+                    title={publicFindingTitle(row.labels, row) || row.name || row.file_name || "Program run"}
+                    meta={row.occurred_at ? formatGmtPlus3(row.occurred_at) : "Time unknown"}
+                    warn={row.suspicious}
+                  >
+                    <p>
+                      <strong>{row.name || row.file_name || "Program"}</strong> {row.summary}
+                    </p>
+                    <LocationHint row={row} path={row.path} />
+                  </CollapsibleRow>
                 </li>
               ))}
             </ul>
@@ -474,7 +545,9 @@ function AccountsTab({ report, token }) {
                     )}
                     <span className="ws-account-card__body">
                       <span className="ws-account-card__name">{displayName}</span>
-                      <span className="ws-account-card__link">View profile</span>
+                      <span className="ws-account-card__link">
+                        {(account.sources ?? []).slice(0, 2).join(" · ") || "View profile"}
+                      </span>
                     </span>
                   </a>
                 );
@@ -508,7 +581,9 @@ function AccountsTab({ report, token }) {
                     )}
                     <span className="ws-account-card__body">
                       <span className="ws-account-card__name">{displayName}</span>
-                      <span className="ws-account-card__link">Discord account</span>
+                      <span className="ws-account-card__link">
+                        {(account.sources ?? []).slice(0, 2).join(" · ") || "Discord account"}
+                      </span>
                     </span>
                   </div>
                 );
@@ -561,7 +636,7 @@ export function SimpleResults({ report, summary, activity, activityEventSummary,
           />
         ) : null}
         {tab === "findings" ? (
-          <FindingsTab problems={problems} review={review} formatGmtPlus3={formatGmtPlus3} />
+          <FindingsTab problems={problems} review={review} report={report} formatGmtPlus3={formatGmtPlus3} />
         ) : null}
         {tab === "activity" ? (
           <ActivityTab

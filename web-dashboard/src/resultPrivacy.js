@@ -104,11 +104,45 @@ const EXECUTOR_BRAND_NAMES = new Set([
   "Swift",
 ]);
 
+const INTERNAL_NOISE_LABELS = new Set(["download_url_extension"]);
+
+function isNoiseInventoryName(name) {
+  const base = String(name || "").trim();
+  if (!base || base.toLowerCase() === "file" || base.toLowerCase() === "download") return true;
+  if (base.startsWith("?") || base.includes("__cf_chl")) return true;
+  if (/^UNCONFIRMED\b/i.test(base) || /\.crdownload$/i.test(base)) return true;
+  if (/^[A-Za-z0-9]{2,8}[-_~][A-Za-z0-9_~\-]{8,}$/.test(base) && !/\.(exe|dll|msi|bat|ps1|zip|rar|7z)$/i.test(base)) {
+    return true;
+  }
+  return false;
+}
+
+export function isNoiseInventoryRow(row) {
+  const labels = row?.labels ?? [];
+  const meaningful = labels.filter((label) => !INTERNAL_NOISE_LABELS.has(String(label || "").trim()));
+  if (!meaningful.length) return true;
+  const name = row?.name || row?.file_name || pathBasename(row?.path || row?.target_path || "");
+  return isNoiseInventoryName(name);
+}
+
+export function primaryFindingSubject(labels, row) {
+  for (const raw of labels ?? []) {
+    const label = String(raw || "").trim();
+    if (EXECUTOR_BRAND_NAMES.has(label)) return label;
+  }
+  const name = String(row?.name || row?.file_name || pathBasename(row?.path || "") || "").trim();
+  if (name && !isNoiseInventoryName(name)) {
+    const stem = name.replace(/\.[a-z0-9]{1,5}$/i, "");
+    if (stem.length >= 3 && stem.length <= 48) return stem;
+  }
+  return null;
+}
+
 export function publicFindingLabels(labels) {
   const out = new Set();
   for (const raw of labels ?? []) {
     const label = String(raw || "").trim();
-    if (!label) continue;
+    if (!label || INTERNAL_NOISE_LABELS.has(label)) continue;
     if (label.startsWith("cheat:") || INTERNAL_CHEAT_HINTS.has(label)) {
       out.add("Cheat-related indicator");
       continue;
@@ -129,6 +163,30 @@ export function publicFindingLabels(labels) {
     out.add("Activity indicator");
   }
   return [...out];
+}
+
+export function publicFindingKind(labels) {
+  const kinds = publicFindingLabels(labels);
+  return kinds[0] || "Activity indicator";
+}
+
+export function publicFindingTitle(labels, row) {
+  const kind = publicFindingKind(labels);
+  const subject = primaryFindingSubject(labels, row);
+  return subject ? `${kind} (${subject})` : kind;
+}
+
+export function publicFindingDetail(row) {
+  if (row?.file_exists === false) {
+    return "Ran on this PC, was deleted or removed, but Windows traces still prove it was there.";
+  }
+  if (row?.trace_note?.toLowerCase?.().includes("removed from disk")) {
+    return "Ran on this PC, was deleted or removed, but Windows traces still prove it was there.";
+  }
+  if (row?.file_exists === true) {
+    return "Matched on this PC. System traces show it ran or was stored here.";
+  }
+  return row?.trace_note || "Activity was recorded on this PC.";
 }
 
 function sanitizeActivitySummary(summary) {
@@ -171,19 +229,51 @@ function sanitizeActivityEvent(event) {
 
 function sanitizeInventoryRow(row) {
   const path = row?.path || "";
+  const labels = publicFindingLabels(row?.labels);
   return {
     ...displayPathFields(path),
-    labels: publicFindingLabels(row?.labels),
-    suspicious: Boolean(row?.suspicious),
+    labels,
+    suspicious: Boolean(row?.suspicious) && labels.length > 0,
     last_seen: row?.last_seen,
     file_exists: row?.file_exists,
     trace_note: row?.trace_note
       || (row?.file_exists === false
-        ? "Removed from disk, but a system trace remains."
+        ? "Ran on this PC, was deleted or removed, but Windows traces still prove it was there."
         : row?.sources?.length
           ? "Flagged from system activity records."
           : undefined),
   };
+}
+
+export function dedupeInventoryItems(items) {
+  const byKey = new Map();
+  for (const row of items ?? []) {
+    const nameKey = String(row?.name || row?.file_name || pathBasename(row?.path || "")).toLowerCase();
+    const key = nameKey && nameKey !== "file" ? nameKey : formatDisplayLocation(row) || row?.path || row?.name;
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, { ...row });
+      continue;
+    }
+    if (row.file_exists === false) existing.file_exists = false;
+    if (row.last_seen && (!existing.last_seen || row.last_seen > existing.last_seen)) {
+      existing.last_seen = row.last_seen;
+    }
+    existing.labels = [...new Set([...(existing.labels ?? []), ...(row.labels ?? [])])];
+    existing.suspicious = Boolean(existing.suspicious || row.suspicious);
+  }
+  return [...byKey.values()];
+}
+
+export function groupFlaggedPrograms(items) {
+  const groups = new Map();
+  for (const row of items) {
+    const title = publicFindingTitle(row.labels, row);
+    const group = groups.get(title) ?? { title, items: [] };
+    group.items.push(row);
+    groups.set(title, group);
+  }
+  return [...groups.values()].sort((a, b) => b.items.length - a.items.length);
 }
 
 function sanitizeStringHit(row) {
@@ -247,12 +337,16 @@ export function sanitizeScanReview(review) {
   const chains = review.evidence_chains ?? {};
 
   const events = (activity.events ?? []).map(sanitizeActivityEvent);
-  const items = (inventory.items ?? [])
-    .filter((row) => row?.suspicious || (row?.labels ?? []).length)
-    .map(sanitizeInventoryRow);
+  const items = dedupeInventoryItems(
+    (inventory.items ?? [])
+      .filter((row) => row?.suspicious || (row?.labels ?? []).length)
+      .filter((row) => !isNoiseInventoryRow(row))
+      .map(sanitizeInventoryRow)
+      .filter((row) => row.labels?.length),
+  );
   const stringItems = (strings.items ?? []).map(sanitizeStringHit);
   const execItems = (execution.items ?? [])
-    .filter((row) => row?.suspicious)
+    .filter((row) => row?.suspicious || row?.occurred_at)
     .map(sanitizeExecutionRow);
   const downloadItems = (downloads.items ?? []).map(sanitizeDownloadRow);
   const chainItems = (chains.chains ?? []).map(sanitizeChain);

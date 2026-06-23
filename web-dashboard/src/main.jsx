@@ -4,7 +4,7 @@ import "./styles.css";
 import "./desk.css";
 import { formatDisplayDate, normalizeIsoDateString } from "./dateFormat.js";
 import { sanitizeEventTimestamp } from "./activityTime.js";
-import { privacyPath, privacyAccountLabel, redactProfilePrefix, publicFindingLabels, shortActivityPath } from "./resultPrivacy.js";
+import { privacyPath, privacyAccountLabel, publicFindingDetail, publicFindingLabels, publicFindingTitle, redactProfilePrefix, shortActivityPath } from "./resultPrivacy.js";
 import { AdminPanel } from "./AdminPanel.jsx";
 import { defenderHasActionableSignal, defenderSummary } from "./defenderSignals.js";
 import { exportReportPdf } from "./exportReportPdf.js";
@@ -1682,7 +1682,7 @@ function BypassSection({ report, query }) {
 
   return (
     <>
-      <Card icon="shield" title="Cover-up signs">
+      <Card icon="shield" title="Bypass attempts">
         {sortedFindings.length ? (
           <div className="evidence-list">
             {sortedFindings.map((row, index) => (
@@ -1789,11 +1789,10 @@ function RegistrySection({ report, query }) {
             {shownBam.map((row, index) => (
               <div className="evidence-row evidence-row--static" key={`bam-${row.normalized_path}-${index}`}>
                 <div className="evidence-row-main">
-                  <strong className="evidence-row-title">
-                    {publicFindingLabels(row.executor_name_hits ?? row.cheat_filename_hints ?? []).join(", ") ||
-                      "Program"}
-                  </strong>
-                  <p className="evidence-row-path">{shortActivityPath(row.normalized_path || row.registry_path_value)}</p>
+                    <strong className="evidence-row-title">
+                      {publicFindingTitle(row.executor_name_hits ?? row.cheat_filename_hints ?? [], row) || "Program"}
+                    </strong>
+                    <p className="evidence-row-path">{publicFindingDetail(row) || shortActivityPath(row.normalized_path || row.registry_path_value)}</p>
                 </div>
                 <time className="evidence-row-time">
                   {row.last_execution_utc ? formatGmtPlus3(row.last_execution_utc) : "Time unknown"}
@@ -1839,10 +1838,9 @@ function FileAnalysisSection({ report, query }) {
             <div className="evidence-row evidence-row--static" key={`file-${row.path || row.name}-${index}`}>
               <div className="evidence-row-main">
                   <strong className="evidence-row-title">
-                    {publicFindingLabels(row.executor_name_hits ?? row.matched_indicator_names ?? []).join(", ") ||
-                      "File match"}
+                    {publicFindingTitle(row.executor_name_hits ?? row.matched_indicator_names ?? [], row) || "File match"}
                   </strong>
-                  <p className="evidence-row-path">{shortActivityPath(row.path || row.name)}</p>
+                  <p className="evidence-row-path">{publicFindingDetail(row) || shortActivityPath(row.path || row.name)}</p>
               </div>
               <time className="evidence-row-time">
                 {row.modified || row.last_run ? formatGmtPlus3(row.modified || row.last_run) : "Time unknown"}
@@ -1874,9 +1872,9 @@ function SuspiciousFilesSection({ report, query }) {
             <div className="evidence-row evidence-row--static" key={`recent-${row.path}-${index}`}>
               <div className="evidence-row-main">
                 <strong className="evidence-row-title">
-                  {publicFindingLabels(row.matched_indicator_names ?? []).join(", ") || "Flagged file"}
+                  {publicFindingTitle(row.matched_indicator_names ?? [], row) || "Flagged file"}
                 </strong>
-                <p className="evidence-row-path">{shortActivityPath(row.path)}</p>
+                <p className="evidence-row-path">{publicFindingDetail(row) || shortActivityPath(row.path)}</p>
               </div>
               <time className="evidence-row-time">
                 {row.modified ? formatGmtPlus3(row.modified) : "Time unknown"}
@@ -2465,7 +2463,7 @@ const resultSections = [
   { id: "roblox", label: "Roblox", icon: "sports_esports", component: RobloxSection },
   { id: "security", label: "Security & AV", icon: "shield", component: SecuritySection },
   { id: "system", label: "System info", icon: "memory", component: SystemSection },
-  { id: "bypass", label: "Cover-up signs", icon: "gpp_maybe", component: BypassSection },
+  { id: "bypass", label: "Bypass attempts", icon: "gpp_maybe", component: BypassSection },
   { id: "registry", label: "Execution traces", icon: "database", component: RegistrySection },
   { id: "file-analysis", label: "File traces", icon: "document_search", component: FileAnalysisSection },
   { id: "suspicious", label: "Flagged files", icon: "folder_off", component: SuspiciousFilesSection },

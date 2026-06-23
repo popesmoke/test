@@ -2813,18 +2813,18 @@ EXECUTOR_NAMES = [
 
 # Extra tokens commonly seen in paths, prefetch stems, or renamed folders.
 EXECUTOR_ALIASES: dict[str, list[str]] = {
-    "Volt": ["volt", "voltexecutor", "volt.exe", "volt1", "volt 1"],
-    "Potassium": ["potassium", "potass", "kpotassium", "potassiumware", "potassium.exe", "potassium 2"],
-    "Wave": ["waveexecutor", "wave.exe", "wave 1", "wave-1", "wave135"],
+    "Volt": ["volt", "voltexecutor", "volt.exe", "volt1", "volt 1", "volt executor"],
+    "Potassium": ["potassium", "potass", "kpotassium", "potassiumware", "potassium.exe", "potassium 2", "game_overlay.dll"],
+    "Wave": ["waveexecutor", "wave.exe", "wave 1", "wave-1", "wave135", "wave executor"],
     "Synapse Z": ["synapse", "synapsez", "synapse z", "synapse-z", "synapse z.exe"],
     "Seliware": ["seliware", "seliware.exe", "seliware 2"],
     "Madium": ["madium", "madium.exe", "madium 1"],
     "Cosmic": ["cosmic", "cosmicexecutor", "cosmicware", "cosmic 3"],
-    "Velocity": ["velocity", "velocityexecutor", "velocity 1", "velocity.exe"],
+    "Velocity": ["velocity", "velocityexecutor", "velocity 1", "velocity.exe", "velocity executor"],
     "SirHurt": ["sirhurt", "sir_hurt", "sirhurt.exe", "sirhurt v5"],
-    "Solara": ["solara", "solarav3", "solarav2", "solara 3"],
+    "Solara": ["solara", "solarav3", "solarav2", "solara 3", "app.solara/index.html", "solara.exe"],
     "Xeno": ["xenoexecutor", "xeno.exe", "xeno 1", "xeno135", "xeno.now"],
-    "Serotonin": ["serotonin", "serotonin.exe", "serotonin v2", "serotoninv2"],
+    "Serotonin": ["serotonin", "serotonin.exe", "serotonin v2", "serotoninv2", "serotoninsetup.exe", "serotonin executor"],
     "Severe": ["severe", "severe.exe", "severe v2", "severev2"],
     "RbxCli": ["rbxcli", "rbxcli.exe", "rbx cli", "rbxcli-beta"],
     "Lumen": ["lumen", "lumenexecutor", "lumen.exe", "lumen 1"],
@@ -4543,7 +4543,40 @@ def bam_path_is_benign_system(path: str) -> bool:
 
 
 def artifact_path_is_review_noise(path: str) -> bool:
-    return bam_path_is_benign_system(path)
+    if bam_path_is_benign_system(path):
+        return True
+    return inventory_path_is_noise(path)
+
+
+_INVENTORY_NOISE_BASENAME = re.compile(
+    r"(?:^UNCONFIRMED\b|\.crdownload$|__cf_chl_|^[?])",
+    re.IGNORECASE,
+)
+_INVENTORY_CHROME_TEMP_NAME = re.compile(
+    r"^[A-Za-z0-9]{2,10}[-_~][A-Za-z0-9_~\-]{8,}$",
+)
+
+
+def inventory_path_is_noise(path: str) -> bool:
+    base = _digest_basename(path) if path else ""
+    if not base or base.lower() in {"file", "download"}:
+        return True
+    if _INVENTORY_NOISE_BASENAME.search(base):
+        return True
+    if base.startswith("?") or "__cf_chl" in base.lower():
+        return True
+    if _INVENTORY_CHROME_TEMP_NAME.match(base) and not re.search(
+        r"\.(exe|dll|msi|bat|ps1|zip|rar|7z)\b",
+        base,
+        re.IGNORECASE,
+    ):
+        return True
+    return False
+
+
+def _meaningful_inventory_labels(labels: list[str] | None) -> list[str]:
+    ignored = {"download_url_extension"}
+    return [label for label in labels or [] if label and label not in ignored]
 
 
 def executor_labels_for_artifact_text(text: str) -> list[str]:
@@ -8605,6 +8638,26 @@ def bypass_resilience_signals(
                 weight=15,
             )
 
+    shell_hits = list(command_history.get("hits") or [])
+    cleanup_hits = [
+        hit
+        for hit in shell_hits
+        if re.search(
+            r"wevtutil\s+cl|Clear-EventLog|fsutil\s+usn|deletejournal|vssadmin\s+delete|Remove-Item.*Prefetch|"
+            r"Clear-RecycleBin|cipher\s+/w|Set-MpPreference.*Disable|DisableRealtimeMonitoring",
+            str(hit.get("line") or ""),
+            re.I,
+        )
+    ]
+    if cleanup_hits:
+        add(
+            severity="high",
+            title="Shell history shows anti-forensics commands",
+            detail=f"PowerShell history contains {len(cleanup_hits)} command(s) that clear logs, prefetch, or weaken defenses.",
+            category="cover_up",
+            weight=20,
+        )
+
     for hint in (prefetch_health or {}).get("tamper_hints") or []:
         if hint == "readonly_prefetch_files":
             add(
@@ -9216,8 +9269,6 @@ def _roblox_app_storage_accounts() -> list[dict[str, object]]:
                 parts = key.split(":")
                 if len(parts) >= 2 and parts[1].isdigit():
                     _append(parts[1], None, None, ["Roblox client profile"])
-            for user_id in _roblox_all_user_ids_from_text_blob(raw):
-                _append(user_id, None, None, ["Roblox client storage"])
 
     if roblox_root.is_dir():
         try:
@@ -9650,15 +9701,23 @@ def _roblox_enrich_accounts(accounts: list[dict], *, include_headshots: bool = T
             except (requests.RequestException, TypeError, ValueError):
                 pass
 
-    enriched = [by_id[uid] for uid in resolved_ids]
-    for entry in enriched:
-        if entry.get("authenticated"):
-            entry["authenticated"] = True
+    enriched: list[dict] = []
+    for uid in resolved_ids:
+        entry = by_id[uid]
+        trusted = bool(entry.get("authenticated")) or any(
+            "roblox client" in str(source).lower() or "session" in str(source).lower()
+            for source in entry.get("sources") or []
+        )
+        if trusted:
+            enriched.append(entry)
     for entry in by_name.values():
         if entry.get("user_id"):
             continue
         if entry.get("username"):
             enriched.append(entry)
+    for entry in enriched:
+        if entry.get("authenticated"):
+            entry["authenticated"] = True
     return enriched[:48]
 
 
@@ -10020,9 +10079,6 @@ def roblox_browser_account_scan() -> dict:
     accounts: list[dict] = []
     seen_ids: set[str] = set()
     artifacts: list[dict] = []
-    browser_close = {"closed": [], "failed": []}
-    if platform.system() == "Windows":
-        browser_close = _close_browsers_for_roblox_scan()
 
     def _append_account(
         user_id: str | None,
@@ -10070,17 +10126,16 @@ def roblox_browser_account_scan() -> dict:
         profile = artifact.get("profile") or "Default"
         source_label = f"{browser} {profile}"
         session_uid = artifact.get("session_user_id")
-        if session_uid:
+        if session_uid and artifact.get("authenticated"):
             _append_account(
                 str(session_uid),
                 artifact.get("session_username"),
-                [f"{source_label} session"],
+                [f"{source_label} web login"],
+                authenticated=True,
             )
-        for uid in artifact.get("user_ids") or []:
-            _append_account(str(uid), None, [f"{source_label} history"])
         for username in artifact.get("usernames") or []:
-            if _roblox_is_plausible_username(username):
-                _append_account(None, username, [f"{source_label} history"])
+            if artifact.get("authenticated") and _roblox_is_plausible_username(username):
+                _append_account(None, username, [f"{source_label} web login"], authenticated=True)
 
     client_session = _roblox_client_session_user()
     if client_session:
@@ -10097,8 +10152,6 @@ def roblox_browser_account_scan() -> dict:
             list(account.get("sources") or ["Roblox client storage"]),
             authenticated=bool(account.get("authenticated")),
         )
-    for user_id in _roblox_all_user_ids_from_appdata():
-        _append_account(user_id, None, ["Roblox client storage"])
 
     if platform.system() == "Windows":
         local = os.getenv("LOCALAPPDATA", "")
@@ -10139,17 +10192,19 @@ def roblox_browser_account_scan() -> dict:
     for log in _roblox_read_client_logs():
         signals = log.get("signals") or extract_roblox_signals(str(log.get("tail") or ""))
         source = f"Roblox client log:{log.get('name', 'unknown')}"
-        for user_id in signals.get("user_ids") or []:
-            _append_account(str(user_id), None, [source])
+        if client_session and client_session.get("user_id"):
+            for user_id in signals.get("user_ids") or []:
+                if str(user_id) == str(client_session.get("user_id")):
+                    _append_account(str(user_id), None, [source], authenticated=True)
         for username in signals.get("usernames") or []:
             if _roblox_is_plausible_username(username):
-                _append_account(None, username, [source])
+                _append_account(None, username, [source], authenticated=False)
     enriched = _roblox_enrich_accounts(accounts, include_headshots=False)
     return {
         "available": True,
         "privacy_mode": "no_browser_sessions",
-        "browsers_closed": browser_close.get("closed") or [],
-        "browsers_close_failed": browser_close.get("failed") or [],
+        "browsers_closed": [],
+        "browsers_close_failed": [],
         "artifact_count": len(artifacts),
         "artifacts": artifacts[:24],
         "accounts": enriched,
@@ -10417,6 +10472,7 @@ def discord_local_accounts_scan() -> dict[str, object]:
     for root in discord_roots:
         if not root.is_dir():
             continue
+        root_label = root.name or "Discord"
         blobs = _discord_collect_storage_blobs(root)
         for blob in blobs[:96]:
             if scan_collect_phase_exhausted():
@@ -10425,35 +10481,49 @@ def discord_local_accounts_scan() -> dict[str, object]:
                 raw = blob.read_bytes()[:3_200_000]
             except OSError:
                 continue
+            source_label = f"Discord app ({root_label})"
             for text in (
                 raw.decode("utf-8", errors="ignore"),
                 raw.decode("latin-1", errors="ignore"),
             ):
-                for user_id in _discord_all_user_ids_from_text(text):
-                    account = accounts_by_id.setdefault(
-                        user_id,
-                        {
-                            "user_id": user_id,
-                            "display_name": None,
-                            "avatar_hash": None,
-                        },
-                    )
-                for profile in _discord_extract_user_profiles(text):
-                    user_id = str(profile.get("user_id") or "")
-                    if not user_id:
-                        continue
-                    account = accounts_by_id.setdefault(
-                        user_id,
-                        {
-                            "user_id": user_id,
-                            "display_name": None,
-                            "avatar_hash": None,
-                        },
-                    )
-                    if profile.get("display_name") and not account.get("display_name"):
-                        account["display_name"] = profile["display_name"]
-                    if profile.get("avatar_hash") and not account.get("avatar_hash"):
-                        account["avatar_hash"] = profile["avatar_hash"]
+                profiles = _discord_extract_user_profiles(text)
+                if profiles:
+                    for profile in profiles:
+                        user_id = str(profile.get("user_id") or "")
+                        if not user_id:
+                            continue
+                        account = accounts_by_id.setdefault(
+                            user_id,
+                            {
+                                "user_id": user_id,
+                                "display_name": None,
+                                "avatar_hash": None,
+                                "sources": [],
+                            },
+                        )
+                        account_sources = list(account.get("sources") or [])
+                        if source_label not in account_sources:
+                            account_sources.append(source_label)
+                        account["sources"] = account_sources
+                        if profile.get("display_name") and not account.get("display_name"):
+                            account["display_name"] = profile["display_name"]
+                        if profile.get("avatar_hash") and not account.get("avatar_hash"):
+                            account["avatar_hash"] = profile["avatar_hash"]
+                elif blob.name.lower() in {"settings.json", "local state", "preferences", "session.json"}:
+                    for user_id in _discord_all_user_ids_from_text(text):
+                        account = accounts_by_id.setdefault(
+                            user_id,
+                            {
+                                "user_id": user_id,
+                                "display_name": None,
+                                "avatar_hash": None,
+                                "sources": [],
+                            },
+                        )
+                        account_sources = list(account.get("sources") or [])
+                        if source_label not in account_sources:
+                            account_sources.append(source_label)
+                        account["sources"] = account_sources
 
     for hint in _discord_browser_profile_account_hints():
         user_id = str(hint.get("user_id") or "")
@@ -10465,18 +10535,28 @@ def discord_local_accounts_scan() -> dict[str, object]:
                 "user_id": user_id,
                 "display_name": None,
                 "avatar_hash": None,
+                "sources": [],
             },
         )
         if hint.get("display_name") and not account.get("display_name"):
             account["display_name"] = hint["display_name"]
+        browser_source = str(hint.get("source") or "Browser profile")
+        account_sources = list(account.get("sources") or [])
+        if browser_source not in account_sources:
+            account_sources.append(f"{browser_source} web login")
+        account["sources"] = account_sources
 
     accounts: list[dict[str, object]] = []
     for user_id, raw in accounts_by_id.items():
+        sources: list[str] = list(raw.get("sources") or [])
+        if not sources:
+            sources = ["Discord app storage"]
         accounts.append(
             {
                 "user_id": user_id,
                 "display_name": raw.get("display_name") or f"User {user_id}",
                 "avatar_hash": raw.get("avatar_hash"),
+                "sources": sources,
             }
         )
 
@@ -10485,7 +10565,7 @@ def discord_local_accounts_scan() -> dict[str, object]:
         "available": True,
         "account_count": len(accounts),
         "accounts": accounts[:64],
-        "note": "Discord desktop app storage and browser profile hints.",
+        "note": "Discord desktop app storage and authenticated browser profile hints.",
     }
 
 
@@ -13177,7 +13257,7 @@ def build_executor_artifact_evidence(
 
     for item in (browser_download_history or {}).get("items") or []:
         path = str(item.get("target_path") or "")
-        labels = list(item.get("matched_labels") or []) or executor_labels_for_artifact_text(path)
+        labels = _meaningful_inventory_labels(list(item.get("matched_labels") or []) or executor_labels_for_artifact_text(path))
         if not labels:
             continue
         _append_executor_artifact_hit(
@@ -13797,11 +13877,7 @@ def _download_row_matches(path: str, url: str, patterns: dict[str, re.Pattern[st
         if any(domain in url_low for domain in domains):
             labels.append(label)
     labels = sorted(set(labels))
-    if not labels and url:
-        lower = url.lower()
-        if any(ext in lower for ext in (".exe", ".dll", ".bat", ".ps1", ".msi", ".zip", ".rar", ".7z")):
-            labels.append("download_url_extension")
-    return bool(labels), labels
+    return bool(_meaningful_inventory_labels(labels)), _meaningful_inventory_labels(labels)
 
 
 def _executor_site_label(url: str) -> str | None:
@@ -15564,6 +15640,24 @@ SUSPICIOUS_STRING_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
                 re.escape(name)
                 for name in EXECUTOR_NAMES
                 if name not in EXECUTOR_AMBIGUOUS_NAMES
+            )
+            + "|"
+            + "|".join(
+                re.escape(token)
+                for token in (
+                    "app.solara/index.html",
+                    "Solara.exe",
+                    "Wave.exe",
+                    "waveexecutor",
+                    "Wave Executor",
+                    "Potassium.exe",
+                    "game_overlay.dll",
+                    "Volt Executor",
+                    "SerotoninSetup.exe",
+                    "Serotonin Executor",
+                    "Velocity Executor",
+                    "RbxCli",
+                )
             ),
             re.IGNORECASE,
         ),
@@ -15804,6 +15898,9 @@ def build_executable_inventory(
         path = forensic_normalize_pathish(path) or path
         if artifact_path_is_review_noise(path):
             return
+        labels = _meaningful_inventory_labels(labels)
+        if not labels and not suspicious:
+            return
         key = _digest_path_key(path)
         name = _digest_basename(path)
         row = by_path.get(key)
@@ -16039,6 +16136,23 @@ def build_execution_activity_feed(
             occurred_at=occurred,
             source="matched_signal",
             summary=str(event.get("detail") or "Matched a reviewed executor or cheat signal."),
+            suspicious=True,
+        )
+
+    for item in userassist.get("items") or []:
+        path = str(item.get("path") or "")
+        if not path or inventory_path_is_noise(path):
+            continue
+        labels = match_executor_labels(path, patterns, path_context=True)
+        labels.extend(item.get("executor_name_hits") or [])
+        labels = _meaningful_inventory_labels(sorted(set(labels)))
+        if not labels:
+            continue
+        add(
+            path=path,
+            occurred_at=item.get("display_at") or item.get("last_run_utc") or item.get("modified"),
+            source="userassist",
+            summary=f"UserAssist recorded this program opening: {', '.join(labels)}.",
             suspicious=True,
         )
 
