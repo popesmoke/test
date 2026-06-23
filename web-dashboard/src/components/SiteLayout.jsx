@@ -80,7 +80,10 @@ export function SiteLayout({ children, variant = "default" }) {
           </div>
 
           <p className="site-footer__copy">
-            &copy; {new Date().getFullYear()} Virello. All rights reserved.
+            &copy; {new Date().getFullYear()} Virello. All rights reserved.{" "}
+            <a href="https://icons8.com" target="_blank" rel="noreferrer">
+              Icons by Icons8
+            </a>
           </p>
         </div>
       </footer>

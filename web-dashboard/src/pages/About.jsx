@@ -8,23 +8,23 @@ export function AboutPage() {
   return (
     <LegalDocument badge="About" title="Who we are" updated="June 2026">
       <p className="legal-doc__lead">
-        Virello is a Roblox executor diagnostic platform for reviewers who need fast checks, clear
-        evidence, and steady protection without noisy setup or ambiguous results.
+        Virello helps reviewers run fast Roblox screenshare checks with clear results and steady
+        protection, without a messy setup or vague verdicts.
       </p>
 
       <LegalArticle index="I" title="What we focus on">
         <ul>
-          <li>Scanning and verifying Roblox executor risk across multiple forensic layers</li>
+          <li>Scanning and checking Roblox executor risk on Windows PCs</li>
           <li>License based access tied to verified Discord roles</li>
-          <li>Continuous detection updates through our community</li>
-          <li>Low false positive scoring with evidence reliability tiers</li>
+          <li>Regular detection updates through our community</li>
+          <li>Low false positive scoring with clear evidence tiers</li>
         </ul>
       </LegalArticle>
 
       <LegalArticle index="II" title="How we work">
         <p>
           Purchases, support, verification, and account help run through private Discord lanes. The
-          review console on this site is where verified reviewers manage PIN sessions and inspect scans.
+          review console on this site is where verified reviewers manage PIN sessions and read scans.
         </p>
         <div className="about-cards">
           <div className="about-card">
@@ -35,7 +35,7 @@ export function AboutPage() {
           <div className="about-card">
             <MaterialIcon name="track_changes" size={22} />
             <strong>Accuracy first</strong>
-            <p>Strong evidence only when corroborated across multiple artifact sources.</p>
+            <p>Strong calls only when multiple signals line up on the same scan.</p>
           </div>
           <div className="about-card">
             <MaterialIcon name="groups" size={22} />

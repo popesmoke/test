@@ -27,7 +27,7 @@ export function DownloadPage() {
           <p className="download-hero__eyebrow">Desktop Scanner</p>
           <h1>Download {BRAND_FULL}</h1>
           <p>
-            The Virello desktop scanner collects forensic diagnostics with explicit user consent.
+            The Virello desktop scanner runs a full PC check with explicit user consent.
             Reviewers generate a PIN in the console. Users run this app to complete the scan.
           </p>
           <div className="download-hero__actions">

@@ -1,117 +1,84 @@
 import React from "react";
-import {
-  Activity,
-  AlertTriangle,
-  BookOpen,
-  Box,
-  Check,
-  CheckCircle2,
-  ChevronRight,
-  Clock,
-  Code2,
-  Copy,
-  Database,
-  Download,
-  FileText,
-  Fingerprint,
-  FolderOpen,
-  GitBranch,
-  Hash,
-  HelpCircle,
-  History,
-  Hourglass,
-  LayoutDashboard,
-  ListChecks,
-  Lock,
-  LogOut,
-  Play,
-  Plus,
-  Printer,
-  RefreshCw,
-  Save,
-  Search,
-  Shield,
-  ShieldAlert,
-  Target,
-  Timer,
-  Trash2,
-  User,
-  UserCircle,
-  Users,
-  X,
-  Zap,
-} from "lucide-react";
 
-const ICONS = {
-  history: History,
-  document_search: Search,
-  speed: Activity,
-  warning: AlertTriangle,
-  schedule: Clock,
-  sports_esports: Play,
-  forum: FileText,
-  shield: Shield,
-  terminal: Code2,
-  memory: Database,
-  delete: Trash2,
-  search: Search,
-  play_arrow: Play,
-  folder_off: FolderOpen,
-  sd_card: Database,
-  fingerprint: Fingerprint,
-  inventory_2: Box,
-  account_tree: GitBranch,
-  add: Plus,
-  close: X,
-  download: Download,
-  print: Printer,
-  menu_book: BookOpen,
-  description: FileText,
-  hourglass_top: Hourglass,
-  content_copy: Copy,
-  admin_panel_settings: User,
-  refresh: RefreshCw,
-  logout: LogOut,
-  save: Save,
-  delete_sweep: Trash2,
-  database: Database,
-  group: Users,
-  lock: Lock,
-  track_changes: Target,
-  groups: Users,
-  delete_forever: Trash2,
-  help: HelpCircle,
-  radar: Activity,
-  verified_user: Shield,
-  timer: Timer,
-  policy: Shield,
-  dashboard: LayoutDashboard,
-  bolt: Zap,
-  registry: Database,
-  timeline: History,
-  hash: Hash,
-  windows: LayoutDashboard,
-  certificate: Shield,
-  folder: FolderOpen,
-  event_log: History,
-  person: UserCircle,
-  gpp_maybe: ShieldAlert,
-  play: Play,
-  list_checks: ListChecks,
-  git_branch: GitBranch,
-  file_code: Code2,
-  file_down: Download,
-  users: Users,
-  shield_alert: ShieldAlert,
-  alert_triangle: AlertTriangle,
-  help_circle: HelpCircle,
-  check_circle: CheckCircle2,
-  chevron_right: ChevronRight,
+/** Icons8 Windows style slugs — https://icons8.com/icons */
+const ICONS8_SLUGS = {
+  history: "activity-history",
+  document_search: "search",
+  speed: "speedometer",
+  warning: "warning-shield",
+  schedule: "clock",
+  sports_esports: "controller",
+  forum: "chat",
+  shield: "shield",
+  terminal: "console",
+  memory: "chip",
+  delete: "trash",
+  search: "search",
+  play_arrow: "play",
+  folder_off: "folder-invoices",
+  sd_card: "chip",
+  fingerprint: "fingerprint",
+  inventory_2: "box",
+  account_tree: "tree-structure",
+  add: "plus",
+  close: "delete-sign",
+  download: "download",
+  print: "print",
+  menu_book: "book",
+  description: "document",
+  hourglass_top: "hourglass",
+  content_copy: "copy",
+  admin_panel_settings: "admin-settings-male",
+  refresh: "refresh",
+  logout: "logout-rounded",
+  delete_sweep: "broom",
+  database: "database",
+  group: "groups",
+  lock: "lock",
+  track_changes: "goal",
+  groups: "conference-call",
+  delete_forever: "trash",
+  help: "help",
+  radar: "radar",
+  verified_user: "verified-account",
+  timer: "timer",
+  policy: "privacy",
+  dashboard: "dashboard",
+  bolt: "lightning-bolt",
+  registry: "registry-editor",
+  timeline: "timeline",
+  hash: "hashtag",
+  windows: "windows-10",
+  certificate: "certificate",
+  folder: "folder-invoices",
+  event_log: "log",
+  person: "user-male-circle",
+  gpp_maybe: "privacy",
+  play: "play",
+  list_checks: "checklist",
+  git_branch: "git",
+  file_code: "source-code",
+  file_down: "download-from-cloud",
+  users: "conference-call",
+  shield_alert: "high-risk",
+  alert_triangle: "warning-shield",
+  help_circle: "help",
+  check_circle: "checkmark",
+  chevron_right: "forward",
+  play_circle: "play",
+  recent_actors: "clock",
+  recycle_bin: "trash",
+  security: "shield",
+  file_search: "search",
 };
 
-export function MaterialIcon({ name, size = 20, className = "", filled = false }) {
-  const Icon = ICONS[name];
-  if (!Icon) {
+function icons8Url(slug, size) {
+  return `https://img.icons8.com/windows/${size}/${slug}.png`;
+}
+
+export function MaterialIcon({ name, size = 20, className = "" }) {
+  const slug = ICONS8_SLUGS[name];
+  if (!slug) {
     return (
       <span
         className={`icons8-icon icons8-icon--fallback ${className}`.trim()}
@@ -134,10 +101,14 @@ export function MaterialIcon({ name, size = 20, className = "", filled = false }
     );
   }
   return (
-    <Icon
-      size={size}
-      strokeWidth={filled ? 2.4 : 1.75}
+    <img
+      src={icons8Url(slug, size)}
+      alt=""
+      width={size}
+      height={size}
       className={`icons8-icon ${className}`.trim()}
+      loading="lazy"
+      decoding="async"
       aria-hidden="true"
       style={{ display: "inline-block", verticalAlign: "middle", flexShrink: 0 }}
     />
@@ -149,6 +120,5 @@ export function renderIcon(icon, size = 20, className = "") {
   if (typeof icon === "string") {
     return <MaterialIcon name={icon} size={size} className={className} />;
   }
-  const Icon = icon;
-  return <Icon size={size} className={className} strokeWidth={1.75} />;
+  return <MaterialIcon name="help" size={size} className={className} />;
 }

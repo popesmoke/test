@@ -8,43 +8,43 @@ const FEATURES = [
   {
     icon: "search",
     title: "Activity timeline",
-    text: "Recent PC activity in order. The strongest signals rise to the top.",
+    text: "See what happened on the PC, newest first. The important stuff floats to the top.",
     wide: true,
   },
   {
     icon: "download",
-    title: "Download history",
-    text: "Browser downloads checked against your review rules.",
+    title: "Download check",
+    text: "Browser downloads compared to your review lists.",
   },
   {
     icon: "hash",
-    title: "File fingerprinting",
-    text: "Known signatures still match after renames or folder moves.",
+    title: "Known files",
+    text: "Programs on your watch list get flagged even if someone renamed them.",
   },
   {
     icon: "folder",
-    title: "Profile folder scan",
-    text: "Common user folders checked against your watch lists.",
+    title: "File check",
+    text: "Common folders on the PC checked against your lists.",
   },
   {
     icon: "group",
     title: "Linked accounts",
-    text: "Game and chat accounts on the device, grouped for context.",
+    text: "Game and chat accounts on the device, grouped for quick reading.",
   },
   {
     icon: "speed",
     title: "Priority scoring",
-    text: "Findings ranked so reviewers see what matters first.",
+    text: "Findings ranked so you see what matters first.",
   },
   {
     icon: "lock",
-    title: "Consent-first collection",
-    text: "Nothing leaves the PC until the user approves. No passwords or private messages.",
+    title: "Consent first",
+    text: "Nothing uploads until the user says yes. No passwords or private messages.",
   },
   {
     icon: "dashboard",
     title: "Review workspace",
-    text: "PIN handoff, reviewer notes, verdicts, and export in one console.",
+    text: "PIN handoff, notes, verdicts, and export in one console.",
   },
 ];
 
@@ -56,8 +56,8 @@ export function LandingPage() {
           <p className="hero__eyebrow">Windows · Screenshare reviews</p>
           <h1>Structured PC scans for live reviews</h1>
           <p className="hero__lead">
-            Virello collects system signals with the user&apos;s consent, ranks what matters,
-            and hands reviewers a clear case file, not a wall of raw logs.
+            Virello collects system info with the user&apos;s consent, ranks what matters,
+            and gives reviewers a clear case file instead of a wall of raw logs.
           </p>
           <div className="hero__actions">
             <Link to="/download" className="btn btn--primary btn--lg">
@@ -85,8 +85,8 @@ export function LandingPage() {
               <span className="hero__stat-label">Typical scan time on a modern gaming PC</span>
             </div>
             <div className="hero__stat">
-              <span className="hero__stat-value">Multi</span>
-              <span className="hero__stat-label">Signal layers across files, logs, registry, and runtime</span>
+              <span className="hero__stat-value">Full</span>
+              <span className="hero__stat-label">One report with everything reviewers need</span>
             </div>
             <div className="hero__stat">
               <span className="hero__stat-value">Win 10+</span>
@@ -106,10 +106,8 @@ export function LandingPage() {
       <section className="section">
         <header className="section__header section__header--left">
           <p className="section__eyebrow">What you get</p>
-          <h2>Built for reviewers who need signal, not noise</h2>
-          <p>
-            Each capability maps to a real section in the review console.
-          </p>
+          <h2>Built for reviewers who want answers, not noise</h2>
+          <p>Each item below has a matching section in the review console.</p>
         </header>
         <div className="feature-grid feature-grid--asymmetric">
           {FEATURES.map((feature) => (
@@ -125,6 +123,9 @@ export function LandingPage() {
             </article>
           ))}
         </div>
+        <p className="landing-attribution">
+          Icons by <a href="https://icons8.com" target="_blank" rel="noreferrer">Icons8</a>
+        </p>
       </section>
 
       <section className="cta-band">

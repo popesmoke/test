@@ -144,8 +144,20 @@ button.btn {
   color: var(--accent-bright);
 }
 
-.feature-card__icon .v-icon {
+.feature-card__icon .v-icon,
+.feature-card__icon .icons8-icon {
   color: var(--accent-bright);
+}
+
+.icons8-icon {
+  flex-shrink: 0;
+  object-fit: contain;
+}
+
+.icons8-icon--fallback {
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-muted);
 }
 
 /* Legacy primary class maps to btn */
@@ -815,7 +827,8 @@ button.primary {
   background: var(--bg-elevated);
 }
 
-.about-card .v-icon {
+.about-card .v-icon,
+.about-card .icons8-icon {
   margin-bottom: 10px;
 }
 

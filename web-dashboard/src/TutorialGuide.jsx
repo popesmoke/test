@@ -8,10 +8,10 @@ const TUTORIAL_SECTIONS = [
     id: "quick-start",
     title: "Quick start (60 seconds)",
     steps: [
-      "Open Summary — read the verdict and warning list.",
-      "Open Last activity — check deletes and recent runs (newest at top).",
-      "Press Ctrl+F (Windows) or ⌘F (Mac) and search any executor name from the catalog (e.g. Solara, Wave, Volt).",
-      "If something looks deleted, open Advanced review → Deletions for cleanup timing and USN integrity.",
+      "Open Summary and read the verdict and warning list.",
+      "Open Last activity and check deletes and recent runs (newest at top).",
+      "Press Ctrl+F (Windows) or Cmd+F (Mac) and search any program name from the catalog (e.g. Solara, Wave, Volt).",
+      "If something looks deleted, open Advanced review and check the Deletions section.",
     ],
   },
   {
@@ -19,8 +19,8 @@ const TUTORIAL_SECTIONS = [
     title: "How to search this report",
     body: [
       "Use the filter box at the top of Easy results to narrow the current tab.",
-      "Use Ctrl+F / ⌘F to search the entire page — paths, executor names, and timestamps are all plain text.",
-      "In Advanced review, each section has its own search box for keywords in that panel.",
+      "Use Ctrl+F / Cmd+F to search the entire page. Paths, program names, and timestamps are plain text.",
+      "In Advanced review, each section has its own search box.",
       "Dates are MM/DD/YY HH:mm:ss (GMT+3). Search partial dates like 06/08/26.",
     ],
   },
@@ -44,16 +44,16 @@ const TUTORIAL_SECTIONS = [
   },
   {
     id: "deletions",
-    title: "Deletes & cleanup timing",
+    title: "Deletes and cleanup timing",
     body: [
       "Delete-to-cleanup timing shows how long after a file was deleted the Recycle Bin was emptied.",
-      "Filesystem evidence integrity explains if USN journaling or event logs look disabled, cleared, or recreated.",
-      "If USN is disabled or wiped, delete timelines fall back to Recycle Bin metadata, BAM, Prefetch, and registry traces.",
+      "Evidence integrity flags when logs or traces look disabled, cleared, or recreated.",
+      "If timeline data is thin, the report falls back to other logged signals on the PC.",
     ],
   },
   {
     id: "executors",
-    title: "Executor names to Ctrl+F",
+    title: "Program names to Ctrl+F",
     terms: EXECUTOR_SEARCH_TERMS,
   },
 ];
@@ -68,8 +68,8 @@ export function TutorialGuide({ open, onClose, brandName }) {
           <div className="tutorial-header-title">
             <BookOpen size={22} />
             <div>
-              <h2 id="tutorial-title">{brandName} — full tutorial</h2>
-              <p>Structured guide for reviewers. No account settings here — only how to read a scan.</p>
+              <h2 id="tutorial-title">{brandName} tutorial</h2>
+              <p>How to read a scan. No account settings here.</p>
             </div>
           </div>
           <button type="button" className="tutorial-close" onClick={onClose} aria-label="Close tutorial">
@@ -79,7 +79,7 @@ export function TutorialGuide({ open, onClose, brandName }) {
 
         <div className="tutorial-toolbar">
           <span className="tutorial-kbd-hint">
-            <Keyboard size={16} /> Ctrl+F / ⌘F searches this page
+            <Keyboard size={16} /> Ctrl+F / Cmd+F searches this page
           </span>
           <span className="tutorial-kbd-hint">
             <Search size={16} /> Use the filter box to narrow the active tab
@@ -127,7 +127,7 @@ export function TutorialGuide({ open, onClose, brandName }) {
                 </div>
               ) : null}
               {section.terms ? (
-                <div className="search-keyword-grid" aria-label="Executor search keywords">
+                <div className="search-keyword-grid" aria-label="Program search keywords">
                   {section.terms.map((term) => (
                     <span className="search-keyword-chip" key={term}>
                       {term}
@@ -146,9 +146,9 @@ export function TutorialGuide({ open, onClose, brandName }) {
 export function PageSearchIndex() {
   return (
     <aside className="page-search-index" aria-label="Searchable keywords for browser find">
-      <p className="page-search-index-title">Search this page (Ctrl+F / ⌘F)</p>
+      <p className="page-search-index-title">Search this page (Ctrl+F / Cmd+F)</p>
       <p className="muted">
-        Try any executor name, file paths, Recycle Bin, deleted, USN, or dates like 06/08/26.
+        Try any program name, file paths, Recycle Bin, deleted, or dates like 06/08/26.
       </p>
       <div className="search-keyword-grid">
         {EXECUTOR_SEARCH_TERMS.map((term) => (

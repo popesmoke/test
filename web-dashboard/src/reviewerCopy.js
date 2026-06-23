@@ -16,6 +16,12 @@ const BLOCKED_PATTERNS = [
   /provenance/i,
   /artifact hit/i,
   /no_substantiated/i,
+  /disk-backed/i,
+  /sqlite/i,
+  /windows artifacts/i,
+  /profile.folder/i,
+  /filesystem scan/i,
+  /verdict:/i,
 ];
 
 const GENERIC_REASON_LABELS = {
@@ -76,7 +82,7 @@ export function genericReasonDetail(label, detail) {
   if (GENERIC_REASON_DETAILS[key]) return GENERIC_REASON_DETAILS[key];
   const safe = reviewerSafeText(detail);
   if (!safe) return "A warning sign was recorded on this scan.";
-  if (/sha-?256|prefetch|\bbam\b|usn|forensic|provenance|artifact hit|no_substantiated/i.test(safe)) {
+  if (/sha-?256|prefetch|\bbam\b|usn|forensic|provenance|artifact hit|no_substantiated|disk-backed|sqlite|verdict:/i.test(safe)) {
     return "A warning sign was recorded on this scan.";
   }
   return safe.length > 120 ? "A warning sign was recorded on this scan." : safe;
@@ -90,6 +96,9 @@ export function genericFindingTitle(title) {
     "Known executor left forensic traces after deletion": "Removed files still logged",
     "Shell history mentions cleanup or disable commands": "Command history looked unusual",
     "Prefetch proves a checked executor ran": "Recent program activity flagged",
+    "6 file(s) in Downloads/Desktop/Documents matched a checked executor name":
+      "Files in common folders matched a checked program name",
+    "Disk-backed forensic signals contributed": "Review summary",
   };
   if (map[raw]) return map[raw];
   if (/verdict:|no_substantiated|artifact hit|provenance|forensic|bam|prefetch|sha-?256/i.test(raw)) {

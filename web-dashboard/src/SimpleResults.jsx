@@ -79,7 +79,7 @@ function buildSimpleProblems(report, summary) {
       id: `bypass-${row.title}`,
       severity: row.severity || "medium",
       title: genericFindingTitle(row.title),
-      detail: row.detail,
+      detail: genericReasonDetail(row.title, row.detail),
     });
   }
 
@@ -89,7 +89,7 @@ function buildSimpleProblems(report, summary) {
       id: `score-${reason.label}`,
       severity: reason.points >= 20 ? "high" : reason.points >= 10 ? "medium" : "low",
       title: friendlyReason(reason.label, reason.detail),
-      detail: reason.detail,
+      detail: genericReasonDetail(reason.label, reason.detail),
     });
   }
 

@@ -18,7 +18,13 @@ import { consumeAuthCallback } from "./lib/authCallback.js";
 import { MaterialIcon, renderIcon } from "./components/MaterialIcon.jsx";
 import { ConfirmModal } from "./components/ConfirmModal.jsx";
 import { EXPERT_NAV_GROUPS } from "./dashboardNav.js";
-import { genericReasonLabel, genericReasonDetail, genericFindingTitle } from "./reviewerCopy.js";
+import {
+  genericReasonLabel,
+  genericReasonDetail,
+  genericFindingTitle,
+  reviewerSafeText,
+  sortBySuspicion,
+} from "./reviewerCopy.js";
 
 const AUTH_CALLBACK = consumeAuthCallback();
 
@@ -287,7 +293,7 @@ function buildSuspicionSummary(report) {
     reasons.push({
       label: "Known executor binary hash",
       points,
-      detail: `${shaHits.length} file(s) matched a verified SHA256 blocklist entry.`,
+      detail: `${shaHits.length} file(s) matched a known program on the watch list.`,
     });
   }
 
@@ -326,7 +332,7 @@ function buildSuspicionSummary(report) {
       reasons.push({
         label: "Executor artifact evidence",
         points,
-        detail: `${artifactEvidence.length} trace(s) from ${(sec.executor_artifact_evidence?.sources_used ?? []).join(", ") || "Windows artifacts"}${executors.length ? ` (${executors.join(", ")})` : ""}${deletedCount ? `; ${deletedCount} refer to paths no longer on disk.` : "."}`,
+        detail: `${artifactEvidence.length} related trace(s) on this scan${executors.length ? ` (${executors.join(", ")})` : ""}${deletedCount ? `; ${deletedCount} refer to paths no longer on disk.` : "."}`,
       });
     }
   }
@@ -341,7 +347,7 @@ function buildSuspicionSummary(report) {
       points,
       detail:
         liveCount && offlineCount
-          ? `${liveCount} live module hit(s) with Roblox open and ${offlineCount} offline artifact hit(s) from logs, BAM, Prefetch, or folders.`
+          ? `${liveCount} live module hit(s) with Roblox open and ${offlineCount} offline signal(s) from logs or disk.`
           : liveCount
             ? `${liveCount} suspicious module(s) in a live Roblox process.`
             : `${offlineCount} offline Roblox-related signal(s) from logs or disk (game did not need to be running).`,
@@ -386,7 +392,7 @@ function buildSuspicionSummary(report) {
       reasons.push({
         label: "Prefetch execution traces",
         points,
-        detail: `${prefetchHits.length} Prefetch artifact(s) matched a checked executor name.`,
+        detail: `${prefetchHits.length} program run record(s) matched a checked program name.`,
       });
     }
   }
@@ -410,7 +416,7 @@ function buildSuspicionSummary(report) {
       reasons.push({
         label: "Profile folder executor filenames",
         points,
-        detail: `${designatedExecutorHits.length} file(s) in Downloads/Desktop/Documents matched a checked executor name.`,
+        detail: `${designatedExecutorHits.length} file(s) in common user folders matched a checked program name.`,
       });
     }
   }
@@ -447,7 +453,7 @@ function buildSuspicionSummary(report) {
       reasons.push({
         label: "Deleted cheat/executor traces recovered",
         points,
-        detail: `${removedArtifactHits.length} path(s) were deleted or removed from the Recycle Bin but recovered from BAM, USN, Prefetch, downloads, or other Windows artifacts.`,
+        detail: `${removedArtifactHits.length} path(s) were deleted or removed from the Recycle Bin but still show up in scan logs.`,
       });
     }
   }
@@ -457,7 +463,7 @@ function buildSuspicionSummary(report) {
     reasons.push({
       label: "Suspicious Recycle Bin items",
       points,
-      detail: `${recycleSuspicious.length} item(s) in the Recycle Bin matched executor or cheat path rules (original path preserved in $I metadata).`,
+      detail: `${recycleSuspicious.length} item(s) in the Recycle Bin matched flagged program path rules.`,
     });
   }
   if (persistenceSuspicious.length) {
@@ -466,7 +472,7 @@ function buildSuspicionSummary(report) {
     reasons.push({
       label: "Persistence mechanisms",
       points,
-      detail: `${persistenceSuspicious.length} Run key, startup, task, or shortcut entry matched executor/cheat patterns.`,
+      detail: `${persistenceSuspicious.length} startup, task, or shortcut entry matched flagged program patterns.`,
     });
   }
 
@@ -476,7 +482,7 @@ function buildSuspicionSummary(report) {
     reasons.push({
       label: "Forensic engine findings",
       points: forensic.points,
-      detail: `Disk-backed forensic signals contributed up to ${forensic.diskBacked} pts; browser-only history hits capped at ${Math.min(5, forensic.browserOnly)} pts.`,
+      detail: "Additional warning signs were recorded on this scan.",
     });
   }
 
@@ -486,7 +492,7 @@ function buildSuspicionSummary(report) {
     reasons.push({
       label: "Cross-artifact agreement",
       points: artifactBonus,
-      detail: "The same program stem appeared in multiple independent sources (disk, Prefetch, profile, or runtime).",
+      detail: "The same program name appeared in more than one place on this scan.",
     });
   }
 
@@ -495,7 +501,7 @@ function buildSuspicionSummary(report) {
     reasons.push({
       label: "UserAssist activity",
       points: 8,
-      detail: "UserAssist contained activity names matching reviewed keywords.",
+      detail: "Recent launch activity matched reviewed keywords.",
     });
   }
   if (textHasSignal(bamText) && /executor|loader|inject|roblox|solara|wave|xeno|synapse/i.test(bamText)) {
@@ -503,7 +509,7 @@ function buildSuspicionSummary(report) {
     reasons.push({
       label: "BAM activity",
       points: 7,
-      detail: "BAM registry output included paths matching reviewed keywords.",
+      detail: "Recent launch activity matched reviewed keywords.",
     });
   }
   if (defenderHasActionableSignal(sec.defender)) {
@@ -637,13 +643,13 @@ const EXECUTOR_VERDICT_LABELS = {
 };
 
 const EXECUTOR_KIND_LABELS = {
-  sha256_blocklist: "Known binary hash",
+  sha256_blocklist: "Known file match",
   recent_file: "Recent file name match",
-  prefetch_execution: "Prefetch execution",
-  profile_folder: "Profile folder file",
-  filesystem_indicator: "Filesystem scan",
-  bam_execution: "BAM execution record",
-  persistence: "Startup / persistence",
+  prefetch_execution: "Program run record",
+  profile_folder: "User folder file",
+  filesystem_indicator: "File check",
+  bam_execution: "System run record",
+  persistence: "Startup entry",
 };
 
 const ACTIVITY_CATEGORY_LABELS = {
@@ -661,18 +667,18 @@ const ACTIVITY_KIND_LABELS = {
   recycle_bin: "Recycle Bin delete",
   recycle_bin_artifact: "Recycle Bin item",
   security_audit_delete: "Security audit delete",
-  sysmon_file_delete: "Sysmon file delete",
-  usn_journal: "USN journal",
-  bam_execution: "BAM execution",
-  userassist: "UserAssist launch",
-  pca_compat: "PCA compatibility",
-  prefetch: "Prefetch",
-  prefetch_indicator: "Prefetch indicator",
+  sysmon_file_delete: "System file delete",
+  usn_journal: "File change log",
+  bam_execution: "System run record",
+  userassist: "Program launch",
+  pca_compat: "Compatibility record",
+  prefetch: "Run trace",
+  prefetch_indicator: "Run trace",
   recent_download: "Recent download",
-  profile_folder: "Profile folder",
-  filesystem_scan: "Filesystem scan",
-  sha256_blocklist: "SHA256 blocklist",
-  persistence: "Persistence",
+  profile_folder: "User folder file",
+  filesystem_scan: "File check",
+  sha256_blocklist: "Known file match",
+  persistence: "Startup entry",
   shell_history: "Shell history",
   roblox_log: "Roblox log",
   browser_history: "Browser history",
@@ -693,17 +699,17 @@ function activityEventSummary(event) {
     recycle_bin_artifact: `Recycle Bin still holds metadata for ${quoted}.`,
     security_audit_delete: `A system log recorded delete-related activity for ${quoted}.`,
     sysmon_file_delete: `A system trace indicates ${quoted} was deleted.`,
-    usn_journal: `Windows logged a filesystem change for ${quoted}.`,
-    bam_execution: `A system execution trace was recorded for ${quoted}.`,
-    userassist: `A user-launch trace was recorded for ${quoted}.`,
-    pca_compat: `A compatibility trace was recorded for ${quoted}.`,
-    prefetch: `A system runtime trace was recorded for ${quoted}.`,
-    prefetch_indicator: `A runtime trace for ${quoted} matched a reviewed signal.`,
+    usn_journal: `A file change was logged for ${quoted}.`,
+    bam_execution: `A program run was logged for ${quoted}.`,
+    userassist: `A program launch was logged for ${quoted}.`,
+    pca_compat: `A compatibility record was logged for ${quoted}.`,
+    prefetch: `A program run was logged for ${quoted}.`,
+    prefetch_indicator: `A program run matched a reviewed signal: ${quoted}.`,
     recent_download: `A file in Downloads or Desktop matched review keywords: ${quoted}.`,
-    profile_folder: `A profile-folder file matched review keywords: ${quoted}.`,
-    filesystem_scan: `A filesystem scan flagged ${quoted} for review.`,
-    sha256_blocklist: `The hash of ${quoted} matches a known executor.`,
-    persistence: `Startup or persistence data references ${quoted}.`,
+    profile_folder: `A user folder file matched review keywords: ${quoted}.`,
+    filesystem_scan: `A file check flagged ${quoted} for review.`,
+    sha256_blocklist: `A known file on the watch list matched ${quoted}.`,
+    persistence: `Startup or auto-run data references ${quoted}.`,
     shell_history: "A PowerShell history line matched reviewed keywords.",
     roblox_log: `Roblox log activity involved ${quoted}.`,
     browser_history: `Browser history included a visit related to ${quoted}.`,
@@ -712,7 +718,7 @@ function activityEventSummary(event) {
   };
   let summary = byKind[event?.kind] || `${ACTIVITY_KIND_LABELS[event?.kind] ?? event?.kind ?? "Activity"} involving ${quoted}.`;
   const label = String(event?.label || "").trim();
-  if (label && !["GUI launch", "keyword", "Compatibility Assistant", "Prefetch trace"].includes(label)) {
+  if (label && !["GUI launch", "keyword", "Compatibility Assistant", "Run trace"].includes(label)) {
     summary += ` Matched: ${label}.`;
   }
   return summary;
@@ -723,15 +729,15 @@ function executorEventSummary(event) {
   const name = basenameOf(event?.path || "") || "a file";
   const quoted = name ? `“${name}”` : "a file";
   const byKind = {
-    sha256_blocklist: `Known executor hash match for ${quoted}.`,
-    recent_file: `Recent file ${quoted} matched a reviewed executor or cheat name.`,
-    prefetch_execution: `A runtime trace shows ${quoted} ran and matched a reviewed name.`,
-    profile_folder: `Profile folder file ${quoted} matched review rules.`,
-    filesystem_indicator: `Filesystem scan flagged ${quoted}.`,
-    bam_execution: `A system execution trace was recorded for ${quoted} with a name match.`,
-    persistence: `Startup or persistence references ${quoted}.`,
+    sha256_blocklist: `Known file match for ${quoted}.`,
+    recent_file: `Recent file ${quoted} matched a reviewed program name.`,
+    prefetch_execution: `A program run was logged for ${quoted} with a name match.`,
+    profile_folder: `User folder file ${quoted} matched review rules.`,
+    filesystem_indicator: `File check flagged ${quoted}.`,
+    bam_execution: `A program run was logged for ${quoted} with a name match.`,
+    persistence: `Startup or auto-run references ${quoted}.`,
   };
-  let summary = byKind[event?.kind] || `Executor-related activity involving ${quoted}.`;
+  let summary = byKind[event?.kind] || `Flagged program activity involving ${quoted}.`;
   const label = String(event?.label || "").trim();
   if (label) summary += ` Matched: ${label}.`;
   return summary;
@@ -1180,17 +1186,17 @@ function ExecutorActivityCard({ report }) {
         : "low";
 
   return (
-    <Card icon="document_search" title="Executor activity (recent first)">
+    <Card icon="document_search" title="Program activity (recent first)">
       <div className="executor-activity-panel">
         <div className={`executor-verdict ${verdictClass}`}>
           <strong>{verdictLabel}</strong>
           <span>
             {activity.recent_event_count ?? 0} event(s) in the last {activity.recent_window_hours ?? 72}h
-            {(activity.hash_hit_count ?? 0) > 0 ? " · fingerprint match" : ""}
+            {(activity.hash_hit_count ?? 0) > 0 ? " · known file match" : ""}
           </span>
         </div>
         <p className="muted executor-activity-note">
-          Downloads, execution traces, fingerprints, and program activity gathered in one place.
+          Downloads, program runs, and related activity gathered in one place.
         </p>
         {activity.events?.length ? (
           <div className="executor-event-list">
@@ -1750,7 +1756,7 @@ function BypassSection({ report, query }) {
             ))}
           </div>
         ) : (
-          <p className="muted">No cover-up or anti-forensics signals were flagged on this scan.</p>
+          <p className="muted">No cover-up or hiding signals were flagged on this scan.</p>
         )}
         {bypass.risk_score != null ? (
           <p className="muted panel-intro">Cover-up risk score: {bypass.risk_score}/100</p>
@@ -2104,7 +2110,7 @@ function MemorySection({ report, query }) {
             : asJson(persistence)}
         </TerminalBlock>
       </Card>
-      <Card icon="sd_card" title="Known binary fingerprint matches">
+      <Card icon="sd_card" title="Known file matches">
         <TerminalBlock query={query}>{asJson(shaBlocklist)}</TerminalBlock>
       </Card>
       <Card icon="sd_card" title="Process Snapshot">
@@ -2187,7 +2193,7 @@ function ForensicFindingsSection({ report, query }) {
     return (
       <Card icon="fingerprint" title="Evidence review">
         <p className="muted">
-          No forensic analysis bundle on this report. Scans from older desktop builds, or non-Windows hosts, will not
+          No extra analysis bundle on this report. Scans from older desktop builds, or non-Windows hosts, will not
           include this section.
         </p>
       </Card>
@@ -2216,8 +2222,7 @@ function ForensicFindingsSection({ report, query }) {
       </div>
       <Card icon="fingerprint" title="Evidence review">
         <p className="muted panel-intro">
-          Reviewer-first layout — expand a row for hash and signature detail. Times are GMT+3; deleted paths are
-          cross-matched across available system traces when {BRAND_NAME} can.
+          Expand a row for more detail. Times are GMT+3. Deleted paths are cross-checked when {BRAND_NAME} can.
           {filtered.length > 40 ? ` Showing the first 40 of ${filtered.length} findings (use search to narrow).` : ""}
         </p>
         <div className="evidence-list">
@@ -2441,21 +2446,21 @@ function ForensicArtifactsSection({ report, query }) {
   const usnRows = safeArray(fa.usn_file_lifecycle_rows).slice(0, 100);
   return (
     <>
-      <Card icon="inventory_2" title="Structured execution traces">
+      <Card icon="inventory_2" title="Program run traces">
         <details className="raw-fold">
-          <summary>View execution trace JSON</summary>
+          <summary>View program run data</summary>
           <TerminalBlock query={query}>{asJson(fa.bam_structured)}</TerminalBlock>
         </details>
       </Card>
-      <Card icon="inventory_2" title="Browser SQLite probe">
+      <Card icon="inventory_2" title="Browser data sample">
         <details className="raw-fold">
-          <summary>View browser SQLite JSON</summary>
+          <summary>View browser data</summary>
           <TerminalBlock query={query}>{asJson(fa.sqlite)}</TerminalBlock>
         </details>
       </Card>
-      <Card icon="inventory_2" title="File lifecycle sample">
+      <Card icon="inventory_2" title="File history sample">
         <details className="raw-fold">
-          <summary>View lifecycle rows JSON</summary>
+          <summary>View file history rows</summary>
           <TerminalBlock query={query}>{asJson(usnRows)}</TerminalBlock>
         </details>
       </Card>
