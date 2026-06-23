@@ -10,6 +10,7 @@ import { defenderHasActionableSignal, defenderSummary } from "./defenderSignals.
 import { exportReportPdf } from "./exportReportPdf.js";
 import { SessionReview } from "./SessionReview.jsx";
 import { SimpleResults } from "./SimpleResults.jsx";
+import { BypassPanel } from "./components/BypassPanel.jsx";
 import { TutorialGuide } from "./TutorialGuide.jsx";
 import { AppRouter } from "./App.jsx";
 import { API_URL, BRAND_FULL, BRAND_LOGO, DISCORD_INVITE_URL } from "./config/brand.js";
@@ -1665,65 +1666,43 @@ function BypassSection({ report, query }) {
   const logHits = sec.roblox_executor_indicators?.traceback_or_log_hits ?? [];
   const q = query.trim().toLowerCase();
 
-  const filteredFindings = findings.filter((row) => {
-    if (!q) return true;
-    return [row.title, row.detail, row.severity].join(" ").toLowerCase().includes(q);
-  });
-
-  const severityRank = { critical: 0, high: 1, medium: 2, low: 3 };
-  const sortedFindings = [...filteredFindings].sort(
-    (a, b) => (severityRank[a.severity] ?? 9) - (severityRank[b.severity] ?? 9),
-  );
-
   const filteredLogHits = logHits.filter((hit) => {
     if (!q) return true;
     return JSON.stringify(hit).toLowerCase().includes(q);
   });
 
+  if (!q) {
+    return (
+      <>
+        <BypassPanel report={report} />
+        {filteredLogHits.length ? (
+          <Card icon="search" title="Keyword matches in logs">
+            <div className="evidence-list">
+              {filteredLogHits.slice(0, 20).map((hit, index) => (
+                <div className="evidence-row evidence-row--static" key={`log-hit-${index}`}>
+                  <div className="evidence-row-main">
+                    <strong className="evidence-row-title">{privacyPath(hit.path || hit.file || "Log file")}</strong>
+                    <p className="evidence-row-path">
+                      {(hit.matched_lines ?? hit.matches ?? []).slice(0, 2).map((line) => redactProfilePrefix(String(line))).join(" · ") ||
+                        "Suspicious text pattern"}
+                    </p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
+        ) : null}
+      </>
+    );
+  }
+
+  const filteredFindings = findings.filter((row) => {
+    return [row.title, row.detail, row.severity].join(" ").toLowerCase().includes(q);
+  });
+
   return (
     <>
-      <Card icon="shield" title="Bypass attempts">
-        {sortedFindings.length ? (
-          <div className="evidence-list">
-            {sortedFindings.map((row, index) => (
-              <div
-                className={`evidence-row evidence-row--static ws-finding ws-finding--${row.severity || "medium"}`}
-                key={`${row.title}-${index}`}
-              >
-                <div className="evidence-row-main">
-                  <strong className="evidence-row-title">{genericFindingTitle(row.title)}</strong>
-                  <p className="evidence-row-path">{genericReasonDetail(row.title, row.detail)}</p>
-                </div>
-                <span className={`ws-tag ws-tag--${row.severity === "high" || row.severity === "critical" ? "bad" : "warn"}`}>
-                  {row.severity || "medium"}
-                </span>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <p className="muted">No cover-up or hiding signals were flagged on this scan.</p>
-        )}
-        {bypass.risk_score != null ? (
-          <p className="muted panel-intro">Cover-up risk score: {bypass.risk_score}/100</p>
-        ) : null}
-      </Card>
-      {filteredLogHits.length ? (
-        <Card icon="search" title="Keyword matches in logs">
-          <div className="evidence-list">
-            {filteredLogHits.slice(0, 20).map((hit, index) => (
-              <div className="evidence-row evidence-row--static" key={`log-hit-${index}`}>
-                <div className="evidence-row-main">
-                  <strong className="evidence-row-title">{privacyPath(hit.path || hit.file || "Log file")}</strong>
-                  <p className="evidence-row-path">
-                    {(hit.matched_lines ?? hit.matches ?? []).slice(0, 2).map((line) => redactProfilePrefix(String(line))).join(" · ") ||
-                      "Suspicious text pattern"}
-                  </p>
-                </div>
-              </div>
-            ))}
-          </div>
-        </Card>
-      ) : null}
+      <BypassPanel report={{ ...report, security_integrity_signals: { ...sec, bypass_resilience: { ...bypass, findings: filteredFindings } } }} />
     </>
   );
 }

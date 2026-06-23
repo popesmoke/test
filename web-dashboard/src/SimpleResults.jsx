@@ -8,6 +8,10 @@ import {
   collectRobloxAccountsFromReport,
   collectDiscordAccountsFromReport,
 } from "./accountExtract.js";
+import { CollapseCard } from "./components/CollapseCard.jsx";
+import { BypassPanel } from "./components/BypassPanel.jsx";
+import { buildBypassReport } from "./bypassDetection.js";
+import { genericFindingTitle, genericReasonLabel, genericReasonDetail } from "./reviewerCopy.js";
 import { genericFindingTitle, genericReasonLabel, genericReasonDetail } from "./reviewerCopy.js";
 
 const API_URL = import.meta.env.VITE_API_URL || "https://virello-secure.onrender.com";
@@ -15,6 +19,7 @@ const API_URL = import.meta.env.VITE_API_URL || "https://virello-secure.onrender
 const TABS = [
   { id: "summary", label: "Summary", icon: "description" },
   { id: "findings", label: "Findings", icon: "shield_alert" },
+  { id: "bypass", label: "Bypass", icon: "gpp_maybe" },
   { id: "activity", label: "Activity", icon: "history" },
   { id: "accounts", label: "Accounts", icon: "users" },
 ];
@@ -92,52 +97,84 @@ function FindingRow({ problem, defaultOpen = false }) {
   );
 }
 
-function CollapsibleRow({ title, meta, children, defaultOpen = false, warn = false }) {
-  const [open, setOpen] = useState(defaultOpen);
-  return (
-    <article className={`ws-finding ${warn ? "ws-finding--high" : ""}`}>
-      <button type="button" className="ws-finding__toggle" onClick={() => setOpen((v) => !v)}>
-        <strong>{title}</strong>
-        {meta ? <span className="muted simple-row-meta">{meta}</span> : null}
-        <MaterialIcon name="chevron_right" size={16} className={open ? "open" : ""} />
-      </button>
-      {open ? <div className="ws-finding__detail">{children}</div> : null}
-    </article>
-  );
-}
-
 function ProgramGroup({ group, formatGmtPlus3 }) {
-  const [open, setOpen] = useState(false);
   const latest = group.items.reduce((best, row) => {
     if (!row.last_seen) return best;
     if (!best || row.last_seen > best) return row.last_seen;
     return best;
   }, null);
+  const removedCount = group.items.filter((row) => row.file_exists === false).length;
+  const subtitle = [
+    `${group.items.length} trace${group.items.length === 1 ? "" : "s"}`,
+    removedCount ? `${removedCount} removed from disk` : null,
+    latest ? `last seen ${formatGmtPlus3(latest)}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
   return (
-    <article className="ws-finding ws-finding--high">
-      <button type="button" className="ws-finding__toggle" onClick={() => setOpen((v) => !v)}>
-        <strong>{group.title}</strong>
-        <span className="muted simple-row-meta">
-          {group.items.length} trace{group.items.length === 1 ? "" : "s"}
-          {latest ? ` · last seen ${formatGmtPlus3(latest)}` : ""}
-        </span>
-        <MaterialIcon name="chevron_right" size={16} className={open ? "open" : ""} />
-      </button>
-      {open ? (
-        <ul className="simple-program-list ws-finding__detail">
-          {group.items.map((row, index) => (
-            <li key={`${row.name}-${row.last_seen}-${index}`} className="simple-program--warn">
-              <p>{publicFindingDetail(row)}</p>
-              <p className="muted">
-                {row.file_exists === false ? "Removed from disk · " : ""}
-                Last seen {row.last_seen ? formatGmtPlus3(row.last_seen) : "unknown"}
-              </p>
-              <LocationHint row={row} path={row.path} />
-            </li>
-          ))}
-        </ul>
-      ) : null}
-    </article>
+    <CollapseCard
+      icon="file_code"
+      title={group.title}
+      subtitle={subtitle}
+      severity="high"
+      badge={<span className="ws-collapse-pill">{group.items.length}</span>}
+    >
+      <ul className="ws-collapse-list">
+        {group.items.map((row, index) => (
+          <li key={`${row.name}-${row.last_seen}-${index}`} className="ws-collapse-list__item">
+            <p className="ws-collapse-list__lead">{publicFindingDetail(row)}</p>
+            <div className="ws-collapse-list__meta">
+              <span>{row.file_exists === false ? "Removed from disk" : "Trace on disk"}</span>
+              <time>{row.last_seen ? formatGmtPlus3(row.last_seen) : "Time unknown"}</time>
+            </div>
+            <LocationHint row={row} path={row.path} />
+          </li>
+        ))}
+      </ul>
+    </CollapseCard>
+  );
+}
+
+function LinkedTraceCard({ chain, formatGmtPlus3 }) {
+  const steps = chain.steps ?? [];
+  const title = chain.labels?.length ? chain.labels.join(" · ") : "Related activity";
+  const latest = steps.reduce((best, step) => {
+    if (!step.occurred_at) return best;
+    if (!best || step.occurred_at > best) return step.occurred_at;
+    return best;
+  }, null);
+  const subtitle = [
+    `${steps.length} linked step${steps.length === 1 ? "" : "s"}`,
+    latest ? `latest ${formatGmtPlus3(latest)}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  return (
+    <CollapseCard
+      icon="git_branch"
+      title={title}
+      subtitle={subtitle}
+      severity={chain.confidence === "high" ? "high" : "medium"}
+      badge={<SeverityBadge severity={chain.confidence === "high" ? "high" : "medium"} compact />}
+    >
+      {chain.summary ? <p className="ws-collapse-list__lead">{chain.summary}</p> : null}
+      <ol className="ws-collapse-steps">
+        {steps.map((step, index) => (
+          <li key={`${step.source}-${step.path}-${index}`}>
+            <div className="ws-collapse-steps__head">
+              <span className="ws-collapse-steps__action">
+                {CHAIN_ACTION_LABELS[step.action] || step.action}
+              </span>
+              <time>{step.occurred_at ? formatGmtPlus3(step.occurred_at) : "Time unknown"}</time>
+            </div>
+            <p>{step.detail}</p>
+            <LocationHint row={step} path={step.path} />
+          </li>
+        ))}
+      </ol>
+    </CollapseCard>
   );
 }
 
@@ -226,11 +263,10 @@ const CHAIN_ACTION_LABELS = {
   traced: "Traced",
 };
 
-function FindingsTab({ problems, review, report, formatGmtPlus3 }) {
+function FindingsTab({ problems, review, formatGmtPlus3 }) {
   const chains = review.evidence_chains?.chains ?? [];
   const programs = (review.executable_inventory?.items ?? []).filter((row) => row.suspicious);
   const programGroups = useMemo(() => groupFlaggedPrograms(programs), [programs]);
-  const bypassFindings = report.security_integrity_signals?.bypass_resilience?.findings ?? [];
   const sortedChains = [...chains].sort((a, b) => {
     const aHigh = a.confidence === "high" ? 0 : 1;
     const bHigh = b.confidence === "high" ? 0 : 1;
@@ -252,36 +288,15 @@ function FindingsTab({ problems, review, report, formatGmtPlus3 }) {
 
       {sortedChains.length ? (
         <section className="ws-panel">
-          <PanelHeader icon="git_branch" title="Linked traces" text="Related activity grouped together." />
-          <div className="ws-panel__body">
-            <ul className="simple-chain-list">
-              {sortedChains.map((chain) => (
-                <li key={chain.stem} className={`simple-chain-card simple-chain-card--${chain.confidence || "medium"}`}>
-                  <div className="simple-chain-head">
-                    <strong>{chain.labels?.length ? chain.labels.join(", ") : "Related activity"}</strong>
-                    <SeverityBadge
-                      severity={chain.confidence === "high" ? "high" : "medium"}
-                      compact
-                    />
-                  </div>
-                  <p>{chain.summary}</p>
-                  <ol className="simple-chain-steps">
-                    {(chain.steps ?? []).map((step, index) => (
-                      <li key={`${step.source}-${step.path}-${index}`}>
-                        <div className="simple-chain-step-meta">
-                          <span className="simple-chain-step-action">
-                            {CHAIN_ACTION_LABELS[step.action] || step.action}
-                          </span>
-                          <time>{step.occurred_at ? formatGmtPlus3(step.occurred_at) : "Time unknown"}</time>
-                        </div>
-                        <p>{step.detail}</p>
-                        <LocationHint row={step} path={step.path} />
-                      </li>
-                    ))}
-                  </ol>
-                </li>
-              ))}
-            </ul>
+          <PanelHeader
+            icon="git_branch"
+            title="Linked traces"
+            text="Related activity grouped together. Tap a card to expand the timeline."
+          />
+          <div className="ws-panel__body ws-collapse-stack">
+            {sortedChains.map((chain, index) => (
+              <LinkedTraceCard key={`${chain.stem}-${index}`} chain={chain} formatGmtPlus3={formatGmtPlus3} />
+            ))}
           </div>
         </section>
       ) : null}
@@ -291,33 +306,11 @@ function FindingsTab({ problems, review, report, formatGmtPlus3 }) {
           <PanelHeader
             icon="file_code"
             title="Flagged programs"
-            text="Grouped by what matched. Tap a group to see individual traces."
+            text="Grouped by what matched. Tap a card to see each trace."
           />
-          <div className="ws-panel__body">
+          <div className="ws-panel__body ws-collapse-stack">
             {programGroups.map((group) => (
               <ProgramGroup key={group.title} group={group} formatGmtPlus3={formatGmtPlus3} />
-            ))}
-          </div>
-        </section>
-      ) : null}
-
-      {bypassFindings.length ? (
-        <section className="ws-panel">
-          <PanelHeader
-            icon="gpp_maybe"
-            title="Bypass attempts"
-            text="Signs someone may have tried to hide cheating activity."
-          />
-          <div className="ws-panel__body">
-            {bypassFindings.map((row, index) => (
-              <CollapsibleRow
-                key={`${row.title}-${index}`}
-                title={genericFindingTitle(row.title)}
-                meta={row.severity || "medium"}
-                warn={row.severity === "high" || row.severity === "critical"}
-              >
-                <p>{genericReasonDetail(row.title, row.detail)}</p>
-              </CollapsibleRow>
             ))}
           </div>
         </section>
@@ -410,17 +403,16 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
                   key={`${row.target_path}-${row.started_at}-${index}`}
                   className={row.suspicious ? "simple-timeline--warn" : ""}
                 >
-                  <CollapsibleRow
-                    title={publicFindingTitle(row.matched_labels, row)}
-                    meta={row.started_at ? formatGmtPlus3(row.started_at) : "—"}
-                    warn={row.suspicious}
-                  >
+                  <time>{row.started_at ? formatGmtPlus3(row.started_at) : "—"}</time>
+                  <div>
                     <p>
                       <strong>{row.file_name || "Download"}</strong> via {row.browser || "browser"}
                     </p>
-                    <p>{publicFindingDetail(row)}</p>
+                    {row.matched_labels?.length ? (
+                      <p className="muted">{publicFindingTitle(row.matched_labels, row)}</p>
+                    ) : null}
                     <LocationHint row={row} path={row.target_path} />
-                  </CollapsibleRow>
+                  </div>
                 </li>
               ))}
             </ul>
@@ -437,16 +429,13 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
                   key={`${row.path}-${row.occurred_at}-${index}`}
                   className={row.suspicious ? "simple-timeline--warn" : ""}
                 >
-                  <CollapsibleRow
-                    title={publicFindingTitle(row.labels, row) || row.name || row.file_name || "Program run"}
-                    meta={row.occurred_at ? formatGmtPlus3(row.occurred_at) : "Time unknown"}
-                    warn={row.suspicious}
-                  >
+                  <time>{row.occurred_at ? formatGmtPlus3(row.occurred_at) : "Time unknown"}</time>
+                  <div>
                     <p>
                       <strong>{row.name || row.file_name || "Program"}</strong> {row.summary}
                     </p>
                     <LocationHint row={row} path={row.path} />
-                  </CollapsibleRow>
+                  </div>
                 </li>
               ))}
             </ul>
@@ -608,6 +597,10 @@ export function SimpleResults({ report, summary, activity, activityEventSummary,
     [summary.score, bypass.risk_score],
   );
   const problems = useMemo(() => buildProblems(report, summary), [report, summary]);
+  const bypassView = useMemo(
+    () => buildBypassReport(report.security_integrity_signals?.bypass_resilience ?? {}),
+    [report],
+  );
 
   return (
     <div className="ws-simple">
@@ -621,6 +614,9 @@ export function SimpleResults({ report, summary, activity, activityEventSummary,
           >
             <MaterialIcon name={icon} size={16} />
             {label}
+            {id === "bypass" && bypassView.findingCount ? (
+              <span className="ws-review-nav__badge">{bypassView.findingCount}</span>
+            ) : null}
           </button>
         ))}
       </nav>
@@ -636,8 +632,9 @@ export function SimpleResults({ report, summary, activity, activityEventSummary,
           />
         ) : null}
         {tab === "findings" ? (
-          <FindingsTab problems={problems} review={review} report={report} formatGmtPlus3={formatGmtPlus3} />
+          <FindingsTab problems={problems} review={review} formatGmtPlus3={formatGmtPlus3} />
         ) : null}
+        {tab === "bypass" ? <BypassPanel report={report} /> : null}
         {tab === "activity" ? (
           <ActivityTab
             review={review}

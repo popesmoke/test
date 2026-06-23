@@ -8156,6 +8156,38 @@ def _deletion_cleanup_summary_text(
     return f"{name} was deleted on {deleted_text}."
 
 
+_BYPASS_TECHNIQUE_BY_CATEGORY = {
+    "tamper": "user_mode_api",
+    "cover_up": "behavioral_evasion",
+    "defender": "anticheat_tamper",
+    "ghost_trace": "signature_evasion",
+    "persistence": "code_injection",
+    "correlation": "behavioral_evasion",
+}
+
+
+def _infer_bypass_technique(*, title: str, detail: str, category: str) -> str:
+    blob = f"{title} {detail} {category}".lower()
+    rules = (
+        ("anticheat_tamper", r"defender|real-time protection|exclusion|antivirus"),
+        ("user_mode_api", r"prefetch|bam|event log|sysmain|runtime logging|program-run records|amcache"),
+        ("lolbins", r"powershell history|wevtutil|cipher|vssadmin|fsutil"),
+        ("behavioral_evasion", r"cleanup|recycle|shell history|folder history|shadow-copy|deleted|removed"),
+        ("signature_evasion", r"prefetch proves|forensic traces after deletion|deleted executor|deleted cheat|ghost"),
+        ("code_injection", r"wmi|persistence|hidden auto-run"),
+        ("handle_hiding", r"wmi|subscription"),
+        ("process_hollowing", r"ran but files are gone|delete-after-run"),
+    )
+    for technique, pattern in rules:
+        if re.search(pattern, blob):
+            return technique
+    return _BYPASS_TECHNIQUE_BY_CATEGORY.get(category, "behavioral_evasion")
+
+
+def _bypass_action_summary(title: str, detail: str) -> str:
+    return f"{title.strip().rstrip('.')}: {detail.strip()}"
+
+
 def bypass_resilience_signals(
     *,
     prefetch: dict,
@@ -8185,14 +8217,18 @@ def bypass_resilience_signals(
         detail: str,
         category: str,
         weight: int,
+        technique: str | None = None,
     ) -> None:
         nonlocal risk_score
+        resolved_technique = technique or _infer_bypass_technique(title=title, detail=detail, category=category)
         findings.append(
             {
                 "severity": severity,
                 "title": title,
                 "detail": detail,
                 "category": category,
+                "technique": resolved_technique,
+                "action_summary": _bypass_action_summary(title, detail),
             }
         )
         risk_score += weight
@@ -8694,6 +8730,28 @@ def bypass_resilience_signals(
         "findings": findings[:40],
         "risk_score": capped,
         "risk_level": risk_level,
+        "techniques_monitored": [
+            "process_spoofing",
+            "file_hash_changes",
+            "code_injection",
+            "memory_loading",
+            "dll_hiding",
+            "user_mode_api",
+            "kernel_interference",
+            "driver_abuse",
+            "virtualization",
+            "scanner_detection",
+            "memory_obfuscation",
+            "process_hollowing",
+            "dma_attacks",
+            "anticheat_tamper",
+            "network_manipulation",
+            "behavioral_evasion",
+            "signature_evasion",
+            "containerization",
+            "handle_hiding",
+            "lolbins",
+        ],
         "note": "Combines registry, defender, shell history, execution ghosts, WMI, downloads, and cross-artifact correlation.",
     }
 

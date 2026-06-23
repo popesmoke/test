@@ -8156,6 +8156,38 @@ def _deletion_cleanup_summary_text(
     return f"{name} was deleted on {deleted_text}."
 
 
+_BYPASS_TECHNIQUE_BY_CATEGORY = {
+    "tamper": "user_mode_api",
+    "cover_up": "behavioral_evasion",
+    "defender": "anticheat_tamper",
+    "ghost_trace": "signature_evasion",
+    "persistence": "code_injection",
+    "correlation": "behavioral_evasion",
+}
+
+
+def _infer_bypass_technique(*, title: str, detail: str, category: str) -> str:
+    blob = f"{title} {detail} {category}".lower()
+    rules = (
+        ("anticheat_tamper", r"defender|real-time protection|exclusion|antivirus"),
+        ("user_mode_api", r"prefetch|bam|event log|sysmain|runtime logging|program-run records|amcache"),
+        ("lolbins", r"powershell history|wevtutil|cipher|vssadmin|fsutil"),
+        ("behavioral_evasion", r"cleanup|recycle|shell history|folder history|shadow-copy|deleted|removed"),
+        ("signature_evasion", r"prefetch proves|forensic traces after deletion|deleted executor|deleted cheat|ghost"),
+        ("code_injection", r"wmi|persistence|hidden auto-run"),
+        ("handle_hiding", r"wmi|subscription"),
+        ("process_hollowing", r"ran but files are gone|delete-after-run"),
+    )
+    for technique, pattern in rules:
+        if re.search(pattern, blob):
+            return technique
+    return _BYPASS_TECHNIQUE_BY_CATEGORY.get(category, "behavioral_evasion")
+
+
+def _bypass_action_summary(title: str, detail: str) -> str:
+    return f"{title.strip().rstrip('.')}: {detail.strip()}"
+
+
 def bypass_resilience_signals(
     *,
     prefetch: dict,
