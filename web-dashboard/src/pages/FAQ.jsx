@@ -25,10 +25,6 @@ const FAQ_ITEMS = [
     a: "Program activity hints, download history, Roblox and Discord account IDs found locally, and security-related warning signs. It does not upload your full hard drive, browser history text, or private messages.",
   },
   {
-    q: "I'm a new developer. How do I make this look safe?",
-    a: "Be upfront: publish clear Terms and Privacy pages, explain what the scanner does in plain language, offer support in Discord, keep the download on your official site, and never ask users to disable antivirus permanently. Consent-first design and readable reports build more trust than hiding how the tool works.",
-  },
-  {
     q: "How do I get access?",
     a: "Purchase a license through Discord. After payment is verified, staff grants your role and you can use the scanner and review console.",
   },

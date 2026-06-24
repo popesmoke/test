@@ -7,7 +7,7 @@ const PLANS = [
   {
     id: "monthly",
     title: "Monthly License",
-    blurb: "A simple month-to-month option for users who want full access without a long commitment.",
+    blurb: "Full access on a simple monthly plan with no long commitment.",
     price: "4.99€",
     period: "/ month",
     features: [
@@ -19,8 +19,8 @@ const PLANS = [
   },
   {
     id: "quarterly",
-    title: "3-Month License",
-    blurb: "A balanced pick for steady users who want more time upfront and a better overall rate.",
+    title: "3 Month License",
+    blurb: "More time upfront and a better rate for steady users.",
     price: "12.99€",
     period: "/ 3 months",
     featured: true,
@@ -34,7 +34,7 @@ const PLANS = [
   {
     id: "yearly",
     title: "Yearly License",
-    blurb: "The strongest value for long-term protection, updates, and uninterrupted scanner access.",
+    blurb: "Best value for long term protection, updates, and uninterrupted access.",
     price: "39.99€",
     period: "/ year",
     features: [
@@ -57,18 +57,26 @@ export function PurchasePage() {
       <div className="pricing-grid">
         {PLANS.map((plan) => (
           <article key={plan.id} className={`pricing-card${plan.featured ? " pricing-card--featured" : ""}`}>
-            {plan.featured ? <span className="pricing-card__badge">Popular</span> : null}
-            <h2>{plan.title}</h2>
-            <p className="pricing-card__blurb">{plan.blurb}</p>
-            <p className="pricing-card__price">
-              <strong>{plan.price}</strong>
-              <span>{plan.period}</span>
-            </p>
-            <ul className="pricing-card__features">
-              {plan.features.map((feature) => (
-                <li key={feature}>{feature}</li>
-              ))}
-            </ul>
+            <div className="pricing-card__head">
+              {plan.featured ? (
+                <span className="pricing-card__badge">Popular</span>
+              ) : (
+                <span className="pricing-card__badge pricing-card__badge--placeholder" aria-hidden="true" />
+              )}
+              <h2>{plan.title}</h2>
+              <p className="pricing-card__blurb">{plan.blurb}</p>
+            </div>
+            <div className="pricing-card__body">
+              <p className="pricing-card__price">
+                <strong>{plan.price}</strong>
+                <span>{plan.period}</span>
+              </p>
+              <ul className="pricing-card__features">
+                {plan.features.map((feature) => (
+                  <li key={feature}>{feature}</li>
+                ))}
+              </ul>
+            </div>
           </article>
         ))}
       </div>
