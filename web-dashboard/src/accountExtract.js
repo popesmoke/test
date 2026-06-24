@@ -58,19 +58,20 @@ function isTrustedRobloxSource(source) {
     || label.includes("storage")
     || label.includes("profile")
     || label.includes("guac")
-    || label.includes("browser")
-    || label.includes("web login")
   );
 }
 
 function robloxAccountScore(account) {
   let score = 0;
-  if (account.authenticated) score += 100;
+  if (account.authenticated) score += 130;
   if (account.username) score += 20;
   for (const source of account.sources ?? []) {
+    const label = String(source).toLowerCase();
     if (isTrustedRobloxSource(source)) score += 40;
-    if (String(source).toLowerCase().includes("session")) score += 30;
-    if (String(source).toLowerCase().includes("history")) score -= 20;
+    if (label.includes("web login")) score += 55;
+    if (label.includes("session")) score += 30;
+    if (label.includes("edge default") || label.includes("chrome default")) score -= 40;
+    if (label.includes("history")) score -= 25;
   }
   return score;
 }
@@ -141,16 +142,18 @@ export function collectRobloxAccountsFromReport(roblox) {
         );
       }
     }
-    for (const userId of artifact.user_ids ?? []) {
-      mergeRobloxAccount(
-        byId,
-        {
-          user_id: String(userId),
-          username: artifact.session_username,
-          authenticated: Boolean(artifact.authenticated),
-          sources: [sourceLabel],
-        },
-      );
+    if (artifact.authenticated) {
+      for (const userId of artifact.user_ids ?? []) {
+        mergeRobloxAccount(
+          byId,
+          {
+            user_id: String(userId),
+            username: artifact.session_username,
+            authenticated: true,
+            sources: [`${sourceLabel} web login`],
+          },
+        );
+      }
     }
     for (const username of artifact.usernames ?? []) {
       if (!username) continue;
@@ -178,15 +181,14 @@ export function collectRobloxAccountsFromReport(roblox) {
     }
   }
 
-  const diagnosticsBlob = JSON.stringify(roblox);
-  for (const userId of collectIdsFromText(diagnosticsBlob, ROBLOX_ID_PATTERNS)) {
-    if (!isPlausibleRobloxId(userId)) continue;
-    mergeRobloxAccount(byId, { user_id: userId, sources: ["Roblox client data"] });
-  }
-
   const ranked = [...byId.values()]
     .map((account) => ({ ...account, _score: robloxAccountScore(account) }))
-    .filter((account) => account._score >= 0)
+    .filter(
+      (account) =>
+        account.authenticated
+        || account._score >= 60
+        || (account.sources ?? []).some((source) => String(source).toLowerCase().includes("roblox client")),
+    )
     .sort((left, right) => {
       if (right._score !== left._score) return right._score - left._score;
       const leftId = Number(left.user_id);

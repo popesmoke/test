@@ -73,6 +73,7 @@ BREVO_API_KEY = os.getenv("BREVO_API_KEY", "")
 BREVO_FROM_EMAIL = os.getenv("BREVO_FROM_EMAIL", "")
 BRAND_NAME = "Virello Scanner"
 BREVO_FROM_NAME = os.getenv("BREVO_FROM_NAME", BRAND_NAME)
+SHARING_FINGERPRINT_LIMIT = int(os.getenv("SHARING_FINGERPRINT_LIMIT", "3"))
 
 
 def utc_now() -> datetime:
@@ -176,6 +177,10 @@ def init_db() -> None:
         ensure_column(conn, "discord_users", "admin_banned", "INTEGER NOT NULL DEFAULT 0")
         ensure_column(conn, "discord_users", "admin_notes", "TEXT")
         ensure_column(conn, "discord_users", "access_override", "INTEGER")
+        ensure_column(conn, "discord_users", "owner_fingerprint", "TEXT")
+        ensure_column(conn, "discord_users", "fingerprint_seen_json", "TEXT NOT NULL DEFAULT '[]'")
+        ensure_column(conn, "discord_users", "sharing_locked", "INTEGER NOT NULL DEFAULT 0")
+        ensure_column(conn, "discord_users", "sharing_reason", "TEXT")
         db_execute(
             conn,
             f"""
@@ -566,8 +571,40 @@ def db_changed() -> None:
     discord_sync.notify_db_changed()
 
 
-def save_discord_user(user: dict, roles: list[str]) -> None:
+def save_discord_user(user: dict, roles: list[str], fingerprint: str | None = None, ip_address: str = "") -> None:
     with connect() as conn:
+        existing = db_execute(
+            conn,
+            "SELECT owner_fingerprint, fingerprint_seen_json, sharing_locked, sharing_reason FROM discord_users WHERE discord_id = ?",
+            (user["id"],),
+        ).fetchone()
+        owner_fingerprint = existing["owner_fingerprint"] if existing else None
+        sharing_locked = bool(existing["sharing_locked"]) if existing else False
+        sharing_reason = existing["sharing_reason"] if existing else None
+        fingerprints = []
+        if existing and existing["fingerprint_seen_json"]:
+            try:
+                fingerprints = json.loads(existing["fingerprint_seen_json"])
+            except json.JSONDecodeError:
+                fingerprints = []
+        fingerprints = [str(item) for item in fingerprints if item]
+
+        if fingerprint:
+            if not owner_fingerprint:
+                owner_fingerprint = fingerprint
+            if fingerprint not in fingerprints:
+                fingerprints.append(fingerprint)
+            if (
+                owner_fingerprint
+                and fingerprint != owner_fingerprint
+                and not is_super_admin_discord_id(user["id"])
+                and len(fingerprints) >= SHARING_FINGERPRINT_LIMIT
+            ):
+                sharing_locked = True
+                sharing_reason = (
+                    f"Account locked: {len(fingerprints)} device fingerprints detected from multiple devices."
+                )
+
         db_execute(
             conn,
             """
@@ -585,6 +622,26 @@ def save_discord_user(user: dict, roles: list[str]) -> None:
                 user.get("avatar"),
                 json.dumps(roles),
                 to_iso(utc_now()),
+            ),
+        )
+        db_execute(
+            conn,
+            """
+            UPDATE discord_users
+            SET owner_fingerprint = ?,
+                fingerprint_seen_json = ?,
+                sharing_locked = ?,
+                sharing_reason = ?,
+                admin_notes = COALESCE(admin_notes, ?)
+            WHERE discord_id = ?
+            """,
+            (
+                owner_fingerprint,
+                json.dumps(fingerprints[:20]),
+                1 if sharing_locked else 0,
+                sharing_reason,
+                f"Owner IP: {ip_address}" if ip_address else None,
+                user["id"],
             ),
         )
     db_changed()
@@ -671,6 +728,8 @@ def get_discord_profile(discord_id: str) -> dict | None:
     admin_banned = bool(row["admin_banned"]) if "admin_banned" in keys else False
     access_override = row["access_override"] if "access_override" in keys else None
     has_role_access = DISCORD_ACCESS_ROLE_ID in roles
+    sharing_locked = bool(row["sharing_locked"]) if "sharing_locked" in keys else False
+    sharing_reason = row["sharing_reason"] if "sharing_reason" in keys else None
     if access_override == 0:
         has_access = False
     elif access_override == 1:
@@ -678,6 +737,8 @@ def get_discord_profile(discord_id: str) -> dict | None:
     else:
         has_access = has_role_access
     if admin_banned:
+        has_access = False
+    if sharing_locked and not is_super_admin_discord_id(discord_id):
         has_access = False
     if is_super_admin_discord_id(discord_id):
         has_access = True
@@ -693,6 +754,8 @@ def get_discord_profile(discord_id: str) -> dict | None:
         "admin_banned": admin_banned,
         "admin_notes": row["admin_notes"] if "admin_notes" in keys else None,
         "access_override": access_override,
+        "sharing_locked": sharing_locked,
+        "sharing_reason": sharing_reason,
         "is_super_admin": is_super_admin_discord_id(discord_id),
     }
 
@@ -854,6 +917,58 @@ class Handler(BaseHTTPRequestHandler):
             return forwarded
         return str(self.client_address[0] if self.client_address else "unknown")
 
+    def request_fingerprint(self) -> str:
+        user_agent = self.headers.get("User-Agent", "")
+        accept_lang = self.headers.get("Accept-Language", "")
+        sec_platform = self.headers.get("Sec-CH-UA-Platform", "")
+        ip = self.client_key()
+        digest_input = f"{user_agent}|{accept_lang}|{sec_platform}|{ip}"
+        return hashlib.sha256(digest_input.encode("utf-8")).hexdigest()
+
+    def enforce_subject_owner(self, subject: str) -> bool:
+        discord_id = discord_id_from_subject(subject)
+        if not discord_id or is_super_admin_discord_id(discord_id):
+            return True
+        with connect() as conn:
+            row = db_execute(
+                conn,
+                "SELECT owner_fingerprint, sharing_locked, sharing_reason FROM discord_users WHERE discord_id = ?",
+                (discord_id,),
+            ).fetchone()
+            if row is None:
+                return True
+            if row["sharing_locked"]:
+                self.send_json(
+                    HTTPStatus.FORBIDDEN,
+                    {"detail": "account_sharing_locked", "message": row["sharing_reason"] or "Account is locked."},
+                )
+                return False
+            owner = row["owner_fingerprint"] or ""
+            if not owner:
+                db_execute(
+                    conn,
+                    "UPDATE discord_users SET owner_fingerprint = ?, fingerprint_seen_json = ? WHERE discord_id = ?",
+                    (self.request_fingerprint(), json.dumps([self.request_fingerprint()]), discord_id),
+                )
+                db_changed()
+                return True
+            if owner != self.request_fingerprint():
+                db_execute(
+                    conn,
+                    "UPDATE discord_users SET sharing_locked = 1, sharing_reason = ? WHERE discord_id = ?",
+                    ("Account sharing detected from a different device fingerprint.", discord_id),
+                )
+                db_changed()
+                self.send_json(
+                    HTTPStatus.FORBIDDEN,
+                    {
+                        "detail": "account_sharing_locked",
+                        "message": "Account sharing detected. Access has been locked for security.",
+                    },
+                )
+                return False
+        return True
+
     def end_headers(self) -> None:
         request_origin = self.headers.get("Origin", "").rstrip("/")
         allowed_origin = request_origin if request_origin in CORS_ORIGINS else CORS_ORIGINS[0]
@@ -953,6 +1068,8 @@ class Handler(BaseHTTPRequestHandler):
         subject = self.require_auth_subject()
         if not subject:
             return None
+        if not self.enforce_subject_owner(subject):
+            return None
         if not subject_has_dashboard_access(subject):
             self.send_json(
                 HTTPStatus.FORBIDDEN,
@@ -1041,7 +1158,11 @@ class Handler(BaseHTTPRequestHandler):
             except (KeyError, urlerror.URLError, urlerror.HTTPError, TimeoutError, json.JSONDecodeError):
                 self.redirect(add_query_params(return_to, {"discord_error": "discord_auth_failed"}))
                 return
-            save_discord_user(user, roles)
+            save_discord_user(user, roles, self.request_fingerprint(), self.client_key())
+            profile = get_discord_profile(user["id"])
+            if profile and profile.get("sharing_locked"):
+                self.redirect(add_query_params(return_to, {"discord_error": "account_sharing_locked"}))
+                return
             token = make_token(f"discord-{user['id']}")
             self.redirect(add_query_params(return_to, {"token": token}))
             return

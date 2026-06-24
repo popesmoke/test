@@ -8,6 +8,8 @@ export const DISCORD_ERROR_MESSAGES = {
   discord_auth_failed: "Discord login failed. Please try again.",
   invalid_state: "Discord login expired. Please try again.",
   missing_code: "Discord did not return a login code. Please try again.",
+  account_sharing_locked:
+    "This Discord account was locked because it appears to be shared across multiple devices. Contact support to unlock it.",
 };
 
 export async function startDiscordLogin(returnPath = "/workspace") {

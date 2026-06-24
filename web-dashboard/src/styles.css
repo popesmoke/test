@@ -4066,3 +4066,129 @@ kbd {
   margin: 0;
   line-height: 1.5;
 }
+
+@media (max-width: 1024px) {
+  .site-header__inner,
+  .landing,
+  .download-page,
+  .legal-doc,
+  .site-footer__inner {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .hero,
+  .download-hero {
+    gap: 24px;
+    padding-top: 36px;
+    padding-bottom: 40px;
+  }
+}
+
+@media (max-width: 760px) {
+  .site-header {
+    position: static;
+  }
+
+  .site-header__inner {
+    gap: 12px;
+    padding-top: 12px;
+    padding-bottom: 12px;
+  }
+
+  .site-nav {
+    order: 3;
+    width: 100%;
+    overflow-x: auto;
+    padding-bottom: 4px;
+  }
+
+  .site-nav__link {
+    flex: 0 0 auto;
+    font-size: 13px;
+    padding: 8px 10px;
+  }
+
+  .site-header__actions {
+    margin-left: auto;
+  }
+
+  .site-header__actions .btn--sm {
+    min-height: 34px;
+    padding: 0 10px;
+  }
+
+  .hero__actions .btn,
+  .download-hero__actions .btn,
+  .cta-band__actions .btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .hero__trust {
+    gap: 8px 14px;
+  }
+
+  .legal-doc {
+    padding-top: 28px;
+    padding-bottom: 40px;
+  }
+
+  .legal-doc__hero {
+    padding: 20px 18px;
+  }
+
+  .legal-article__head,
+  .legal-article__content {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+
+  .admin-panel {
+    padding: 12px;
+  }
+
+  .admin-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .admin-toolbar input,
+  .admin-toolbar select,
+  .admin-toolbar button {
+    width: 100%;
+  }
+
+  .admin-actions-cell {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
+@media (max-width: 520px) {
+  .site-brand__logo {
+    height: 32px;
+  }
+
+  .site-brand__name {
+    font-size: 14px;
+  }
+
+  .pricing-card {
+    padding: 16px 14px;
+  }
+
+  .pricing-card__price strong {
+    font-size: 1.5rem;
+  }
+
+  .auth-card__brand,
+  .auth-card__body {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .ws-pagination {
+    justify-content: space-between;
+  }
+}

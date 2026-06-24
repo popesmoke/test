@@ -1976,4 +1976,71 @@
   .ws-topbar__user span {
     display: none;
   }
+
+  .ws-topbar {
+    height: auto;
+    min-height: 52px;
+    padding: 8px 12px;
+    flex-wrap: wrap;
+  }
+
+  .ws-topbar__actions {
+    margin-left: auto;
+  }
+
+  .ws-review-nav {
+    overflow-x: auto;
+    padding-bottom: 8px;
+    scrollbar-width: thin;
+  }
+
+  .ws-review-nav__tab {
+    flex: 0 0 auto;
+    white-space: nowrap;
+    padding: 8px 10px;
+  }
+
+  .ws-panel__head {
+    padding: 12px;
+  }
+
+  .ws-panel__body {
+    padding: 12px;
+  }
+
+  .ws-account-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .ws-account-card {
+    padding: 10px 12px;
+  }
+
+  .ws-bypass-hero {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .ws-bypass-hero__meter {
+    width: 100%;
+    align-items: flex-start;
+  }
+}
+
+@media (max-width: 480px) {
+  .ws-canvas__body {
+    padding: 12px;
+  }
+
+  .ws-bento__meter strong {
+    font-size: 2rem;
+  }
+
+  .ws-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .ws-activity-card {
+    padding: 10px 12px;
+  }
 }

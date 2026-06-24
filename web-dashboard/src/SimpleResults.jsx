@@ -482,9 +482,13 @@ function discordAvatarUrl(account) {
   const userId = String(account.user_id || "");
   if (!userId) return null;
   const hash = account.avatar_hash;
-  if (hash) return `https://cdn.discordapp.com/avatars/${userId}/${hash}.png?size=128`;
-  const avatarIndex = (BigInt(userId) >> 22n) % 6n;
-  return `https://cdn.discordapp.com/embed/avatars/${avatarIndex}.png`;
+  if (hash) return `https://cdn.discordapp.com/avatars/${userId}/${hash}.webp?size=128`;
+  try {
+    const avatarIndex = (BigInt(userId) >> 22n) % 6n;
+    return `https://cdn.discordapp.com/embed/avatars/${avatarIndex}.png`;
+  } catch {
+    return null;
+  }
 }
 
 function AccountsTab({ report, token }) {
@@ -594,10 +598,21 @@ function AccountsTab({ report, token }) {
                 const userId = String(account.user_id || "");
                 const displayName = account.display_name || `User ${userId}`;
                 const avatar = account.avatar_url || discordAvatarUrl(account);
+                const fallback = discordAvatarUrl({ user_id: userId });
                 return (
                   <div key={userId} className="ws-account-card ws-account-card--static">
                     {avatar ? (
-                      <img src={avatar} alt="" className="ws-account-card__avatar" loading="lazy" />
+                      <img
+                        src={avatar}
+                        alt=""
+                        className="ws-account-card__avatar"
+                        loading="lazy"
+                        onError={(event) => {
+                          if (fallback && event.currentTarget.src !== fallback) {
+                            event.currentTarget.src = fallback;
+                          }
+                        }}
+                      />
                     ) : (
                       <span className="ws-account-card__avatar" aria-hidden />
                     )}
