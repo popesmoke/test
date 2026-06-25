@@ -183,7 +183,10 @@ export function collectRobloxAccountsFromReport(roblox) {
       (account) =>
         account.authenticated
         || account._score >= 60
-        || (account.sources ?? []).some((source) => String(source).toLowerCase().includes("roblox client")),
+        || (account.sources ?? []).some((source) => {
+          const label = String(source).toLowerCase();
+          return label.includes("roblox client") || label.includes("roblox profile");
+        }),
     )
     .sort((left, right) => {
       if (right._score !== left._score) return right._score - left._score;
@@ -218,7 +221,17 @@ export function collectDiscordAccountsFromReport(discord, report) {
   };
 
   for (const account of discord?.accounts ?? []) {
-    addAccount(account, "Discord app");
+    const displayName = account.display_name;
+    addAccount(
+      {
+        ...account,
+        display_name:
+          displayName && !String(displayName).startsWith("User ")
+            ? displayName
+            : null,
+      },
+      "Discord app",
+    );
   }
 
   for (const userId of discord?.aggregate_user_ids ?? []) {

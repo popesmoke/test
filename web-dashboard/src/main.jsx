@@ -1414,10 +1414,62 @@ function discordAvatarUrl(account) {
   return `https://cdn.discordapp.com/embed/avatars/${avatarIndex}.png`;
 }
 
-function DiscordAccountsCard({ report }) {
-  const accounts = collectDiscordAccountsFromReport(
-    report.application_diagnostics?.discord ?? {},
-    report,
+function DiscordAccountsCard({ report, token }) {
+  const baseAccounts = useMemo(
+    () =>
+      collectDiscordAccountsFromReport(
+        report.application_diagnostics?.discord ?? {},
+        report,
+      ),
+    [report],
+  );
+  const [profiles, setProfiles] = useState({});
+
+  useEffect(() => {
+    const userIds = baseAccounts.map((account) => account.user_id).filter(Boolean);
+    if (!token || !userIds.length) {
+      setProfiles({});
+      return undefined;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await fetch(`${API_URL}/discord/profiles`, {
+          method: "POST",
+          headers: authHeaders(token),
+          body: JSON.stringify({ user_ids: userIds }),
+        });
+        if (!response.ok || cancelled) return;
+        const payload = await response.json();
+        const next = {};
+        for (const profile of payload.profiles ?? []) {
+          if (profile?.user_id) next[String(profile.user_id)] = profile;
+        }
+        if (!cancelled) setProfiles(next);
+      } catch {
+        if (!cancelled) setProfiles({});
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [baseAccounts, token]);
+
+  const accounts = useMemo(
+    () =>
+      baseAccounts.map((account) => {
+        const resolved = profiles[account.user_id] ?? {};
+        return {
+          ...account,
+          display_name:
+            resolved.display_name
+            || account.display_name
+            || null,
+          avatar_hash: resolved.avatar_hash || account.avatar_hash || null,
+          avatar_url: resolved.avatar_url || account.avatar_url || null,
+        };
+      }),
+    [baseAccounts, profiles],
   );
 
   return (
@@ -1454,7 +1506,7 @@ function AccountsSection({ report, token }) {
   return (
     <>
       <RobloxAccountsCard report={report} token={token} />
-      <DiscordAccountsCard report={report} />
+      <DiscordAccountsCard report={report} token={token} />
     </>
   );
 }

@@ -874,6 +874,60 @@ def fetch_roblox_profiles(user_ids: list[str]) -> list[dict]:
     return [profiles[user_id] for user_id in normalized]
 
 
+def fetch_discord_profiles(user_ids: list[str]) -> list[dict]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_id in user_ids:
+        user_id = str(raw_id or "").strip()
+        if not user_id or not user_id.isdigit() or user_id in seen:
+            continue
+        seen.add(user_id)
+        normalized.append(user_id)
+    if not normalized:
+        return []
+
+    bot_token = os.getenv("DISCORD_BOT_TOKEN") or os.getenv("DISCORD_TOKEN", "")
+    profiles: dict[str, dict] = {
+        user_id: {
+            "user_id": user_id,
+            "display_name": None,
+            "avatar_hash": None,
+            "avatar_url": None,
+        }
+        for user_id in normalized
+    }
+    if not bot_token:
+        return [profiles[user_id] for user_id in normalized]
+
+    for user_id in normalized:
+        try:
+            request = urlrequest.Request(
+                f"{DISCORD_API_BASE}/users/{user_id}",
+                headers={
+                    "Authorization": f"Bot {bot_token}",
+                    "Accept": "application/json",
+                    "User-Agent": "VirelloScannerDashboard/1.0",
+                },
+            )
+            with urlrequest.urlopen(request, timeout=8) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            display_name = str(data.get("global_name") or data.get("username") or "").strip() or None
+            avatar_hash = str(data.get("avatar") or "").strip() or None
+            avatar_url = None
+            if avatar_hash:
+                avatar_url = f"https://cdn.discordapp.com/avatars/{user_id}/{avatar_hash}.png?size=128"
+            profiles[user_id] = {
+                "user_id": user_id,
+                "display_name": display_name,
+                "avatar_hash": avatar_hash,
+                "avatar_url": avatar_url,
+            }
+        except (urlerror.URLError, TimeoutError, json.JSONDecodeError, TypeError, ValueError):
+            continue
+
+    return [profiles[user_id] for user_id in normalized]
+
+
 def is_super_admin_subject(subject: str) -> bool:
     if is_checker_subject(subject):
         return True
@@ -1536,6 +1590,17 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "user_ids must be a list"})
                 return
             profiles = fetch_roblox_profiles([str(item) for item in user_ids])
+            self.send_json(HTTPStatus.OK, {"profiles": profiles})
+            return
+
+        if path == "/discord/profiles":
+            if not self.require_checker():
+                return
+            user_ids = payload.get("user_ids") or []
+            if not isinstance(user_ids, list):
+                self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "user_ids must be a list"})
+                return
+            profiles = fetch_discord_profiles([str(item) for item in user_ids])
             self.send_json(HTTPStatus.OK, {"profiles": profiles})
             return
 

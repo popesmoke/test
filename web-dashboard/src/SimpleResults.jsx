@@ -499,12 +499,13 @@ function AccountsTab({ report, token }) {
     () => collectDiscordAccountsFromReport(discord, report),
     [discord, report],
   );
-  const [profiles, setProfiles] = useState({});
+  const [robloxProfiles, setRobloxProfiles] = useState({});
+  const [discordProfiles, setDiscordProfiles] = useState({});
 
   useEffect(() => {
     const userIds = robloxAccounts.map((a) => a.user_id).filter(Boolean);
     if (!token || !userIds.length) {
-      setProfiles({});
+      setRobloxProfiles({});
       return undefined;
     }
     let cancelled = false;
@@ -524,15 +525,48 @@ function AccountsTab({ report, token }) {
         for (const profile of payload.profiles ?? []) {
           if (profile?.user_id) next[String(profile.user_id)] = profile;
         }
-        if (!cancelled) setProfiles(next);
+        if (!cancelled) setRobloxProfiles(next);
       } catch {
-        if (!cancelled) setProfiles({});
+        if (!cancelled) setRobloxProfiles({});
       }
     })();
     return () => {
       cancelled = true;
     };
   }, [robloxAccounts, token]);
+
+  useEffect(() => {
+    const userIds = discordAccounts.map((a) => a.user_id).filter(Boolean);
+    if (!token || !userIds.length) {
+      setDiscordProfiles({});
+      return undefined;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await fetch(`${API_URL}/discord/profiles`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ user_ids: userIds }),
+        });
+        if (!response.ok || cancelled) return;
+        const payload = await response.json();
+        const next = {};
+        for (const profile of payload.profiles ?? []) {
+          if (profile?.user_id) next[String(profile.user_id)] = profile;
+        }
+        if (!cancelled) setDiscordProfiles(next);
+      } catch {
+        if (!cancelled) setDiscordProfiles({});
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [discordAccounts, token]);
 
   const robloxPage = usePagination(robloxAccounts, 12);
   const discordPage = usePagination(discordAccounts, 12);
@@ -550,7 +584,7 @@ function AccountsTab({ report, token }) {
             <>
               <div className="ws-account-grid">
                 {robloxPage.slice.map((account) => {
-                const resolved = profiles[account.user_id] ?? {};
+                const resolved = robloxProfiles[account.user_id] ?? {};
                 const displayName = account.username || resolved.username || `Account ${account.user_id}`;
                 const avatar = robloxHeadshotUrl({ ...account, headshot_url: resolved.headshot_url });
                 return (
@@ -596,8 +630,18 @@ function AccountsTab({ report, token }) {
               <div className="ws-account-grid">
                 {discordPage.slice.map((account) => {
                 const userId = String(account.user_id || "");
-                const displayName = account.display_name || `User ${userId}`;
-                const avatar = account.avatar_url || discordAvatarUrl(account);
+                const resolved = discordProfiles[userId] ?? {};
+                const displayName =
+                  resolved.display_name
+                  || account.display_name
+                  || `User ${userId}`;
+                const avatar =
+                  resolved.avatar_url
+                  || account.avatar_url
+                  || discordAvatarUrl({
+                    ...account,
+                    avatar_hash: resolved.avatar_hash || account.avatar_hash,
+                  });
                 const fallback = discordAvatarUrl({ user_id: userId });
                 return (
                   <div key={userId} className="ws-account-card ws-account-card--static">
