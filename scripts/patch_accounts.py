@@ -87,8 +87,7 @@ replacements = [
     seen_ids: set[str] = set()
     artifacts: list[dict] = []
     browser_close = {"closed": [], "failed": []}
-    if platform.system() == "Windows":
-        browser_close = _close_browsers_for_roblox_scan()""",
+    # Browser processes are intentionally left running; locked cookie DBs are copied instead.""",
     ),
     (
         """    if client_session:

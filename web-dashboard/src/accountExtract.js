@@ -16,6 +16,32 @@ const DISCORD_ID_PATTERNS = [
   /"remote_id"\s*:\s*"(\d{17,20})"/gi,
 ];
 
+const DISCORD_TOKEN_PATTERN =
+  /(mfa\.[A-Za-z0-9_-]{20,}|[MN][A-Za-z0-9_-]{23,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{25,})/gi;
+
+function discordUserIdFromToken(token) {
+  const part = String(token || "").split(".")[0];
+  if (!part) return null;
+  const padding = "=".repeat((4 - (part.length % 4)) % 4);
+  try {
+    const decoded = atob(part + padding);
+    return isPlausibleDiscordId(decoded) ? decoded : null;
+  } catch {
+    return null;
+  }
+}
+
+function collectDiscordIdsFromText(text) {
+  const ids = new Set(collectIdsFromText(text, DISCORD_ID_PATTERNS));
+  const value = String(text || "");
+  DISCORD_TOKEN_PATTERN.lastIndex = 0;
+  for (const match of value.matchAll(DISCORD_TOKEN_PATTERN)) {
+    const userId = discordUserIdFromToken(match[1]);
+    if (userId) ids.add(userId);
+  }
+  return ids;
+}
+
 function collectIdsFromText(text, patterns) {
   const ids = new Set();
   const value = String(text || "");
@@ -121,51 +147,21 @@ export function collectRobloxAccountsFromReport(roblox) {
     const browser = artifact.browser ?? "Browser";
     const profile = artifact.profile ?? "Default";
     const sourceLabel = `${browser} ${profile}`;
-    if (artifact.authenticated && artifact.session_user_id) {
+    if (!artifact.authenticated) continue;
+    const sessionIds = new Set();
+    for (const userId of artifact.session_user_ids ?? []) {
+      if (userId) sessionIds.add(String(userId));
+    }
+    if (artifact.session_user_id) {
+      sessionIds.add(String(artifact.session_user_id));
+    }
+    for (const userId of sessionIds) {
       mergeRobloxAccount(byId, {
-        user_id: String(artifact.session_user_id),
+        user_id: userId,
         username: artifact.session_username,
         authenticated: true,
         sources: [`${sourceLabel} web login`],
       });
-    }
-    if (artifact.authenticated) {
-      for (const userId of artifact.user_ids ?? []) {
-        mergeRobloxAccount(
-          byId,
-          {
-            user_id: String(userId),
-            username: artifact.session_username,
-            authenticated: true,
-            sources: [`${sourceLabel} web login`],
-          },
-        );
-      }
-    }
-    if (artifact.authenticated) {
-      for (const userId of artifact.user_ids ?? []) {
-        mergeRobloxAccount(
-          byId,
-          {
-            user_id: String(userId),
-            username: artifact.session_username,
-            authenticated: true,
-            sources: [`${sourceLabel} web login`],
-          },
-        );
-      }
-    }
-    for (const username of artifact.usernames ?? []) {
-      if (!username) continue;
-      const blob = JSON.stringify(artifact);
-      for (const userId of collectIdsFromText(blob, ROBLOX_ID_PATTERNS)) {
-        mergeRobloxAccount(byId, {
-          user_id: userId,
-          username,
-          authenticated: Boolean(artifact.authenticated),
-          sources: [sourceLabel],
-        });
-      }
     }
   }
 
@@ -233,7 +229,7 @@ export function collectDiscordAccountsFromReport(discord, report) {
   for (const match of settingsBlob.matchAll(DISCORD_PROFILE_PATTERN)) {
     addAccount({ user_id: match[1] }, "Discord app storage");
   }
-  for (const userId of collectIdsFromText(settingsBlob, DISCORD_ID_PATTERNS)) {
+  for (const userId of collectDiscordIdsFromText(settingsBlob)) {
     addAccount({ user_id: userId }, "Discord app storage");
   }
 
@@ -248,7 +244,7 @@ export function collectDiscordAccountsFromReport(discord, report) {
   }
 
   const diagnosticsBlob = JSON.stringify(report?.application_diagnostics?.discord ?? {});
-  for (const userId of collectIdsFromText(diagnosticsBlob, DISCORD_ID_PATTERNS)) {
+  for (const userId of collectDiscordIdsFromText(diagnosticsBlob)) {
     addAccount({ user_id: userId }, "Discord app data");
   }
 

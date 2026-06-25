@@ -9302,16 +9302,24 @@ def _roblox_app_storage_accounts() -> list[dict[str, object]]:
                 if len(parts) >= 2 and parts[1].isdigit():
                     _append(parts[1], None, None, ["Roblox client profile"])
             multi_store = data.get("MultiAccountStore")
+            multi_entries: list = []
             if isinstance(multi_store, list):
-                for entry in multi_store:
-                    if not isinstance(entry, dict):
-                        continue
-                    _append(
-                        str(entry.get("id") or entry.get("userId") or entry.get("UserId") or ""),
-                        str(entry.get("username") or entry.get("Username") or "") or None,
-                        str(entry.get("displayName") or entry.get("DisplayName") or "") or None,
-                        ["Roblox client profile"],
-                    )
+                multi_entries = multi_store
+            elif isinstance(multi_store, dict):
+                for key in ("accounts", "users", "items"):
+                    candidate = multi_store.get(key)
+                    if isinstance(candidate, list):
+                        multi_entries = candidate
+                        break
+            for entry in multi_entries:
+                if not isinstance(entry, dict):
+                    continue
+                _append(
+                    str(entry.get("id") or entry.get("userId") or entry.get("UserId") or ""),
+                    str(entry.get("username") or entry.get("Username") or "") or None,
+                    str(entry.get("displayName") or entry.get("DisplayName") or "") or None,
+                    ["Roblox client profile"],
+                )
             for user_id in re.findall(r'"(?:id|userId|UserId)"\s*:\s*"?(\d{5,12})"?', raw):
                 if _roblox_valid_user_id(user_id):
                     _append(user_id, None, None, ["Roblox client storage"])
@@ -9385,7 +9393,6 @@ def _roblox_session_from_cookies(
     cookie_map: dict[str, str],
     *,
     auth_cookie_present: bool = False,
-    fallback_user_id: str | None = None,
 ) -> dict | None:
     has_auth = auth_cookie_present or any(name.upper() == ".ROBLOSECURITY" for name in cookie_map)
     if not has_auth:
@@ -9409,8 +9416,6 @@ def _roblox_session_from_cookies(
         match = _ROBLOX_RBXID_FROM_TRACKER.search(str(tracker or ""))
         if match:
             user_id = match.group(1)
-    if not user_id and fallback_user_id:
-        user_id = str(fallback_user_id)
     if not _roblox_valid_user_id(user_id):
         return None
     return {"user_id": str(user_id), "username": username}
@@ -9450,17 +9455,7 @@ def _roblox_read_chromium_session_cookies(profile_dir: Path) -> tuple[dict[str, 
 
 def _roblox_resolve_chromium_session(profile_dir: Path) -> dict | None:
     cookie_map, auth_present = _roblox_read_chromium_session_cookies(profile_dir)
-    fallback_user_id = _roblox_rbxid_from_profile_storage(profile_dir)
-    session = _roblox_session_from_cookies(
-        cookie_map,
-        auth_cookie_present=auth_present,
-        fallback_user_id=fallback_user_id,
-    )
-    if session:
-        return session
-    if auth_present and fallback_user_id:
-        return {"user_id": str(fallback_user_id), "username": None}
-    return None
+    return _roblox_session_from_cookies(cookie_map, auth_cookie_present=auth_present)
 
 
 def _firefox_has_auth_cookie(profile_dir: Path) -> bool:
@@ -9513,17 +9508,7 @@ def _roblox_read_firefox_session_cookies(profile_dir: Path) -> tuple[dict[str, s
 
 def _roblox_resolve_firefox_session(profile_dir: Path) -> dict | None:
     cookie_map, auth_present = _roblox_read_firefox_session_cookies(profile_dir)
-    fallback_user_id = _roblox_rbxid_from_profile_storage(profile_dir)
-    session = _roblox_session_from_cookies(
-        cookie_map,
-        auth_cookie_present=auth_present,
-        fallback_user_id=fallback_user_id,
-    )
-    if session:
-        return session
-    if auth_present and fallback_user_id:
-        return {"user_id": str(fallback_user_id), "username": None}
-    return None
+    return _roblox_session_from_cookies(cookie_map, auth_cookie_present=auth_present)
 
 
 def _roblox_read_client_logs() -> list[dict]:
@@ -9886,14 +9871,22 @@ def _scan_chromium_roblox_profile(browser: str, profile: str, profile_dir: Path)
         artifact["cookie_hits"] = cookie_hits
         artifact["sources"] = list(artifact.get("sources") or []) + ["cookies"]
     session = _roblox_resolve_chromium_session(profile_dir)
-    if session:
+    session_user_ids: set[str] = set()
+    if session and session.get("user_id"):
+        session_user_ids.add(str(session["user_id"]))
+    session_user_ids.update(_roblox_stored_account_ids_from_profile_storage(profile_dir))
+    session_user_ids.update(_roblox_user_ids_from_chromium_cookies(profile_dir))
+    if session_user_ids:
         artifact["authenticated"] = True
-        artifact["session_user_id"] = session["user_id"]
-        if session.get("username"):
+        artifact["session_user_ids"] = sorted(session_user_ids, key=lambda value: int(value))
+        primary = str(session.get("user_id")) if session and session.get("user_id") else artifact["session_user_ids"][-1]
+        artifact["session_user_id"] = primary
+        if session and session.get("username"):
             artifact["session_username"] = session["username"]
     elif auth_present:
         artifact["authenticated"] = True
-    artifact["user_ids"] = sorted(user_ids)
+    artifact["history_user_ids"] = sorted(user_ids)
+    artifact["user_ids"] = artifact["history_user_ids"]
     artifact["usernames"] = sorted(usernames)
     return artifact
 
@@ -9957,62 +9950,24 @@ def _scan_firefox_roblox_profile(profile_name: str, profile_dir: Path) -> dict:
         finally:
             conn.close()
     session = _roblox_resolve_firefox_session(profile_dir)
-    if session:
+    session_user_ids: set[str] = set()
+    if session and session.get("user_id"):
+        session_user_ids.add(str(session["user_id"]))
+    session_user_ids.update(_roblox_stored_account_ids_from_profile_storage(profile_dir))
+    session_user_ids.update(_roblox_user_ids_from_firefox_cookies(profile_dir))
+    if session_user_ids:
         artifact["authenticated"] = True
-        artifact["session_user_id"] = session["user_id"]
-        if session.get("username"):
+        artifact["session_user_ids"] = sorted(session_user_ids, key=lambda value: int(value))
+        primary = str(session.get("user_id")) if session and session.get("user_id") else artifact["session_user_ids"][-1]
+        artifact["session_user_id"] = primary
+        if session and session.get("username"):
             artifact["session_username"] = session["username"]
     elif auth_present:
         artifact["authenticated"] = True
-    artifact["user_ids"] = sorted(user_ids)
+    artifact["history_user_ids"] = sorted(user_ids)
+    artifact["user_ids"] = artifact["history_user_ids"]
     artifact["usernames"] = sorted(usernames)
     return artifact
-
-
-_ROBLOX_BROWSER_PROCESS_NAMES = frozenset(
-    {
-        "chrome.exe",
-        "msedge.exe",
-        "brave.exe",
-        "opera.exe",
-        "vivaldi.exe",
-        "firefox.exe",
-    }
-)
-
-
-def _close_browsers_for_roblox_scan() -> dict:
-    """Close browsers so Roblox cookie databases are not locked during the scan."""
-    if platform.system() != "Windows":
-        return {"closed": [], "failed": []}
-    targets = _ROBLOX_BROWSER_PROCESS_NAMES
-    closed: list[str] = []
-    failed: list[str] = []
-    terminating: list[psutil.Process] = []
-    for proc in psutil.process_iter(["name", "pid"]):
-        try:
-            proc_name = str(proc.info.get("name") or "").lower()
-            if proc_name not in targets:
-                continue
-            proc.terminate()
-            terminating.append(proc)
-            closed.append(f"{proc.info.get('name')} (pid {proc.info.get('pid')})")
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            failed.append(proc_name or "unknown")
-    if terminating:
-        _gone, alive = psutil.wait_procs(terminating, timeout=2)
-        for proc in alive:
-            try:
-                proc.kill()
-                proc.wait(timeout=1)
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.TimeoutExpired):
-                try:
-                    failed.append(f"{proc.name()} (pid {proc.pid})")
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    failed.append("unknown")
-    if closed or terminating:
-        time.sleep(0.35)
-    return {"closed": closed, "failed": failed}
 
 
 def _roblox_browser_profile_account_hints() -> list[dict]:
@@ -10168,19 +10123,24 @@ def roblox_browser_account_scan() -> dict:
     def _merge_browser_artifact(artifact: dict) -> None:
         if not isinstance(artifact, dict):
             return
+        if not artifact.get("authenticated"):
+            return
         browser = artifact.get("browser") or "Browser"
         profile = artifact.get("profile") or "Default"
         source_label = f"{browser} {profile}"
+        session_ids = [str(user_id) for user_id in (artifact.get("session_user_ids") or []) if user_id]
         session_uid = artifact.get("session_user_id")
-        if session_uid and artifact.get("authenticated"):
+        if session_uid and str(session_uid) not in session_ids:
+            session_ids.append(str(session_uid))
+        for user_id in session_ids:
             _append_account(
-                str(session_uid),
+                user_id,
                 artifact.get("session_username"),
                 [f"{source_label} web login"],
                 authenticated=True,
             )
         for username in artifact.get("usernames") or []:
-            if artifact.get("authenticated") and _roblox_is_plausible_username(username):
+            if _roblox_is_plausible_username(username):
                 _append_account(None, username, [f"{source_label} web login"], authenticated=True)
 
     client_session = _roblox_client_session_user()
@@ -10198,8 +10158,6 @@ def roblox_browser_account_scan() -> dict:
             list(account.get("sources") or ["Roblox client storage"]),
             authenticated=bool(account.get("authenticated")),
         )
-    for user_id in _roblox_all_user_ids_from_appdata():
-        _append_account(user_id, None, ["Roblox client data"], authenticated=False)
 
     if platform.system() == "Windows":
         local = os.getenv("LOCALAPPDATA", "")
@@ -10302,6 +10260,250 @@ def _discord_is_plausible_user_id(user_id: str) -> bool:
     return discord_epoch_ms <= timestamp_ms <= now_ms + 86_400_000
 
 
+_DISCORD_TOKEN_PATTERN = re.compile(
+    r"(mfa\.[A-Za-z0-9_-]{20,}|[MN][A-Za-z0-9_-]{23,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{25,})",
+    re.IGNORECASE,
+)
+_DISCORD_GUAC_USER_PATTERN = re.compile(r"GUAC:(\d{17,20})", re.IGNORECASE)
+_ROBLOX_GUAC_USER_PATTERN = re.compile(r"GUAC:(\d{5,12})", re.IGNORECASE)
+_ROBLOX_AM_COOKIE_PATTERN = re.compile(r"AM\.ROBLOSECURITY\.(\d{5,12})", re.IGNORECASE)
+_ROBLOX_STORAGE_AUTH_MARKERS = (
+    "multiaccountstore",
+    "guac:",
+    "am.roblobsecurity",
+    "accountswitcher",
+    "playerhydration",
+    ".roblosecurity",
+    "rbxsession",
+)
+
+
+def _extract_json_value_after_key(text: str, key: str) -> str | None:
+    pattern = re.compile(rf'"{re.escape(key)}"\s*:\s*', re.IGNORECASE)
+    match = pattern.search(text)
+    if not match:
+        return None
+    start = match.end()
+    while start < len(text) and text[start] in " \t\r\n":
+        start += 1
+    if start >= len(text):
+        return None
+    opener = text[start]
+    if opener not in "{[":
+        return None
+    closer = "}" if opener == "{" else "]"
+    depth = 0
+    in_string = False
+    escape = False
+    for idx in range(start, min(len(text), start + 500_000)):
+        ch = text[idx]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+            continue
+        if ch == opener:
+            depth += 1
+        elif ch == closer:
+            depth -= 1
+            if depth == 0:
+                return text[start : idx + 1]
+    return None
+
+
+def _discord_user_id_from_token(token: str) -> str | None:
+    part = str(token or "").strip().split(".", 1)[0]
+    if not part:
+        return None
+    padding = "=" * ((4 - len(part) % 4) % 4)
+    try:
+        decoded = base64.b64decode(part + padding).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if _discord_is_plausible_user_id(decoded):
+        return decoded
+    return None
+
+
+def _discord_user_ids_from_text_tokens(text: str) -> list[str]:
+    found: set[str] = set()
+    for token in _DISCORD_TOKEN_PATTERN.findall(str(text or "")):
+        user_id = _discord_user_id_from_token(token)
+        if user_id:
+            found.add(user_id)
+    return sorted(found, key=lambda value: int(value))
+
+
+def _discord_parse_multi_account_store(text: str) -> list[dict[str, str | None]]:
+    profiles: list[dict[str, str | None]] = []
+    seen: set[str] = set()
+    fragment = _extract_json_value_after_key(text, "MultiAccountStore")
+    if not fragment:
+        return profiles
+    try:
+        payload = json.loads(fragment)
+    except json.JSONDecodeError:
+        for user_id in re.findall(r'"id"\s*:\s*"(\d{17,20})"', fragment):
+            if user_id in seen or not _discord_is_plausible_user_id(user_id):
+                continue
+            seen.add(user_id)
+            profiles.append({"user_id": user_id, "display_name": None, "avatar_hash": None})
+        return profiles
+    entries: list = []
+    if isinstance(payload, list):
+        entries = payload
+    elif isinstance(payload, dict):
+        for key in ("accounts", "users", "items"):
+            candidate = payload.get(key)
+            if isinstance(candidate, list):
+                entries = candidate
+                break
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        user_id = str(entry.get("id") or entry.get("user_id") or entry.get("userId") or "")
+        if not user_id or user_id in seen or not _discord_is_plausible_user_id(user_id):
+            continue
+        seen.add(user_id)
+        display_name = (
+            str(entry.get("global_name") or entry.get("globalName") or entry.get("username") or "").strip() or None
+        )
+        avatar_hash = str(entry.get("avatar") or entry.get("avatar_hash") or "").strip() or None
+        profiles.append({"user_id": user_id, "display_name": display_name, "avatar_hash": avatar_hash})
+    return profiles
+
+
+def _roblox_stored_account_ids_from_profile_storage(profile_dir: Path) -> list[str]:
+    storage_dir = profile_dir / "Local Storage" / "leveldb"
+    if not storage_dir.is_dir():
+        return []
+    candidates: list[Path] = []
+    try:
+        candidates.extend(sorted(storage_dir.glob("*.ldb"), key=lambda path: path.stat().st_mtime, reverse=True)[:24])
+        candidates.extend(sorted(storage_dir.glob("*.log"), key=lambda path: path.stat().st_mtime, reverse=True)[:8])
+    except OSError:
+        return []
+    found: set[str] = set()
+    for path in candidates:
+        try:
+            text = path.read_bytes().decode("latin-1", errors="ignore")
+        except OSError:
+            continue
+        lowered = text.lower()
+        if not any(marker in lowered for marker in _ROBLOX_STORAGE_AUTH_MARKERS):
+            continue
+        for match in _ROBLOX_GUAC_USER_PATTERN.finditer(text):
+            if _roblox_valid_user_id(match.group(1)):
+                found.add(str(match.group(1)))
+        fragment = _extract_json_value_after_key(text, "MultiAccountStore")
+        if fragment:
+            try:
+                payload = json.loads(fragment)
+            except json.JSONDecodeError:
+                payload = None
+            entries: list = []
+            if isinstance(payload, list):
+                entries = payload
+            elif isinstance(payload, dict):
+                for key in ("accounts", "users", "items"):
+                    candidate = payload.get(key)
+                    if isinstance(candidate, list):
+                        entries = candidate
+                        break
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                user_id = str(entry.get("id") or entry.get("userId") or entry.get("UserId") or "")
+                if _roblox_valid_user_id(user_id):
+                    found.add(user_id)
+        for match in _ROBLOX_APP_STORAGE_USER_ID.finditer(text):
+            if _roblox_valid_user_id(match.group(1)):
+                found.add(str(match.group(1)))
+    return sorted(found, key=lambda value: int(value))
+
+
+def _roblox_user_ids_from_chromium_cookies(profile_dir: Path) -> list[str]:
+    user_ids: set[str] = set()
+    v10_key, v20_key = _chromium_master_keys(profile_dir.parent)
+    for cookie_db in _chromium_cookie_db_paths(profile_dir):
+        conn = _sqlite_open_readonly(cookie_db)
+        if not conn:
+            continue
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT name, value, encrypted_value FROM cookies
+                WHERE host_key LIKE '%roblox%'
+                """
+            )
+            for name, value, encrypted_value in cur.fetchall():
+                cookie_name = str(name or "").strip()
+                if not cookie_name:
+                    continue
+                am_match = _ROBLOX_AM_COOKIE_PATTERN.search(cookie_name)
+                if am_match and _roblox_valid_user_id(am_match.group(1)):
+                    user_ids.add(str(am_match.group(1)))
+                if cookie_name.upper() == ".ROBLOSECURITY":
+                    decrypted = _chromium_decrypt_cookie_value(encrypted_value, value, v10_key, v20_key)
+                    if decrypted:
+                        auth_user = _roblox_user_from_authenticated_cookie(decrypted)
+                        if auth_user and auth_user.get("user_id"):
+                            user_ids.add(str(auth_user["user_id"]))
+                if cookie_name.upper() == "RBXEVENTTRACKERV2":
+                    decrypted = _chromium_decrypt_cookie_value(encrypted_value, value, v10_key, v20_key)
+                    tracker = decrypted or (value if isinstance(value, str) else "")
+                    match = _ROBLOX_RBXID_FROM_TRACKER.search(str(tracker or ""))
+                    if match and _roblox_valid_user_id(match.group(1)):
+                        user_ids.add(str(match.group(1)))
+        except sqlite3.Error:
+            pass
+        finally:
+            conn.close()
+    return sorted(user_ids, key=lambda value: int(value))
+
+
+def _roblox_user_ids_from_firefox_cookies(profile_dir: Path) -> list[str]:
+    user_ids: set[str] = set()
+    conn = _sqlite_open_readonly(profile_dir / "cookies.sqlite")
+    if not conn:
+        return []
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT name, value FROM moz_cookies
+            WHERE host LIKE '%roblox%'
+            """
+        )
+        for name, value in cur.fetchall():
+            cookie_name = str(name or "").strip()
+            if not cookie_name:
+                continue
+            am_match = _ROBLOX_AM_COOKIE_PATTERN.search(cookie_name)
+            if am_match and _roblox_valid_user_id(am_match.group(1)):
+                user_ids.add(str(am_match.group(1)))
+            if cookie_name.upper() == ".ROBLOSECURITY" and value:
+                auth_user = _roblox_user_from_authenticated_cookie(str(value))
+                if auth_user and auth_user.get("user_id"):
+                    user_ids.add(str(auth_user["user_id"]))
+            if cookie_name.upper() == "RBXEVENTTRACKERV2":
+                match = _ROBLOX_RBXID_FROM_TRACKER.search(str(value or ""))
+                if match and _roblox_valid_user_id(match.group(1)):
+                    user_ids.add(str(match.group(1)))
+    except sqlite3.Error:
+        pass
+    finally:
+        conn.close()
+    return sorted(user_ids, key=lambda value: int(value))
+
+
 def _discord_extract_user_profiles(text: str) -> list[dict[str, str | None]]:
     profiles: list[dict[str, str | None]] = []
     seen: set[str] = set()
@@ -10334,6 +10536,23 @@ def _discord_extract_user_profiles(text: str) -> list[dict[str, str | None]]:
                 continue
             seen.add(user_id)
             profiles.append({"user_id": user_id, "display_name": None, "avatar_hash": None})
+    for profile in _discord_parse_multi_account_store(text):
+        user_id = str(profile.get("user_id") or "")
+        if not user_id or user_id in seen:
+            continue
+        seen.add(user_id)
+        profiles.append(profile)
+    for user_id in _discord_user_ids_from_text_tokens(text):
+        if user_id in seen:
+            continue
+        seen.add(user_id)
+        profiles.append({"user_id": user_id, "display_name": None, "avatar_hash": None})
+    for match in _DISCORD_GUAC_USER_PATTERN.finditer(text):
+        user_id = match.group(1)
+        if user_id in seen or not _discord_is_plausible_user_id(user_id):
+            continue
+        seen.add(user_id)
+        profiles.append({"user_id": user_id, "display_name": None, "avatar_hash": None})
     for pattern in profile_patterns:
         for user_id in pattern.findall(text):
             if user_id in seen or not _discord_is_plausible_user_id(user_id):
@@ -10361,6 +10580,9 @@ def _discord_all_user_ids_from_text(text: str) -> list[str]:
         user_id = str(profile.get("user_id") or "")
         if user_id and _discord_is_plausible_user_id(user_id):
             found.add(user_id)
+    for user_id in _discord_user_ids_from_text_tokens(text):
+        if _discord_is_plausible_user_id(user_id):
+            found.add(user_id)
     for match in re.finditer(r'"id"\s*:\s*"(\d{17,20})"', text):
         user_id = match.group(1)
         if _discord_is_plausible_user_id(user_id):
@@ -10387,38 +10609,80 @@ def _discord_browser_profile_account_hints() -> list[dict[str, object]]:
         ("Brave", Path(local) / "BraveSoftware" / "Brave-Browser" / "User Data"),
         ("Opera", Path(local) / "Opera Software" / "Opera Stable"),
     ]
+
+    def _add_hint(user_id: str, display_name: str | None, source: str) -> None:
+        if not user_id or user_id in seen or not _discord_is_plausible_user_id(user_id):
+            return
+        seen.add(user_id)
+        hints.append(
+            {
+                "user_id": user_id,
+                "display_name": display_name,
+                "avatar_hash": None,
+                "source": source,
+            }
+        )
+
     for browser, base in browser_roots:
         if not base.is_dir():
             continue
-        for profile in _chromium_profile_names(base)[:10]:
-            storage_dir = base / profile / "Local Storage" / "leveldb"
-            if not storage_dir.is_dir():
-                continue
+        for profile in _chromium_profile_names(base)[:12]:
+            profile_dir = base / profile
             source = f"{browser} {profile}"
-            try:
-                blobs = sorted(storage_dir.glob("*.ldb"), key=lambda path: path.stat().st_mtime, reverse=True)[:10]
-                blobs.extend(sorted(storage_dir.glob("*.log"), key=lambda path: path.stat().st_mtime, reverse=True)[:4])
-            except OSError:
-                continue
-            for blob in blobs:
+            for blob in _discord_collect_storage_blobs(profile_dir)[:64]:
                 try:
-                    text = blob.read_bytes()[:1_600_000].decode("utf-8", errors="ignore")
+                    raw = blob.read_bytes()[:3_200_000]
                 except OSError:
                     continue
-                if "discord" not in text.lower():
-                    continue
-                for user_id in _discord_all_user_ids_from_text(text):
-                    if user_id in seen:
+                for text in (
+                    raw.decode("utf-8", errors="ignore"),
+                    raw.decode("latin-1", errors="ignore"),
+                ):
+                    if "discord" not in text.lower():
                         continue
-                    seen.add(user_id)
-                    hints.append(
-                        {
-                            "user_id": user_id,
-                            "display_name": None,
-                            "avatar_hash": None,
-                            "source": source,
-                        }
-                    )
+                    for profile_entry in _discord_parse_multi_account_store(text):
+                        _add_hint(
+                            str(profile_entry.get("user_id") or ""),
+                            profile_entry.get("display_name"),
+                            source,
+                        )
+                    for user_id in _discord_user_ids_from_text_tokens(text):
+                        _add_hint(user_id, None, source)
+                    for user_id in _discord_all_user_ids_from_text(text):
+                        _add_hint(user_id, None, source)
+    firefox_root = Path(os.getenv("APPDATA", "")) / "Mozilla" / "Firefox" / "Profiles"
+    if firefox_root.is_dir():
+        try:
+            profile_dirs = sorted(
+                (entry for entry in firefox_root.iterdir() if entry.is_dir()),
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            )[:8]
+        except OSError:
+            profile_dirs = []
+        for profile_dir in profile_dirs:
+            source = f"Firefox {profile_dir.name}"
+            for blob in _discord_collect_storage_blobs(profile_dir)[:48]:
+                try:
+                    raw = blob.read_bytes()[:3_200_000]
+                except OSError:
+                    continue
+                for text in (
+                    raw.decode("utf-8", errors="ignore"),
+                    raw.decode("latin-1", errors="ignore"),
+                ):
+                    if "discord" not in text.lower():
+                        continue
+                    for profile_entry in _discord_parse_multi_account_store(text):
+                        _add_hint(
+                            str(profile_entry.get("user_id") or ""),
+                            profile_entry.get("display_name"),
+                            source,
+                        )
+                    for user_id in _discord_user_ids_from_text_tokens(text):
+                        _add_hint(user_id, None, source)
+                    for user_id in _discord_all_user_ids_from_text(text):
+                        _add_hint(user_id, None, source)
     return hints
 
 
@@ -10522,7 +10786,7 @@ def discord_local_accounts_scan() -> dict[str, object]:
             continue
         root_label = root.name or "Discord"
         blobs = _discord_collect_storage_blobs(root)
-        for blob in blobs[:96]:
+        for blob in blobs[:128]:
             if scan_collect_phase_exhausted():
                 break
             try:
@@ -10557,7 +10821,7 @@ def discord_local_accounts_scan() -> dict[str, object]:
                             account["display_name"] = profile["display_name"]
                         if profile.get("avatar_hash") and not account.get("avatar_hash"):
                             account["avatar_hash"] = profile["avatar_hash"]
-                elif blob.name.lower() in {"settings.json", "local state", "preferences", "session.json"}:
+                else:
                     for user_id in _discord_all_user_ids_from_text(text):
                         account = accounts_by_id.setdefault(
                             user_id,
