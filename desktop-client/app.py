@@ -9213,6 +9213,286 @@ def _roblox_user_from_authenticated_cookie(roblosecurity: str) -> dict | None:
         return None
 
 
+def _public_account_records(accounts: list[dict]) -> list[dict]:
+    """Remove internal detection-source metadata before report upload."""
+    public: list[dict] = []
+    for account in accounts:
+        if not isinstance(account, dict):
+            continue
+        row = {key: value for key, value in account.items() if key != "sources"}
+        public.append(row)
+    return public
+
+
+def _roblox_parse_switcher_users_payload(data: object) -> list[dict[str, object]]:
+    accounts: list[dict[str, object]] = []
+    entries: list | None = None
+    if isinstance(data, list):
+        entries = data
+    elif isinstance(data, dict):
+        for key in ("logged_in_users_metadata", "loggedInUsers", "logged_in_users", "users", "accounts"):
+            candidate = data.get(key)
+            if isinstance(candidate, list):
+                entries = candidate
+                break
+    if not entries:
+        return accounts
+    seen: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        user_id = str(
+            entry.get("userId")
+            or entry.get("user_id")
+            or entry.get("id")
+            or entry.get("Id")
+            or entry.get("UserId")
+            or ""
+        ).strip()
+        if not _roblox_valid_user_id(user_id) or user_id in seen:
+            continue
+        seen.add(user_id)
+        username = str(entry.get("name") or entry.get("username") or entry.get("Username") or "").strip() or None
+        display_name = str(entry.get("displayName") or entry.get("DisplayName") or "").strip() or None
+        accounts.append(
+            {
+                "user_id": user_id,
+                "username": username if username and _roblox_is_plausible_username(username) else None,
+                "display_name": display_name or username,
+                "authenticated": True,
+            }
+        )
+    return accounts
+
+
+def _roblox_fetch_account_switcher_accounts(cookie_map: dict[str, str]) -> list[dict[str, object]]:
+    if not cookie_map or not any(name.upper() == ".ROBLOSECURITY" for name in cookie_map):
+        return []
+    session = requests.Session()
+    session.headers.update(
+        {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Content-Type": "application/json;charset=UTF-8",
+            "Referer": "https://www.roblox.com/",
+            "Origin": "https://www.roblox.com",
+        }
+    )
+    for name, value in cookie_map.items():
+        if value:
+            session.cookies.set(name, value, domain=".roblox.com")
+    url = "https://apis.roblox.com/account-switcher/v1/getLoggedInUsersMetadata"
+    body = {"remove_invalid_active_user": False}
+    for _ in range(3):
+        try:
+            response = session.post(url, json=body, timeout=8)
+        except requests.RequestException:
+            break
+        if response.status_code == 403:
+            csrf = response.headers.get("x-csrf-token")
+            if csrf:
+                session.headers["x-csrf-token"] = csrf
+                continue
+        if response.status_code == 200:
+            try:
+                return _roblox_parse_switcher_users_payload(response.json())
+            except (TypeError, ValueError):
+                return []
+        break
+    return []
+
+
+def _roblox_parse_switcher_metadata_from_text(text: str) -> list[dict[str, object]]:
+    lowered = str(text or "").lower()
+    if (
+        "logged_in_users_metadata" not in lowered
+        and "loggedinusers" not in lowered
+        and "account-switcher" not in lowered
+        and "accountswitcher" not in lowered
+    ):
+        return []
+    accounts: list[dict[str, object]] = []
+    for key in ("logged_in_users_metadata", "loggedInUsers", "logged_in_users"):
+        fragment = _extract_json_value_after_key(text, key)
+        if not fragment:
+            continue
+        try:
+            payload = json.loads(fragment)
+        except json.JSONDecodeError:
+            accounts.extend(
+                {
+                    "user_id": row["user_id"],
+                    "username": row.get("username"),
+                    "display_name": row.get("display_name"),
+                    "authenticated": True,
+                }
+                for row in _roblox_parse_account_objects_from_text(fragment)
+                if row.get("user_id")
+            )
+            continue
+        if isinstance(payload, list):
+            accounts.extend(_roblox_parse_switcher_users_payload(payload))
+        else:
+            accounts.extend(_roblox_parse_switcher_users_payload(payload))
+    return accounts
+
+
+def _roblox_merge_switcher_accounts(target: dict[str, dict[str, object]], accounts: list[dict[str, object]]) -> None:
+    for account in accounts:
+        user_id = str(account.get("user_id") or "").strip()
+        if not user_id:
+            continue
+        existing = target.setdefault(
+            user_id,
+            {
+                "user_id": user_id,
+                "username": None,
+                "display_name": None,
+                "authenticated": True,
+            },
+        )
+        username = account.get("username") or account.get("display_name")
+        if username and _roblox_is_plausible_username(str(username)) and not existing.get("username"):
+            existing["username"] = str(username)
+        display_name = account.get("display_name")
+        if display_name and not existing.get("display_name"):
+            existing["display_name"] = str(display_name)
+
+
+def _roblox_scan_storage_texts_for_switcher(texts: Iterable[str], target: dict[str, dict[str, object]]) -> None:
+    for text in texts:
+        _roblox_merge_switcher_accounts(target, _roblox_parse_switcher_metadata_from_text(text))
+        _roblox_merge_switcher_accounts(
+            target,
+            [
+                {
+                    "user_id": row["user_id"],
+                    "username": row.get("username"),
+                    "display_name": row.get("display_name"),
+                    "authenticated": True,
+                }
+                for row in _roblox_parse_account_objects_from_text(text)
+                if row.get("user_id")
+            ],
+        )
+
+
+def _roblox_collect_account_switcher_accounts() -> list[dict[str, object]]:
+    if platform.system() != "Windows":
+        return []
+    local = os.getenv("LOCALAPPDATA", "")
+    appdata = os.getenv("APPDATA", "")
+    if not local:
+        return []
+    accounts_by_id: dict[str, dict[str, object]] = {}
+    seen_tokens: set[str] = set()
+
+    browser_roots = [
+        Path(local) / "Google" / "Chrome" / "User Data",
+        Path(local) / "Microsoft" / "Edge" / "User Data",
+        Path(local) / "BraveSoftware" / "Brave-Browser" / "User Data",
+        Path(local) / "Opera Software" / "Opera Stable",
+    ]
+    for base in browser_roots:
+        if not base.is_dir():
+            continue
+        for profile in _chromium_profile_names(base)[:12]:
+            profile_dir = base / profile
+            cookie_map, _ = _roblox_read_chromium_session_cookies(profile_dir)
+            token = next((value for name, value in cookie_map.items() if name.upper() == ".ROBLOSECURITY"), "")
+            fingerprint = hashlib.sha256(str(token).encode("utf-8")).hexdigest()[:20] if token else ""
+            if fingerprint and fingerprint not in seen_tokens:
+                seen_tokens.add(fingerprint)
+                _roblox_merge_switcher_accounts(accounts_by_id, _roblox_fetch_account_switcher_accounts(cookie_map))
+            storage_dir = profile_dir / "Local Storage" / "leveldb"
+            if not storage_dir.is_dir():
+                continue
+            try:
+                blobs = sorted(storage_dir.glob("*.ldb"), key=lambda path: path.stat().st_mtime, reverse=True)[:24]
+                blobs.extend(sorted(storage_dir.glob("*.log"), key=lambda path: path.stat().st_mtime, reverse=True)[:10])
+            except OSError:
+                continue
+            texts: list[str] = []
+            for blob in blobs:
+                try:
+                    text = blob.read_bytes()[:2_400_000].decode("latin-1", errors="ignore")
+                except OSError:
+                    continue
+                if "roblox" in text.lower():
+                    texts.append(text)
+            _roblox_scan_storage_texts_for_switcher(texts, accounts_by_id)
+            indexeddb = profile_dir / "IndexedDB"
+            if indexeddb.is_dir():
+                idb_texts: list[str] = []
+                try:
+                    for entry in indexeddb.rglob("*"):
+                        if not entry.is_file() or entry.suffix not in (".log", ".ldb"):
+                            continue
+                        if entry.stat().st_size > 8_000_000:
+                            continue
+                        idb_texts.append(entry.read_bytes()[:1_600_000].decode("latin-1", errors="ignore"))
+                except OSError:
+                    idb_texts = []
+                _roblox_scan_storage_texts_for_switcher(idb_texts, accounts_by_id)
+
+    firefox_root = Path(appdata) / "Mozilla" / "Firefox" / "Profiles"
+    if firefox_root.is_dir():
+        try:
+            profile_dirs = sorted(
+                (entry for entry in firefox_root.iterdir() if entry.is_dir()),
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            )[:8]
+        except OSError:
+            profile_dirs = []
+        for profile_dir in profile_dirs:
+            cookie_map, _ = _roblox_read_firefox_session_cookies(profile_dir)
+            token = next((value for name, value in cookie_map.items() if name.upper() == ".ROBLOSECURITY"), "")
+            fingerprint = hashlib.sha256(str(token).encode("utf-8")).hexdigest()[:20] if token else ""
+            if fingerprint and fingerprint not in seen_tokens:
+                seen_tokens.add(fingerprint)
+                _roblox_merge_switcher_accounts(accounts_by_id, _roblox_fetch_account_switcher_accounts(cookie_map))
+            storage_dir = profile_dir / "storage" / "default" / "https+++www.roblox.com" / "ls"
+            texts: list[str] = []
+            if storage_dir.is_dir():
+                try:
+                    for entry in storage_dir.iterdir():
+                        if entry.is_file():
+                            texts.append(entry.read_bytes()[:1_600_000].decode("latin-1", errors="ignore"))
+                except OSError:
+                    pass
+            leveldb = profile_dir / "storage" / "default" / "https+++www.roblox.com" / "idb"
+            if leveldb.is_dir():
+                try:
+                    for entry in leveldb.rglob("*"):
+                        if entry.is_file() and entry.suffix in (".log", ".ldb"):
+                            texts.append(entry.read_bytes()[:1_600_000].decode("latin-1", errors="ignore"))
+                except OSError:
+                    pass
+            _roblox_scan_storage_texts_for_switcher(texts, accounts_by_id)
+
+    roblox_root = Path(local) / "Roblox"
+    client_texts: list[str] = []
+    leveldb = roblox_root / "LocalStorage" / "leveldb"
+    if leveldb.is_dir():
+        try:
+            for entry in leveldb.iterdir():
+                if entry.is_file() and entry.suffix in (".log", ".ldb"):
+                    client_texts.append(entry.read_bytes()[:2_000_000].decode("latin-1", errors="ignore"))
+        except OSError:
+            pass
+    local_storage_dir = roblox_root / "LocalStorage"
+    if local_storage_dir.is_dir():
+        try:
+            for entry in local_storage_dir.iterdir():
+                if entry.is_file() and entry.suffix.lower() == ".json":
+                    client_texts.append(entry.read_text(encoding="utf-8", errors="ignore"))
+        except OSError:
+            pass
+    _roblox_scan_storage_texts_for_switcher(client_texts, accounts_by_id)
+
+    return list(accounts_by_id.values())
+
+
 def _roblox_valid_user_id(user_id: str | None) -> bool:
     if not user_id or not str(user_id).isdigit():
         return False
@@ -9408,6 +9688,32 @@ def _roblox_app_storage_accounts() -> list[dict[str, object]]:
                 if not entry.is_dir() or not entry.name.isdigit():
                     continue
                 _append(entry.name, None, None, [f"Roblox profile {entry.name}"])
+        except OSError:
+            pass
+        try:
+            for extra_storage in roblox_root.rglob("appStorage.json"):
+                if extra_storage == storage_path:
+                    continue
+                try:
+                    extra_raw = extra_storage.read_text(encoding="utf-8", errors="ignore")
+                    extra_data = json.loads(extra_raw)
+                except (OSError, json.JSONDecodeError):
+                    extra_raw = ""
+                    extra_data = {}
+                if isinstance(extra_data, dict):
+                    for key in extra_data:
+                        if isinstance(key, str) and key.startswith("GUAC:"):
+                            parts = key.split(":")
+                            if len(parts) >= 2 and parts[1].isdigit():
+                                _append(parts[1], None, None, ["Roblox client profile"])
+                if extra_raw:
+                    for account in _roblox_parse_account_objects_from_text(extra_raw):
+                        _append(
+                            account.get("user_id"),
+                            account.get("username"),
+                            account.get("display_name"),
+                            ["Roblox client storage"],
+                        )
         except OSError:
             pass
 
@@ -10230,6 +10536,13 @@ def roblox_browser_account_scan() -> dict:
             list(account.get("sources") or ["Roblox client storage"]),
             authenticated=bool(account.get("authenticated")),
         )
+    for account in _roblox_collect_account_switcher_accounts():
+        _append_account(
+            account.get("user_id"),
+            account.get("username") or account.get("display_name"),
+            ["Roblox account switcher"],
+            authenticated=True,
+        )
 
     if platform.system() == "Windows":
         local = os.getenv("LOCALAPPDATA", "")
@@ -10269,23 +10582,30 @@ def roblox_browser_account_scan() -> dict:
 
     for log in _roblox_read_client_logs():
         signals = log.get("signals") or extract_roblox_signals(str(log.get("tail") or ""))
-        source = f"Roblox client log:{log.get('name', 'unknown')}"
         if client_session and client_session.get("user_id"):
             for user_id in signals.get("user_ids") or []:
                 if str(user_id) == str(client_session.get("user_id")):
-                    _append_account(str(user_id), None, [source], authenticated=True)
-        for username in signals.get("usernames") or []:
-            if _roblox_is_plausible_username(username):
-                _append_account(None, username, [source], authenticated=False)
+                    _append_account(str(user_id), None, ["Roblox client log"], authenticated=True)
     enriched = _roblox_enrich_accounts(accounts, include_headshots=False)
+    public_artifacts: list[dict] = []
+    for artifact in artifacts[:24]:
+        if not isinstance(artifact, dict):
+            continue
+        public_artifacts.append(
+            {
+                key: value
+                for key, value in artifact.items()
+                if key not in {"sources", "browser", "profile", "history_user_ids"}
+            }
+        )
     return {
         "available": True,
         "privacy_mode": "no_browser_sessions",
         "browsers_closed": [],
         "browsers_close_failed": [],
         "artifact_count": len(artifacts),
-        "artifacts": artifacts[:24],
-        "accounts": enriched,
+        "artifacts": public_artifacts,
+        "accounts": _public_account_records(enriched),
         "aggregate_user_ids": sorted({str(acct.get("user_id")) for acct in enriched if acct.get("user_id")}),
         "aggregate_usernames": sorted(
             {str(acct.get("username")) for acct in enriched if acct.get("username")}
@@ -11109,14 +11429,12 @@ def discord_local_accounts_scan() -> dict[str, object]:
 
     accounts = _discord_enrich_accounts(accounts, storage_texts=storage_texts)
     accounts.sort(key=lambda row: str(row.get("display_name") or row.get("user_id") or ""))
-    browser_hints = _discord_browser_profile_account_hints()
     return {
         "available": True,
         "account_count": len(accounts),
-        "accounts": accounts[:64],
+        "accounts": _public_account_records(accounts[:64]),
         "aggregate_user_ids": sorted({str(row.get("user_id")) for row in accounts if row.get("user_id")}),
-        "browser_hints": browser_hints[:32],
-        "note": "Discord desktop app storage and authenticated browser profile hints.",
+        "note": "Discord accounts detected on this device.",
     }
 
 
@@ -11139,7 +11457,7 @@ def roblox_diagnostics() -> dict:
         "log_locations_checked": log_locations_checked,
         "logs": logs,
         "browser_scan": browser_scan,
-        "accounts": accounts,
+        "accounts": _public_account_records(accounts),
         "account_count": len(accounts),
         "multiple_accounts_detected": len(accounts) > 1,
         "aggregate_user_ids": sorted({str(acct.get("user_id")) for acct in accounts if acct.get("user_id")}),

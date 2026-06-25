@@ -602,9 +602,7 @@ function AccountsTab({ report, token }) {
                     )}
                     <span className="ws-account-card__body">
                       <span className="ws-account-card__name">{displayName}</span>
-                      <span className="ws-account-card__link">
-                        {(account.sources ?? []).slice(0, 2).join(", ") || "View profile"}
-                      </span>
+                      <span className="ws-account-card__link">View profile</span>
                     </span>
                   </a>
                 );
@@ -662,9 +660,7 @@ function AccountsTab({ report, token }) {
                     )}
                     <span className="ws-account-card__body">
                       <span className="ws-account-card__name">{displayName}</span>
-                      <span className="ws-account-card__link">
-                        {(account.sources ?? []).slice(0, 2).join(", ") || "Discord account"}
-                      </span>
+                      <span className="ws-account-card__link">Discord account</span>
                     </span>
                   </div>
                 );

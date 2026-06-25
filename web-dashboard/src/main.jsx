@@ -1392,7 +1392,7 @@ function RobloxAccountsCard({ report, token }) {
                 )}
                 <span className="ws-account-card__body">
                   <span className="ws-account-card__name">{displayName}</span>
-                  <span className="ws-account-card__link">roblox.com/users/{account.user_id}</span>
+                  <span className="ws-account-card__link">View profile</span>
                 </span>
               </a>
             );
@@ -1491,7 +1491,7 @@ function DiscordAccountsCard({ report, token }) {
                 )}
                 <span className="ws-account-card__body">
                   <span className="ws-account-card__name">{displayName}</span>
-                  <span className="ws-account-card__link">ID {userId}</span>
+                  <span className="ws-account-card__link">Discord account</span>
                 </span>
               </div>
             );
