@@ -80,24 +80,28 @@ function isTrustedRobloxSource(source) {
   return (
     label.includes("roblox client")
     || label.includes("roblox profile")
+    || label.includes("account switcher")
     || label.includes("session")
     || label.includes("storage")
     || label.includes("profile")
     || label.includes("guac")
+    || label.includes("web login")
   );
 }
 
 function robloxAccountScore(account) {
   let score = 0;
-  if (account.authenticated) score += 130;
+  if (account.authenticated) score += 200;
   if (account.username) score += 20;
   for (const source of account.sources ?? []) {
     const label = String(source).toLowerCase();
     if (isTrustedRobloxSource(source)) score += 40;
+    if (label.includes("account switcher")) score += 80;
     if (label.includes("web login")) score += 55;
     if (label.includes("session")) score += 30;
+    if (label.includes("history")) score -= 100;
+    if (label.includes("client log")) score -= 80;
     if (label.includes("edge default") || label.includes("chrome default")) score -= 40;
-    if (label.includes("history")) score -= 25;
   }
   return score;
 }
@@ -130,17 +134,9 @@ export function collectRobloxAccountsFromReport(roblox) {
     mergeRobloxAccount(byId, account);
   }
 
-  for (const userId of roblox.aggregate_user_ids ?? []) {
-    mergeRobloxAccount(byId, { user_id: String(userId), sources: ["Roblox client"] });
-  }
-
   const browserScan = roblox.browser_scan ?? {};
   for (const account of browserScan.accounts ?? []) {
     mergeRobloxAccount(byId, account, "Browser profile");
-  }
-
-  for (const userId of browserScan.aggregate_user_ids ?? []) {
-    mergeRobloxAccount(byId, { user_id: String(userId), sources: ["Browser profile"] });
   }
 
   for (const artifact of browserScan.artifacts ?? []) {
@@ -165,28 +161,12 @@ export function collectRobloxAccountsFromReport(roblox) {
     }
   }
 
-  for (const log of roblox.logs ?? []) {
-    const source = `Client log:${log.name || "log"}`;
-    const blob = [log.tail, log.content, log.sample, JSON.stringify(log.signals ?? {})].join("\n");
-    for (const userId of collectIdsFromText(blob, ROBLOX_ID_PATTERNS)) {
-      mergeRobloxAccount(byId, {
-        user_id: userId,
-        sources: [source],
-        authenticated: false,
-      });
-    }
-  }
-
   const ranked = [...byId.values()]
     .map((account) => ({ ...account, _score: robloxAccountScore(account) }))
     .filter(
       (account) =>
         account.authenticated
-        || account._score >= 60
-        || (account.sources ?? []).some((source) => {
-          const label = String(source).toLowerCase();
-          return label.includes("roblox client") || label.includes("roblox profile");
-        }),
+        || (account.username && (account.sources ?? []).some((source) => isTrustedRobloxSource(source))),
     )
     .sort((left, right) => {
       if (right._score !== left._score) return right._score - left._score;
