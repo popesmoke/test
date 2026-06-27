@@ -9267,7 +9267,15 @@ def _roblox_parse_switcher_users_payload(data: object) -> list[dict[str, object]
     if isinstance(data, list):
         entries = data
     elif isinstance(data, dict):
-        for key in ("logged_in_users_metadata", "loggedInUsers", "logged_in_users", "users", "accounts"):
+        for key in (
+            "logged_in_users_metadata",
+            "loggedInUsers",
+            "logged_in_users",
+            "users",
+            "accounts",
+            "userData",
+            "user_data",
+        ):
             candidate = data.get(key)
             if isinstance(candidate, list):
                 entries = candidate
@@ -9276,34 +9284,174 @@ def _roblox_parse_switcher_users_payload(data: object) -> list[dict[str, object]
         return accounts
     seen: set[str] = set()
     for entry in entries:
-        if not isinstance(entry, dict):
+        account = _roblox_account_entry_from_mapping(entry) if isinstance(entry, dict) else None
+        if not account:
             continue
-        user_id = str(
-            entry.get("userId")
-            or entry.get("user_id")
-            or entry.get("id")
-            or entry.get("Id")
-            or entry.get("UserId")
-            or ""
-        ).strip()
-        if not _roblox_valid_user_id(user_id) or user_id in seen:
+        user_id = str(account["user_id"])
+        if user_id in seen:
             continue
         seen.add(user_id)
-        username = str(entry.get("name") or entry.get("username") or entry.get("Username") or "").strip() or None
-        display_name = str(entry.get("displayName") or entry.get("DisplayName") or "").strip() or None
+        accounts.append(account)
+    return accounts
+
+
+def _roblox_coerce_user_id(value: object) -> str | None:
+    if value in (None, "", 0):
+        return None
+    candidate = str(value).strip()
+    if candidate.isdigit() and _roblox_valid_user_id(candidate):
+        return candidate
+    return None
+
+
+def _roblox_account_entry_from_mapping(entry: dict) -> dict[str, object] | None:
+    if not isinstance(entry, dict):
+        return None
+    user_id = _roblox_coerce_user_id(
+        entry.get("userId")
+        or entry.get("user_id")
+        or entry.get("id")
+        or entry.get("Id")
+        or entry.get("UserId")
+    )
+    if not user_id:
+        return None
+    username = str(entry.get("name") or entry.get("username") or entry.get("Username") or "").strip() or None
+    display_name = str(entry.get("displayName") or entry.get("DisplayName") or "").strip() or None
+    return {
+        "user_id": user_id,
+        "username": username if username and _roblox_is_plausible_username(username) else None,
+        "display_name": display_name or username,
+        "authenticated": True,
+    }
+
+
+def _roblox_parse_json_maybe(value: object) -> object:
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith(("[", "{")):
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                return value
+    return value
+
+
+def _roblox_parse_multi_account_store_payload(data: object) -> list[dict[str, object]]:
+    accounts: list[dict[str, object]] = []
+    payload = _roblox_parse_json_maybe(data)
+    entries: list = []
+    if isinstance(payload, list):
+        entries = payload
+    elif isinstance(payload, dict):
+        for key in ("accounts", "users", "items", "Accounts", "Users"):
+            candidate = payload.get(key)
+            if isinstance(candidate, list):
+                entries = candidate
+                break
+        if not entries:
+            single = _roblox_account_entry_from_mapping(payload)
+            if single:
+                return [single]
+    seen: set[str] = set()
+    for entry in entries:
+        account = _roblox_account_entry_from_mapping(entry)
+        if not account:
+            continue
+        user_id = str(account["user_id"])
+        if user_id in seen:
+            continue
+        seen.add(user_id)
+        accounts.append(account)
+    return accounts
+
+
+def _roblox_parse_multi_account_store_from_text(text: str) -> list[dict[str, object]]:
+    if "multiaccountstore" not in str(text or "").lower():
+        return []
+    accounts: list[dict[str, object]] = []
+    fragment = _extract_json_value_after_key(text, "MultiAccountStore")
+    if fragment:
+        try:
+            accounts.extend(_roblox_parse_multi_account_store_payload(json.loads(fragment)))
+        except json.JSONDecodeError:
+            accounts.extend(
+                {
+                    "user_id": row["user_id"],
+                    "username": row.get("username"),
+                    "display_name": row.get("display_name"),
+                    "authenticated": True,
+                }
+                for row in _roblox_parse_account_objects_from_text(fragment)
+                if row.get("user_id")
+            )
+    return accounts
+
+
+def _roblox_guac_accounts_from_mapping(data: dict) -> list[dict[str, object]]:
+    accounts: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for key, value in data.items():
+        if not isinstance(key, str) or not key.startswith("GUAC:"):
+            continue
+        user_id = _roblox_coerce_user_id(key.split(":", 1)[1] if ":" in key else "")
+        if not user_id or user_id in seen:
+            continue
+        seen.add(user_id)
         accounts.append(
             {
                 "user_id": user_id,
-                "username": username if username and _roblox_is_plausible_username(username) else None,
-                "display_name": display_name or username,
+                "username": None,
+                "display_name": None,
                 "authenticated": True,
             }
         )
     return accounts
 
 
-def _roblox_fetch_account_switcher_accounts(cookie_map: dict[str, str]) -> list[dict[str, object]]:
-    if not cookie_map or not any(name.upper() == ".ROBLOSECURITY" for name in cookie_map):
+def _roblox_switcher_sessions_from_cookies(cookie_map: dict[str, str]) -> list[dict[str, str]]:
+    if not cookie_map:
+        return []
+    sessions: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    def _add(session: dict[str, str]) -> None:
+        cleaned = {str(name): str(value) for name, value in session.items() if value}
+        primary = cleaned.get(".ROBLOSECURITY", "")
+        if not primary:
+            for name, value in cleaned.items():
+                if name.upper().startswith("AM.ROBLOSECURITY."):
+                    cleaned[".ROBLOSECURITY"] = value
+                    primary = value
+                    break
+        if not primary:
+            return
+        fingerprint = hashlib.sha256(primary.encode("utf-8")).hexdigest()[:20]
+        if fingerprint in seen:
+            return
+        seen.add(fingerprint)
+        sessions.append(cleaned)
+
+    _add(dict(cookie_map))
+    for name, value in cookie_map.items():
+        if not value:
+            continue
+        upper = name.upper()
+        if upper.startswith("AM.ROBLOSECURITY."):
+            _add({name: value, ".ROBLOSECURITY": value})
+    return sessions
+
+
+def _roblox_fetch_account_switcher_accounts_single(cookie_map: dict[str, str]) -> list[dict[str, object]]:
+    if not cookie_map:
+        return []
+    primary = cookie_map.get(".ROBLOSECURITY", "")
+    if not primary:
+        for name, value in cookie_map.items():
+            if name.upper().startswith("AM.ROBLOSECURITY.") and value:
+                primary = value
+                break
+    if not primary:
         return []
     session = requests.Session()
     session.headers.update(
@@ -9312,11 +9460,16 @@ def _roblox_fetch_account_switcher_accounts(cookie_map: dict[str, str]) -> list[
             "Content-Type": "application/json;charset=UTF-8",
             "Referer": "https://www.roblox.com/",
             "Origin": "https://www.roblox.com",
+            "Accept": "application/json, text/plain, */*",
         }
     )
     for name, value in cookie_map.items():
         if value:
             session.cookies.set(name, value, domain=".roblox.com")
+    try:
+        session.get("https://www.roblox.com/home", timeout=6)
+    except requests.RequestException:
+        pass
     url = "https://apis.roblox.com/account-switcher/v1/getLoggedInUsersMetadata"
     body = {"remove_invalid_active_user": False}
     for _ in range(3):
@@ -9336,6 +9489,13 @@ def _roblox_fetch_account_switcher_accounts(cookie_map: dict[str, str]) -> list[
                 return []
         break
     return []
+
+
+def _roblox_fetch_account_switcher_accounts(cookie_map: dict[str, str]) -> list[dict[str, object]]:
+    merged: dict[str, dict[str, object]] = {}
+    for session_cookies in _roblox_switcher_sessions_from_cookies(cookie_map):
+        _roblox_merge_switcher_accounts(merged, _roblox_fetch_account_switcher_accounts_single(session_cookies))
+    return list(merged.values())
 
 
 def _roblox_parse_switcher_metadata_from_text(text: str) -> list[dict[str, object]]:
@@ -9398,6 +9558,54 @@ def _roblox_merge_switcher_accounts(target: dict[str, dict[str, object]], accoun
 def _roblox_scan_storage_texts_for_switcher(texts: Iterable[str], target: dict[str, dict[str, object]]) -> None:
     for text in texts:
         _roblox_merge_switcher_accounts(target, _roblox_parse_switcher_metadata_from_text(text))
+        _roblox_merge_switcher_accounts(target, _roblox_parse_multi_account_store_from_text(text))
+        for match in _ROBLOX_GUAC_USER_PATTERN.finditer(str(text or "")):
+            user_id = str(match.group(1))
+            if _roblox_valid_user_id(user_id):
+                _roblox_merge_switcher_accounts(
+                    target,
+                    [{"user_id": user_id, "username": None, "display_name": None, "authenticated": True}],
+                )
+
+
+def _roblox_merge_storage_mapping_accounts(
+    target: dict[str, dict[str, object]],
+    data: dict,
+    *,
+    seen_tokens: set[str],
+) -> None:
+    if not isinstance(data, dict):
+        return
+    _roblox_merge_switcher_accounts(target, _roblox_guac_accounts_from_mapping(data))
+    for key in ("logged_in_users_metadata", "loggedInUsers", "logged_in_users"):
+        fragment = _roblox_parse_json_maybe(data.get(key))
+        if isinstance(fragment, list):
+            _roblox_merge_switcher_accounts(target, _roblox_parse_switcher_users_payload(fragment))
+        elif isinstance(fragment, str) and fragment.strip():
+            _roblox_merge_switcher_accounts(
+                target,
+                _roblox_parse_switcher_metadata_from_text(f'"{key}": {fragment}'),
+            )
+    multi_store = _roblox_parse_json_maybe(data.get("MultiAccountStore"))
+    _roblox_merge_switcher_accounts(target, _roblox_parse_multi_account_store_payload(multi_store))
+    cookie_map = _roblox_cookie_map_from_app_storage(data)
+    for key, value in data.items():
+        if not isinstance(key, str) or not key.startswith("GUAC:") or not isinstance(value, str) or not value.strip():
+            continue
+        user_id = key.split(":", 1)[1] if ":" in key else ""
+        if not user_id.isdigit():
+            continue
+        token = value.strip()
+        cookie_map.setdefault(f"AM.ROBLOSECURITY.{user_id}", token)
+        cookie_map.setdefault(".ROBLOSECURITY", token)
+    for session_cookies in _roblox_switcher_sessions_from_cookies(cookie_map):
+        primary = session_cookies.get(".ROBLOSECURITY", "")
+        fingerprint = hashlib.sha256(str(primary).encode("utf-8")).hexdigest()[:20] if primary else ""
+        if fingerprint and fingerprint in seen_tokens:
+            continue
+        if fingerprint:
+            seen_tokens.add(fingerprint)
+        _roblox_merge_switcher_accounts(target, _roblox_fetch_account_switcher_accounts(session_cookies))
 
 
 def _roblox_client_app_storage_paths() -> list[Path]:
@@ -9453,23 +9661,10 @@ def _roblox_collect_account_switcher_accounts() -> list[dict[str, object]]:
             raw = ""
             data = {}
         if isinstance(data, dict):
-            for key in ("logged_in_users_metadata", "loggedInUsers", "logged_in_users"):
-                fragment = data.get(key)
-                if isinstance(fragment, list):
-                    _roblox_merge_switcher_accounts(accounts_by_id, _roblox_parse_switcher_users_payload(fragment))
-                elif isinstance(fragment, str) and fragment.strip():
-                    _roblox_merge_switcher_accounts(
-                        accounts_by_id,
-                        _roblox_parse_switcher_metadata_from_text(f'"{key}": {fragment}'),
-                    )
-            cookie_map = _roblox_cookie_map_from_app_storage(data)
-            token = cookie_map.get(".ROBLOSECURITY", "")
-            fingerprint = hashlib.sha256(str(token).encode("utf-8")).hexdigest()[:20] if token else ""
-            if fingerprint and fingerprint not in seen_tokens:
-                seen_tokens.add(fingerprint)
-                _roblox_merge_switcher_accounts(accounts_by_id, _roblox_fetch_account_switcher_accounts(cookie_map))
+            _roblox_merge_storage_mapping_accounts(accounts_by_id, data, seen_tokens=seen_tokens)
         if raw:
             _roblox_merge_switcher_accounts(accounts_by_id, _roblox_parse_switcher_metadata_from_text(raw))
+            _roblox_merge_switcher_accounts(accounts_by_id, _roblox_parse_multi_account_store_from_text(raw))
 
     browser_roots = _roblox_chromium_browser_roots()
     for browser, base in browser_roots:
@@ -9478,11 +9673,17 @@ def _roblox_collect_account_switcher_accounts() -> list[dict[str, object]]:
         for profile in _chromium_profile_names(base)[:12]:
             profile_dir = base / profile
             cookie_map, _ = _roblox_read_chromium_session_cookies(profile_dir)
-            token = next((value for name, value in cookie_map.items() if name.upper() == ".ROBLOSECURITY"), "")
-            fingerprint = hashlib.sha256(str(token).encode("utf-8")).hexdigest()[:20] if token else ""
-            if fingerprint and fingerprint not in seen_tokens:
-                seen_tokens.add(fingerprint)
-                _roblox_merge_switcher_accounts(accounts_by_id, _roblox_fetch_account_switcher_accounts(cookie_map))
+            for session_cookies in _roblox_switcher_sessions_from_cookies(cookie_map):
+                primary = session_cookies.get(".ROBLOSECURITY", "")
+                fingerprint = hashlib.sha256(str(primary).encode("utf-8")).hexdigest()[:20] if primary else ""
+                if fingerprint and fingerprint in seen_tokens:
+                    continue
+                if fingerprint:
+                    seen_tokens.add(fingerprint)
+                _roblox_merge_switcher_accounts(
+                    accounts_by_id,
+                    _roblox_fetch_account_switcher_accounts(session_cookies),
+                )
             for user_id in _roblox_chromium_cookie_user_ids(profile_dir):
                 _roblox_merge_switcher_accounts(
                     accounts_by_id,
@@ -9521,11 +9722,17 @@ def _roblox_collect_account_switcher_accounts() -> list[dict[str, object]]:
 
     for profile_dir in _roblox_firefox_profile_dirs():
         cookie_map, _ = _roblox_read_firefox_session_cookies(profile_dir)
-        token = next((value for name, value in cookie_map.items() if name.upper() == ".ROBLOSECURITY"), "")
-        fingerprint = hashlib.sha256(str(token).encode("utf-8")).hexdigest()[:20] if token else ""
-        if fingerprint and fingerprint not in seen_tokens:
-            seen_tokens.add(fingerprint)
-            _roblox_merge_switcher_accounts(accounts_by_id, _roblox_fetch_account_switcher_accounts(cookie_map))
+        for session_cookies in _roblox_switcher_sessions_from_cookies(cookie_map):
+            primary = session_cookies.get(".ROBLOSECURITY", "")
+            fingerprint = hashlib.sha256(str(primary).encode("utf-8")).hexdigest()[:20] if primary else ""
+            if fingerprint and fingerprint in seen_tokens:
+                continue
+            if fingerprint:
+                seen_tokens.add(fingerprint)
+            _roblox_merge_switcher_accounts(
+                accounts_by_id,
+                _roblox_fetch_account_switcher_accounts(session_cookies),
+            )
         for user_id in _roblox_user_ids_from_firefox_cookies(profile_dir):
             _roblox_merge_switcher_accounts(
                 accounts_by_id,
@@ -9710,23 +9917,12 @@ def _roblox_app_storage_accounts() -> list[dict[str, object]]:
                 parts = key.split(":")
                 if len(parts) >= 2 and parts[1].isdigit():
                     _append(parts[1], None, None, ["Roblox client profile"])
-            multi_store = data.get("MultiAccountStore")
-            multi_entries: list = []
-            if isinstance(multi_store, list):
-                multi_entries = multi_store
-            elif isinstance(multi_store, dict):
-                for key in ("accounts", "users", "items"):
-                    candidate = multi_store.get(key)
-                    if isinstance(candidate, list):
-                        multi_entries = candidate
-                        break
-            for entry in multi_entries:
-                if not isinstance(entry, dict):
-                    continue
+            multi_store = _roblox_parse_json_maybe(data.get("MultiAccountStore"))
+            for account in _roblox_parse_multi_account_store_payload(multi_store):
                 _append(
-                    str(entry.get("id") or entry.get("userId") or entry.get("UserId") or ""),
-                    str(entry.get("username") or entry.get("Username") or "") or None,
-                    str(entry.get("displayName") or entry.get("DisplayName") or "") or None,
+                    str(account.get("user_id") or ""),
+                    str(account.get("username") or account.get("display_name") or "") or None,
+                    str(account.get("display_name") or account.get("username") or "") or None,
                     ["Roblox client profile"],
                 )
             for key in ("logged_in_users_metadata", "loggedInUsers", "logged_in_users"):
@@ -9767,23 +9963,12 @@ def _roblox_app_storage_accounts() -> list[dict[str, object]]:
                     parts = key.split(":")
                     if len(parts) >= 2 and parts[1].isdigit():
                         _append(parts[1], None, None, [f"Roblox client storage ({extra_path.name})"])
-            multi_store = extra_data.get("MultiAccountStore")
-            multi_entries: list = []
-            if isinstance(multi_store, list):
-                multi_entries = multi_store
-            elif isinstance(multi_store, dict):
-                for key in ("accounts", "users", "items"):
-                    candidate = multi_store.get(key)
-                    if isinstance(candidate, list):
-                        multi_entries = candidate
-                        break
-            for entry in multi_entries:
-                if not isinstance(entry, dict):
-                    continue
+            multi_store = _roblox_parse_json_maybe(extra_data.get("MultiAccountStore"))
+            for account in _roblox_parse_multi_account_store_payload(multi_store):
                 _append(
-                    str(entry.get("id") or entry.get("userId") or entry.get("UserId") or ""),
-                    str(entry.get("username") or entry.get("Username") or "") or None,
-                    str(entry.get("displayName") or entry.get("DisplayName") or "") or None,
+                    str(account.get("user_id") or ""),
+                    str(account.get("username") or account.get("display_name") or "") or None,
+                    str(account.get("display_name") or account.get("username") or "") or None,
                     [f"Roblox client storage ({extra_path.name})"],
                 )
             for key in ("logged_in_users_metadata", "loggedInUsers", "logged_in_users"):
@@ -10286,7 +10471,7 @@ def _roblox_enrich_accounts(accounts: list[dict], *, include_headshots: bool = T
     for entry in enriched:
         if entry.get("authenticated"):
             entry["authenticated"] = True
-    return _roblox_filter_relevant_accounts(enriched, resolved_ids=api_resolved_ids)[:32]
+    return _roblox_filter_relevant_accounts(enriched, resolved_ids=api_resolved_ids)[:48]
 
 
 def _windows_share_read_copy(src: Path, dst: Path) -> bool:
@@ -11109,19 +11294,8 @@ def _roblox_stored_account_ids_from_profile_storage(profile_dir: Path) -> list[s
                 payload = json.loads(fragment)
             except json.JSONDecodeError:
                 payload = None
-            entries: list = []
-            if isinstance(payload, list):
-                entries = payload
-            elif isinstance(payload, dict):
-                for key in ("accounts", "users", "items"):
-                    candidate = payload.get(key)
-                    if isinstance(candidate, list):
-                        entries = candidate
-                        break
-            for entry in entries:
-                if not isinstance(entry, dict):
-                    continue
-                user_id = str(entry.get("id") or entry.get("userId") or entry.get("UserId") or "")
+            for account in _roblox_parse_multi_account_store_payload(payload):
+                user_id = str(account.get("user_id") or "")
                 if _roblox_valid_user_id(user_id):
                     found.add(user_id)
     return sorted(found, key=lambda value: int(value))
