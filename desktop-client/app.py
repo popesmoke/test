@@ -9170,7 +9170,37 @@ def _chromium_decrypt_cookie_value(
     return cleaned or None
 
 
-def _chromium_has_auth_cookie(cookie_db: Path) -> bool:
+def _roblox_chromium_browser_roots() -> list[tuple[str, Path]]:
+    local = os.getenv("LOCALAPPDATA", "")
+    if not local:
+        return []
+    local_path = Path(local)
+    return [
+        ("Chrome", local_path / "Google" / "Chrome" / "User Data"),
+        ("Edge", local_path / "Microsoft" / "Edge" / "User Data"),
+        ("Brave", local_path / "BraveSoftware" / "Brave-Browser" / "User Data"),
+        ("Opera", local_path / "Opera Software" / "Opera Stable"),
+        ("Opera GX", local_path / "Opera Software" / "Opera GX Stable"),
+        ("Vivaldi", local_path / "Vivaldi" / "User Data"),
+        ("Chromium", local_path / "Chromium" / "User Data"),
+    ]
+
+
+def _roblox_firefox_profile_dirs() -> list[Path]:
+    firefox_root = Path(os.getenv("APPDATA", "")) / "Mozilla" / "Firefox" / "Profiles"
+    if not firefox_root.is_dir():
+        return []
+    try:
+        return sorted(
+            (entry for entry in firefox_root.iterdir() if entry.is_dir()),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )[:10]
+    except OSError:
+        return []
+
+
+def _chromium_has_roblox_auth_cookie(cookie_db: Path) -> bool:
     conn = _sqlite_open_readonly(cookie_db)
     if not conn:
         return False
@@ -9180,7 +9210,10 @@ def _chromium_has_auth_cookie(cookie_db: Path) -> bool:
             """
             SELECT 1 FROM cookies
             WHERE host_key LIKE '%roblox%'
-              AND UPPER(name) = '.ROBLOSECURITY'
+              AND (
+                UPPER(name) = '.ROBLOSECURITY'
+                OR UPPER(name) LIKE 'AM.ROBLOSECURITY.%'
+              )
             LIMIT 1
             """
         )
@@ -9189,6 +9222,10 @@ def _chromium_has_auth_cookie(cookie_db: Path) -> bool:
         return False
     finally:
         conn.close()
+
+
+def _chromium_has_auth_cookie(cookie_db: Path) -> bool:
+    return _chromium_has_roblox_auth_cookie(cookie_db)
 
 
 def _roblox_user_from_authenticated_cookie(roblosecurity: str) -> dict | None:
@@ -9403,7 +9440,6 @@ def _roblox_collect_account_switcher_accounts() -> list[dict[str, object]]:
     if platform.system() != "Windows":
         return []
     local = os.getenv("LOCALAPPDATA", "")
-    appdata = os.getenv("APPDATA", "")
     if not local:
         return []
     accounts_by_id: dict[str, dict[str, object]] = {}
@@ -9435,13 +9471,8 @@ def _roblox_collect_account_switcher_accounts() -> list[dict[str, object]]:
         if raw:
             _roblox_merge_switcher_accounts(accounts_by_id, _roblox_parse_switcher_metadata_from_text(raw))
 
-    browser_roots = [
-        Path(local) / "Google" / "Chrome" / "User Data",
-        Path(local) / "Microsoft" / "Edge" / "User Data",
-        Path(local) / "BraveSoftware" / "Brave-Browser" / "User Data",
-        Path(local) / "Opera Software" / "Opera Stable",
-    ]
-    for base in browser_roots:
+    browser_roots = _roblox_chromium_browser_roots()
+    for browser, base in browser_roots:
         if not base.is_dir():
             continue
         for profile in _chromium_profile_names(base)[:12]:
@@ -9452,6 +9483,11 @@ def _roblox_collect_account_switcher_accounts() -> list[dict[str, object]]:
             if fingerprint and fingerprint not in seen_tokens:
                 seen_tokens.add(fingerprint)
                 _roblox_merge_switcher_accounts(accounts_by_id, _roblox_fetch_account_switcher_accounts(cookie_map))
+            for user_id in _roblox_chromium_cookie_user_ids(profile_dir):
+                _roblox_merge_switcher_accounts(
+                    accounts_by_id,
+                    [{"user_id": user_id, "username": None, "display_name": None, "authenticated": True}],
+                )
             storage_dir = profile_dir / "Local Storage" / "leveldb"
             if not storage_dir.is_dir():
                 continue
@@ -9483,41 +9519,36 @@ def _roblox_collect_account_switcher_accounts() -> list[dict[str, object]]:
                     idb_texts = []
                 _roblox_scan_storage_texts_for_switcher(idb_texts, accounts_by_id)
 
-    firefox_root = Path(appdata) / "Mozilla" / "Firefox" / "Profiles"
-    if firefox_root.is_dir():
-        try:
-            profile_dirs = sorted(
-                (entry for entry in firefox_root.iterdir() if entry.is_dir()),
-                key=lambda path: path.stat().st_mtime,
-                reverse=True,
-            )[:8]
-        except OSError:
-            profile_dirs = []
-        for profile_dir in profile_dirs:
-            cookie_map, _ = _roblox_read_firefox_session_cookies(profile_dir)
-            token = next((value for name, value in cookie_map.items() if name.upper() == ".ROBLOSECURITY"), "")
-            fingerprint = hashlib.sha256(str(token).encode("utf-8")).hexdigest()[:20] if token else ""
-            if fingerprint and fingerprint not in seen_tokens:
-                seen_tokens.add(fingerprint)
-                _roblox_merge_switcher_accounts(accounts_by_id, _roblox_fetch_account_switcher_accounts(cookie_map))
-            storage_dir = profile_dir / "storage" / "default" / "https+++www.roblox.com" / "ls"
-            texts: list[str] = []
-            if storage_dir.is_dir():
-                try:
-                    for entry in storage_dir.iterdir():
-                        if entry.is_file():
-                            texts.append(entry.read_bytes()[:1_600_000].decode("latin-1", errors="ignore"))
-                except OSError:
-                    pass
-            leveldb = profile_dir / "storage" / "default" / "https+++www.roblox.com" / "idb"
-            if leveldb.is_dir():
-                try:
-                    for entry in leveldb.rglob("*"):
-                        if entry.is_file() and entry.suffix in (".log", ".ldb"):
-                            texts.append(entry.read_bytes()[:1_600_000].decode("latin-1", errors="ignore"))
-                except OSError:
-                    pass
-            _roblox_scan_storage_texts_for_switcher(texts, accounts_by_id)
+    for profile_dir in _roblox_firefox_profile_dirs():
+        cookie_map, _ = _roblox_read_firefox_session_cookies(profile_dir)
+        token = next((value for name, value in cookie_map.items() if name.upper() == ".ROBLOSECURITY"), "")
+        fingerprint = hashlib.sha256(str(token).encode("utf-8")).hexdigest()[:20] if token else ""
+        if fingerprint and fingerprint not in seen_tokens:
+            seen_tokens.add(fingerprint)
+            _roblox_merge_switcher_accounts(accounts_by_id, _roblox_fetch_account_switcher_accounts(cookie_map))
+        for user_id in _roblox_user_ids_from_firefox_cookies(profile_dir):
+            _roblox_merge_switcher_accounts(
+                accounts_by_id,
+                [{"user_id": user_id, "username": None, "display_name": None, "authenticated": True}],
+            )
+        storage_dir = profile_dir / "storage" / "default" / "https+++www.roblox.com" / "ls"
+        texts: list[str] = []
+        if storage_dir.is_dir():
+            try:
+                for entry in storage_dir.iterdir():
+                    if entry.is_file():
+                        texts.append(entry.read_bytes()[:1_600_000].decode("latin-1", errors="ignore"))
+            except OSError:
+                pass
+        leveldb = profile_dir / "storage" / "default" / "https+++www.roblox.com" / "idb"
+        if leveldb.is_dir():
+            try:
+                for entry in leveldb.rglob("*"):
+                    if entry.is_file() and entry.suffix in (".log", ".ldb"):
+                        texts.append(entry.read_bytes()[:1_600_000].decode("latin-1", errors="ignore"))
+            except OSError:
+                pass
+        _roblox_scan_storage_texts_for_switcher(texts, accounts_by_id)
 
     roblox_root = Path(local) / "Roblox"
     client_texts: list[str] = []
@@ -9859,7 +9890,7 @@ def _roblox_read_chromium_session_cookies(profile_dir: Path) -> tuple[dict[str, 
     auth_present = False
     v10_key, v20_key = _chromium_master_keys(profile_dir.parent)
     for cookie_db in _chromium_cookie_db_paths(profile_dir):
-        auth_present = auth_present or _chromium_has_auth_cookie(cookie_db)
+        auth_present = auth_present or _chromium_has_roblox_auth_cookie(cookie_db)
         conn = _sqlite_open_readonly(cookie_db)
         if not conn:
             continue
@@ -9869,7 +9900,10 @@ def _roblox_read_chromium_session_cookies(profile_dir: Path) -> tuple[dict[str, 
                 """
                 SELECT name, value, encrypted_value FROM cookies
                 WHERE host_key LIKE '%roblox%'
-                  AND UPPER(name) IN ('.ROBLOSECURITY', 'RBXEVENTTRACKERV2')
+                  AND (
+                    UPPER(name) IN ('.ROBLOSECURITY', 'RBXEVENTTRACKERV2')
+                    OR UPPER(name) LIKE 'AM.ROBLOSECURITY.%'
+                  )
                 """
             )
             for name, value, encrypted_value in cur.fetchall():
@@ -9884,6 +9918,43 @@ def _roblox_read_chromium_session_cookies(profile_dir: Path) -> tuple[dict[str, 
         finally:
             conn.close()
     return cookies, auth_present
+
+
+def _roblox_chromium_cookie_user_ids(profile_dir: Path) -> list[str]:
+    """Recover Roblox account IDs from cookie names/values without closing the browser."""
+    user_ids: set[str] = set()
+    v10_key, v20_key = _chromium_master_keys(profile_dir.parent)
+    for cookie_db in _chromium_cookie_db_paths(profile_dir):
+        conn = _sqlite_open_readonly(cookie_db)
+        if not conn:
+            continue
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT name, value, encrypted_value FROM cookies
+                WHERE host_key LIKE '%roblox%'
+                """
+            )
+            for name, value, encrypted_value in cur.fetchall():
+                cookie_name = str(name or "").strip()
+                if not cookie_name:
+                    continue
+                am_match = _ROBLOX_AM_COOKIE_PATTERN.search(cookie_name)
+                if am_match and _roblox_valid_user_id(am_match.group(1)):
+                    user_ids.add(str(am_match.group(1)))
+                if cookie_name.upper() == ".ROBLOSECURITY":
+                    decrypted = _chromium_decrypt_cookie_value(encrypted_value, value, v10_key, v20_key)
+                    if decrypted:
+                        auth_user = _roblox_user_from_authenticated_cookie(decrypted)
+                        if auth_user and auth_user.get("user_id"):
+                            user_ids.add(str(auth_user["user_id"]))
+        except sqlite3.Error:
+            pass
+        finally:
+            conn.close()
+    user_ids.update(_roblox_stored_account_ids_from_profile_storage(profile_dir))
+    return sorted(user_ids, key=lambda value: int(value))
 
 
 def _roblox_resolve_chromium_session(profile_dir: Path) -> dict | None:
@@ -9901,7 +9972,10 @@ def _firefox_has_auth_cookie(profile_dir: Path) -> bool:
             """
             SELECT 1 FROM moz_cookies
             WHERE host LIKE '%roblox%'
-              AND UPPER(name) = '.ROBLOSECURITY'
+              AND (
+                UPPER(name) = '.ROBLOSECURITY'
+                OR UPPER(name) LIKE 'AM.ROBLOSECURITY.%'
+              )
             LIMIT 1
             """
         )
@@ -9924,7 +9998,10 @@ def _roblox_read_firefox_session_cookies(profile_dir: Path) -> tuple[dict[str, s
             """
             SELECT name, value FROM moz_cookies
             WHERE host LIKE '%roblox%'
-              AND UPPER(name) IN ('.ROBLOSECURITY', 'RBXEVENTTRACKERV2')
+              AND (
+                UPPER(name) IN ('.ROBLOSECURITY', 'RBXEVENTTRACKERV2')
+                OR UPPER(name) LIKE 'AM.ROBLOSECURITY.%'
+              )
             """
         )
         for name, value in cur.fetchall():
@@ -10018,15 +10095,43 @@ def _roblox_client_session_user() -> dict | None:
                 "sources": list(account.get("sources") or ["Roblox client storage"]),
                 "authenticated": bool(account.get("authenticated")),
             }
-    for log in _roblox_read_client_logs():
-        signals = log.get("signals") or {}
-        user_ids = signals.get("user_ids") or []
-        if user_ids:
+    for browser, base in _roblox_chromium_browser_roots():
+        if not base.is_dir():
+            continue
+        for profile in _chromium_profile_names(base)[:12]:
+            profile_dir = base / profile
+            session = _roblox_resolve_chromium_session(profile_dir)
+            if session and session.get("user_id"):
+                return {
+                    "user_id": str(session["user_id"]),
+                    "username": session.get("username"),
+                    "sources": [f"{browser} {profile} web login"],
+                    "authenticated": True,
+                }
+            cookie_user_ids = _roblox_chromium_cookie_user_ids(profile_dir)
+            if cookie_user_ids:
+                return {
+                    "user_id": str(cookie_user_ids[-1]),
+                    "username": None,
+                    "sources": [f"{browser} {profile} web login"],
+                    "authenticated": True,
+                }
+    for profile_dir in _roblox_firefox_profile_dirs():
+        session = _roblox_resolve_firefox_session(profile_dir)
+        if session and session.get("user_id"):
             return {
-                "user_id": str(user_ids[-1]),
+                "user_id": str(session["user_id"]),
+                "username": session.get("username"),
+                "sources": [f"Firefox {profile_dir.name} web login"],
+                "authenticated": True,
+            }
+        cookie_user_ids = _roblox_user_ids_from_firefox_cookies(profile_dir)
+        if cookie_user_ids:
+            return {
+                "user_id": str(cookie_user_ids[-1]),
                 "username": None,
-                "sources": [f"Roblox client log:{log.get('name', 'unknown')}"],
-                "authenticated": False,
+                "sources": [f"Firefox {profile_dir.name} web login"],
+                "authenticated": True,
             }
     user_id = _roblox_rbxid_from_roblox_appdata()
     if user_id:
@@ -10184,13 +10289,118 @@ def _roblox_enrich_accounts(accounts: list[dict], *, include_headshots: bool = T
     return _roblox_filter_relevant_accounts(enriched, resolved_ids=api_resolved_ids)[:32]
 
 
+def _windows_share_read_copy(src: Path, dst: Path) -> bool:
+    """Copy a file that may be locked by a running browser (Windows share-read)."""
+    if platform.system() != "Windows" or not src.is_file():
+        return False
+    import ctypes
+    from ctypes import wintypes
+
+    GENERIC_READ = 0x80000000
+    FILE_SHARE_READ = 0x00000001
+    FILE_SHARE_WRITE = 0x00000002
+    FILE_SHARE_DELETE = 0x00000004
+    OPEN_EXISTING = 3
+    FILE_ATTRIBUTE_NORMAL = 0x80
+    INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    CreateFileW = kernel32.CreateFileW
+    CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    CreateFileW.restype = wintypes.HANDLE
+    ReadFile = kernel32.ReadFile
+    ReadFile.argtypes = [
+        wintypes.HANDLE,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+        wintypes.LPVOID,
+    ]
+    ReadFile.restype = wintypes.BOOL
+    CloseHandle = kernel32.CloseHandle
+    CloseHandle.argtypes = [wintypes.HANDLE]
+    CloseHandle.restype = wintypes.BOOL
+
+    handle = CreateFileW(
+        str(src),
+        GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        None,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        None,
+    )
+    if handle == INVALID_HANDLE_VALUE:
+        return False
+    chunks: list[bytes] = []
+    try:
+        buffer = ctypes.create_string_buffer(1024 * 1024)
+        bytes_read = wintypes.DWORD()
+        while True:
+            if not ReadFile(handle, buffer, len(buffer), ctypes.byref(bytes_read), None):
+                break
+            if bytes_read.value == 0:
+                break
+            chunks.append(buffer.raw[: bytes_read.value])
+    finally:
+        CloseHandle(handle)
+    if not chunks:
+        return False
+    try:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(b"".join(chunks))
+        return True
+    except OSError:
+        return False
+
+
+def _copy_sqlite_database_bundle(db_path: Path, tmp_dir: Path) -> Path | None:
+    copied = tmp_dir / db_path.name
+    copied_ok = False
+    if platform.system() == "Windows":
+        copied_ok = _windows_share_read_copy(db_path, copied)
+    if not copied_ok:
+        try:
+            shutil.copy2(db_path, copied)
+            copied_ok = True
+        except OSError:
+            copied_ok = False
+    if not copied_ok:
+        return None
+    for suffix in ("-wal", "-shm"):
+        sidecar = db_path.parent / (db_path.name + suffix)
+        if not sidecar.is_file():
+            continue
+        side_dest = tmp_dir / (db_path.name + suffix)
+        if platform.system() == "Windows":
+            if not _windows_share_read_copy(sidecar, side_dest):
+                try:
+                    shutil.copy2(sidecar, side_dest)
+                except OSError:
+                    pass
+        else:
+            try:
+                shutil.copy2(sidecar, side_dest)
+            except OSError:
+                pass
+    return copied
+
+
 def _sqlite_open_readonly(db_path: Path) -> sqlite3.Connection | None:
     if not db_path.is_file():
         return None
-    uri = f"file:{db_path.as_posix()}?mode=ro"
+    uri = f"file:{db_path.as_posix()}?mode=ro&immutable=1"
     for opener in (
-        lambda: sqlite3.connect(uri, uri=True, timeout=1.0),
-        lambda: sqlite3.connect(str(db_path), timeout=1.0),
+        lambda: sqlite3.connect(uri, uri=True, timeout=2.0),
+        lambda: sqlite3.connect(str(db_path), timeout=2.0),
     ):
         try:
             conn = opener()
@@ -10198,28 +10408,31 @@ def _sqlite_open_readonly(db_path: Path) -> sqlite3.Connection | None:
             return conn
         except sqlite3.Error:
             continue
-    try:
-        tmp_dir = tempfile.mkdtemp(prefix="vs-sqlite-")
-        tmp_root = Path(tmp_dir)
-        copied = tmp_root / db_path.name
-        shutil.copy2(db_path, copied)
-        for suffix in ("-wal", "-shm"):
-            sidecar = db_path.parent / (db_path.name + suffix)
-            if sidecar.is_file():
-                shutil.copy2(sidecar, tmp_root / (db_path.name + suffix))
-        for opener in (
-            lambda: sqlite3.connect(f"file:{copied.as_posix()}?mode=ro", uri=True, timeout=1.0),
-            lambda: sqlite3.connect(str(copied), timeout=1.0),
-        ):
-            try:
-                conn = opener()
-                conn.execute("SELECT 1")
-                return conn
-            except sqlite3.Error:
+    for attempt in range(3):
+        try:
+            tmp_dir = tempfile.mkdtemp(prefix="vs-sqlite-")
+            tmp_root = Path(tmp_dir)
+            copied = _copy_sqlite_database_bundle(db_path, tmp_root)
+            if not copied:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+                if attempt < 2:
+                    time.sleep(0.15 * (attempt + 1))
                 continue
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-    except OSError:
-        pass
+            for opener in (
+                lambda: sqlite3.connect(f"file:{copied.as_posix()}?mode=ro", uri=True, timeout=2.0),
+                lambda: sqlite3.connect(str(copied), timeout=2.0),
+            ):
+                try:
+                    conn = opener()
+                    conn.execute("SELECT 1")
+                    return conn
+                except sqlite3.Error:
+                    continue
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        except OSError:
+            pass
+        if attempt < 2:
+            time.sleep(0.15 * (attempt + 1))
     return None
 
 
@@ -10306,8 +10519,7 @@ def _scan_chromium_roblox_profile(browser: str, profile: str, profile_dir: Path)
     session_user_ids: set[str] = set()
     if session and session.get("user_id"):
         session_user_ids.add(str(session["user_id"]))
-    session_user_ids.update(_roblox_stored_account_ids_from_profile_storage(profile_dir))
-    session_user_ids.update(_roblox_user_ids_from_chromium_cookies(profile_dir))
+    session_user_ids.update(_roblox_chromium_cookie_user_ids(profile_dir))
     if session_user_ids:
         artifact["authenticated"] = True
         artifact["session_user_ids"] = sorted(session_user_ids, key=lambda value: int(value))
@@ -10385,8 +10597,8 @@ def _scan_firefox_roblox_profile(profile_name: str, profile_dir: Path) -> dict:
     session_user_ids: set[str] = set()
     if session and session.get("user_id"):
         session_user_ids.add(str(session["user_id"]))
-    session_user_ids.update(_roblox_stored_account_ids_from_profile_storage(profile_dir))
     session_user_ids.update(_roblox_user_ids_from_firefox_cookies(profile_dir))
+    session_user_ids.update(_roblox_stored_account_ids_from_profile_storage(profile_dir))
     if session_user_ids:
         artifact["authenticated"] = True
         artifact["session_user_ids"] = sorted(session_user_ids, key=lambda value: int(value))
@@ -10507,8 +10719,72 @@ def _roblox_browser_profile_account_hints() -> list[dict]:
     return hints
 
 
+def _roblox_user_ids_from_chromium_cookies(profile_dir: Path) -> list[str]:
+    return _roblox_chromium_cookie_user_ids(profile_dir)
+
+
+def _roblox_collect_browser_profile_accounts() -> list[dict]:
+    """Collect authenticated Roblox accounts from open browser profiles (no browser close)."""
+    if platform.system() != "Windows":
+        return []
+    accounts: list[dict] = []
+    seen: set[str] = set()
+
+    def _append(user_id: str | None, username: str | None, sources: list[str]) -> None:
+        uid = str(user_id or "").strip()
+        if not uid or not _roblox_valid_user_id(uid) or uid in seen:
+            return
+        seen.add(uid)
+        accounts.append(
+            {
+                "user_id": uid,
+                "username": username if username and _roblox_is_plausible_username(username) else None,
+                "sources": sources,
+                "authenticated": True,
+            }
+        )
+
+    for browser, base in _roblox_chromium_browser_roots():
+        if not base.is_dir():
+            continue
+        for profile in _chromium_profile_names(base)[:12]:
+            if scan_collect_phase_exhausted():
+                break
+            profile_dir = base / profile
+            source = f"{browser} {profile} web login"
+            artifact = _scan_chromium_roblox_profile(browser, profile, profile_dir)
+            session_ids = [str(user_id) for user_id in (artifact.get("session_user_ids") or []) if user_id]
+            session_uid = artifact.get("session_user_id")
+            if session_uid and str(session_uid) not in session_ids:
+                session_ids.append(str(session_uid))
+            username = artifact.get("session_username")
+            for user_id in session_ids:
+                _append(user_id, username, [source])
+            if not session_ids:
+                for user_id in _roblox_chromium_cookie_user_ids(profile_dir):
+                    _append(user_id, None, [source])
+
+    for profile_dir in _roblox_firefox_profile_dirs():
+        if scan_collect_phase_exhausted():
+            break
+        source = f"Firefox {profile_dir.name} web login"
+        artifact = _scan_firefox_roblox_profile(profile_dir.name, profile_dir)
+        session_ids = [str(user_id) for user_id in (artifact.get("session_user_ids") or []) if user_id]
+        session_uid = artifact.get("session_user_id")
+        if session_uid and str(session_uid) not in session_ids:
+            session_ids.append(str(session_uid))
+        username = artifact.get("session_username")
+        for user_id in session_ids:
+            _append(user_id, username, [source])
+        if not session_ids:
+            for user_id in _roblox_user_ids_from_firefox_cookies(profile_dir):
+                _append(user_id, None, [source])
+
+    return accounts
+
+
 def roblox_browser_account_scan() -> dict:
-    """Privacy-safe account hints — Roblox client logs/storage plus browser profiles."""
+    """Privacy-safe account hints — browser profiles (while open) plus Roblox client storage."""
     accounts: list[dict] = []
     seen_ids: set[str] = set()
     artifacts: list[dict] = []
@@ -10552,40 +10828,12 @@ def roblox_browser_account_scan() -> dict:
                 }
             )
 
-    def _merge_browser_artifact(artifact: dict) -> None:
-        if not isinstance(artifact, dict):
-            return
-        if not artifact.get("authenticated"):
-            return
-        browser = artifact.get("browser") or "Browser"
-        profile = artifact.get("profile") or "Default"
-        source_label = f"{browser} {profile}"
-        session_ids = [str(user_id) for user_id in (artifact.get("session_user_ids") or []) if user_id]
-        session_uid = artifact.get("session_user_id")
-        if session_uid and str(session_uid) not in session_ids:
-            session_ids.append(str(session_uid))
-        for user_id in session_ids:
-            _append_account(
-                user_id,
-                artifact.get("session_username"),
-                [f"{source_label} web login"],
-                authenticated=True,
-            )
-
-    client_session = _roblox_client_session_user()
-    if client_session:
-        _append_account(
-            client_session.get("user_id"),
-            client_session.get("username"),
-            list(client_session.get("sources") or ["Roblox client session"]),
-            authenticated=bool(client_session.get("user_id")),
-        )
-    for account in _roblox_app_storage_accounts():
+    for account in _roblox_collect_browser_profile_accounts():
         _append_account(
             account.get("user_id"),
-            account.get("username") or account.get("display_name"),
-            list(account.get("sources") or ["Roblox client storage"]),
-            authenticated=bool(account.get("authenticated")),
+            account.get("username"),
+            list(account.get("sources") or ["Browser web login"]),
+            authenticated=True,
         )
     for account in _roblox_collect_account_switcher_accounts():
         _append_account(
@@ -10594,42 +10842,35 @@ def roblox_browser_account_scan() -> dict:
             ["Roblox account switcher"],
             authenticated=True,
         )
+    client_session = _roblox_client_session_user()
+    if client_session:
+        _append_account(
+            client_session.get("user_id"),
+            client_session.get("username"),
+            list(client_session.get("sources") or ["Roblox client session"]),
+            authenticated=bool(client_session.get("authenticated")),
+        )
+    for account in _roblox_app_storage_accounts():
+        _append_account(
+            account.get("user_id"),
+            account.get("username") or account.get("display_name"),
+            list(account.get("sources") or ["Roblox client storage"]),
+            authenticated=bool(account.get("authenticated")),
+        )
 
     if platform.system() == "Windows":
-        local = os.getenv("LOCALAPPDATA", "")
-        appdata = os.getenv("APPDATA", "")
-        browser_roots = [
-            ("Chrome", Path(local) / "Google" / "Chrome" / "User Data"),
-            ("Edge", Path(local) / "Microsoft" / "Edge" / "User Data"),
-            ("Brave", Path(local) / "BraveSoftware" / "Brave-Browser" / "User Data"),
-            ("Opera", Path(local) / "Opera Software" / "Opera Stable"),
-        ]
-        for browser, base in browser_roots:
+        for browser, base in _roblox_chromium_browser_roots():
             if not base.is_dir():
                 continue
-            for profile in _chromium_profile_names(base)[:10]:
+            for profile in _chromium_profile_names(base)[:12]:
                 profile_dir = base / profile
                 if scan_collect_phase_exhausted():
                     break
-                artifact = _scan_chromium_roblox_profile(browser, profile, profile_dir)
-                artifacts.append(artifact)
-                _merge_browser_artifact(artifact)
-        firefox_root = Path(appdata) / "Mozilla" / "Firefox" / "Profiles"
-        if firefox_root.is_dir():
-            try:
-                profile_dirs = sorted(
-                    (entry for entry in firefox_root.iterdir() if entry.is_dir()),
-                    key=lambda path: path.stat().st_mtime,
-                    reverse=True,
-                )[:8]
-            except OSError:
-                profile_dirs = []
-            for profile_dir in profile_dirs:
-                if scan_collect_phase_exhausted():
-                    break
-                artifact = _scan_firefox_roblox_profile(profile_dir.name, profile_dir)
-                artifacts.append(artifact)
-                _merge_browser_artifact(artifact)
+                artifacts.append(_scan_chromium_roblox_profile(browser, profile, profile_dir))
+        for profile_dir in _roblox_firefox_profile_dirs():
+            if scan_collect_phase_exhausted():
+                break
+            artifacts.append(_scan_firefox_roblox_profile(profile_dir.name, profile_dir))
 
     enriched = _roblox_enrich_accounts(accounts, include_headshots=False)
     public_artifacts: list[dict] = []
@@ -10645,7 +10886,7 @@ def roblox_browser_account_scan() -> dict:
         )
     return {
         "available": True,
-        "privacy_mode": "no_browser_sessions",
+        "privacy_mode": "browser_profiles_left_open",
         "browsers_closed": [],
         "browsers_close_failed": [],
         "artifact_count": len(artifacts),
@@ -10655,7 +10896,7 @@ def roblox_browser_account_scan() -> dict:
         "aggregate_usernames": sorted(
             {str(acct.get("username")) for acct in enriched if acct.get("username")}
         ),
-        "note": "Client logs, local app data, and browser profile hints.",
+        "note": "Browser profiles are scanned while browsers stay open; client storage and account-switcher metadata are also checked.",
     }
 
 
@@ -10884,41 +11125,6 @@ def _roblox_stored_account_ids_from_profile_storage(profile_dir: Path) -> list[s
                 if _roblox_valid_user_id(user_id):
                     found.add(user_id)
     return sorted(found, key=lambda value: int(value))
-
-
-def _roblox_user_ids_from_chromium_cookies(profile_dir: Path) -> list[str]:
-    user_ids: set[str] = set()
-    v10_key, v20_key = _chromium_master_keys(profile_dir.parent)
-    for cookie_db in _chromium_cookie_db_paths(profile_dir):
-        conn = _sqlite_open_readonly(cookie_db)
-        if not conn:
-            continue
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                """
-                SELECT name, value, encrypted_value FROM cookies
-                WHERE host_key LIKE '%roblox%'
-                """
-            )
-            for name, value, encrypted_value in cur.fetchall():
-                cookie_name = str(name or "").strip()
-                if not cookie_name:
-                    continue
-                am_match = _ROBLOX_AM_COOKIE_PATTERN.search(cookie_name)
-                if am_match and _roblox_valid_user_id(am_match.group(1)):
-                    user_ids.add(str(am_match.group(1)))
-                if cookie_name.upper() == ".ROBLOSECURITY":
-                    decrypted = _chromium_decrypt_cookie_value(encrypted_value, value, v10_key, v20_key)
-                    if decrypted:
-                        auth_user = _roblox_user_from_authenticated_cookie(decrypted)
-                        if auth_user and auth_user.get("user_id"):
-                            user_ids.add(str(auth_user["user_id"]))
-        except sqlite3.Error:
-            pass
-        finally:
-            conn.close()
-    return sorted(user_ids, key=lambda value: int(value))
 
 
 def _roblox_user_ids_from_firefox_cookies(profile_dir: Path) -> list[str]:
