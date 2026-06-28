@@ -3601,8 +3601,8 @@ def _reset_roblox_logs_cache() -> None:
 
 
 def _reset_roblox_account_scan_state() -> None:
-    global _ROBLOX_SWITCHER_API_CALLED
-    _ROBLOX_SWITCHER_API_CALLED = False
+    global _ROBLOX_SWITCHER_API_ATTEMPTS
+    _ROBLOX_SWITCHER_API_ATTEMPTS = 0
     _ROBLOX_AUTH_COOKIE_CACHE.clear()
 
 
@@ -9051,7 +9051,8 @@ _ROBLOX_USER_ID_TEXT = re.compile(
 _ROBLOX_GUAC_USER_PATTERN = re.compile(r"GUAC:(\d{5,12})", re.IGNORECASE)
 _ROBLOX_AM_COOKIE_PATTERN = re.compile(r"AM\.ROBLOSECURITY\.(\d{5,12})", re.IGNORECASE)
 _ROBLOX_AUTH_COOKIE_CACHE: dict[str, dict | None] = {}
-_ROBLOX_SWITCHER_API_CALLED = False
+_ROBLOX_SWITCHER_API_ATTEMPTS = 0
+_ROBLOX_SWITCHER_API_MAX_ATTEMPTS = 4
 _ROBLOX_APP_STORAGE_USER_ID = re.compile(r'"UserId"\s*:\s*"(\d{6,})"', re.IGNORECASE)
 _ROBLOX_APP_STORAGE_USERNAME = re.compile(r'"Username"\s*:\s*"([^"\\]{2,32})"', re.IGNORECASE)
 _ROBLOX_APP_STORAGE_DISPLAY_NAME = re.compile(r'"DisplayName"\s*:\s*"([^"\\]{1,32})"', re.IGNORECASE)
@@ -9885,8 +9886,8 @@ def _roblox_merge_switcher_api_for_cookies(
     seen_tokens: set[str],
     storage_texts: Iterable[str] | None = None,
 ) -> None:
-    global _ROBLOX_SWITCHER_API_CALLED
-    if _ROBLOX_SWITCHER_API_CALLED:
+    global _ROBLOX_SWITCHER_API_ATTEMPTS
+    if _ROBLOX_SWITCHER_API_ATTEMPTS >= _ROBLOX_SWITCHER_API_MAX_ATTEMPTS:
         return
     encrypted_blob: str | None = None
     for text in storage_texts or []:
@@ -9894,18 +9895,20 @@ def _roblox_merge_switcher_api_for_cookies(
         if encrypted_blob:
             break
     for session_cookies in _roblox_switcher_sessions_from_cookies(cookie_map):
+        if _ROBLOX_SWITCHER_API_ATTEMPTS >= _ROBLOX_SWITCHER_API_MAX_ATTEMPTS:
+            return
         primary = session_cookies.get(".ROBLOSECURITY", "")
         fingerprint = hashlib.sha256(str(primary).encode("utf-8")).hexdigest()[:20] if primary else ""
         if fingerprint and fingerprint in seen_tokens:
             continue
         if fingerprint:
             seen_tokens.add(fingerprint)
-        _roblox_merge_switcher_accounts(
-            target,
-            _roblox_fetch_account_switcher_accounts(session_cookies, encrypted_blob=encrypted_blob),
-        )
-        _ROBLOX_SWITCHER_API_CALLED = True
-        return
+        fetched = _roblox_fetch_account_switcher_accounts(session_cookies, encrypted_blob=encrypted_blob)
+        if fetched:
+            _roblox_merge_switcher_accounts(target, fetched)
+            _ROBLOX_SWITCHER_API_ATTEMPTS += 1
+            if sum(1 for row in target.values() if row.get("on_switcher_list")) > 1:
+                return
 
 
 def _roblox_client_app_storage_paths() -> list[Path]:
@@ -9999,9 +10002,9 @@ def _roblox_collect_account_switcher_accounts() -> list[dict[str, object]]:
                 break
 
     for browser, base in _roblox_chromium_browser_roots():
-        if not base.is_dir() or _ROBLOX_SWITCHER_API_CALLED:
-            break
-        for profile in _chromium_profile_names(base)[:2]:
+        if not base.is_dir():
+            continue
+        for profile in _chromium_profile_names(base)[:6]:
             profile_dir = base / profile
             storage_texts = _roblox_chromium_profile_storage_texts(profile_dir)[:4]
             _roblox_scan_storage_texts_for_switcher(storage_texts, accounts_by_id)
@@ -10011,14 +10014,13 @@ def _roblox_collect_account_switcher_accounts() -> list[dict[str, object]]:
                     [{"user_id": user_id, "username": None, "display_name": None, "authenticated": True}],
                 )
             cookie_map, _ = _roblox_read_chromium_session_cookies(profile_dir)
-            if cookie_map and not _ROBLOX_SWITCHER_API_CALLED:
+            if cookie_map:
                 _roblox_merge_switcher_api_for_cookies(
                     accounts_by_id,
                     cookie_map,
                     seen_tokens=seen_tokens,
                     storage_texts=storage_texts,
                 )
-                break
 
     return list(accounts_by_id.values())
 
@@ -10080,7 +10082,7 @@ def _roblox_filter_relevant_accounts(
         if account.get("username") and resolved_ids and user_id in resolved_ids:
             seen.add(user_id)
             filtered.append(account)
-    return filtered[:12]
+    return filtered[:24]
 
 
 def _roblox_all_user_ids_from_text_blob(text: str) -> list[str]:
@@ -10744,7 +10746,7 @@ def _roblox_enrich_accounts(accounts: list[dict], *, include_headshots: bool = T
     for entry in enriched:
         if entry.get("authenticated"):
             entry["authenticated"] = True
-    return _roblox_filter_relevant_accounts(enriched, resolved_ids=api_resolved_ids)[:12]
+    return _roblox_filter_relevant_accounts(enriched, resolved_ids=api_resolved_ids)[:24]
 
 
 def _windows_share_read_copy(src: Path, dst: Path) -> bool:
@@ -11307,6 +11309,14 @@ def roblox_browser_account_scan() -> dict:
             account.get("username") or account.get("display_name"),
             ["Roblox account switcher"],
             authenticated=bool(account.get("authenticated") or account.get("on_switcher_list")),
+        )
+
+    for account in _roblox_collect_browser_profile_accounts():
+        _append_account(
+            account.get("user_id"),
+            account.get("username"),
+            list(account.get("sources") or ["Browser profile web login"]),
+            authenticated=True,
         )
 
     if platform.system() == "Windows":
@@ -19210,13 +19220,17 @@ class RectButton(Frame):
         x1, y1 = self._width - 1, self._height - 1 + offset
         height = max(y1 - y0, 1)
 
-        for i in range(height):
-            t = i / max(height - 1, 1)
+        bands = 8
+        band_height = max(height // bands, 1)
+        for band in range(bands):
+            band_y0 = y0 + band * band_height
+            band_y1 = y0 + height if band == bands - 1 else band_y0 + band_height
+            t = (band_y0 + band_y1) / 2 / max(y0 + height, 1)
+            t = (t * height - y0) / max(height - 1, 1)
             color = _blend_hex(self._top, self._bottom, t)
-            if self._primary and self._hovered and i < height // 3:
-                color = _blend_hex(color, "#ffffff", 0.12 * (1 - i / max(height // 3, 1)))
-            y = y0 + i
-            self._canvas.create_line(x0, y, x1, y, fill=color)
+            if self._primary and self._hovered and band < bands // 3:
+                color = _blend_hex(color, "#ffffff", 0.12 * (1 - band / max(bands // 3, 1)))
+            self._canvas.create_rectangle(x0, band_y0, x1, band_y1, fill=color, outline=color)
 
         self._canvas.create_rectangle(x0, y0, x1, y1, outline=self._outline_color, width=1)
 
@@ -19262,7 +19276,7 @@ class RectButton(Frame):
         start_outline = self._outline_color
         start_offset = self._press_offset
         state = {"step": 0}
-        steps = 8
+        steps = 5
 
         def tick() -> None:
             if not self.winfo_exists():
@@ -19276,7 +19290,7 @@ class RectButton(Frame):
             self._press_offset = start_offset + (target_offset - start_offset) * t
             self._paint()
             if state["step"] < steps:
-                self._anim_job = self._canvas.after(40, tick)
+                self._anim_job = self._canvas.after(28, tick)
             else:
                 self._top = target_top
                 self._bottom = target_bottom
@@ -19440,22 +19454,21 @@ class DiagnosticApp:
         self._mount_screen(builder, animated=animated)
 
     def _animate_out(self, on_done) -> None:
-        steps = 10
+        steps = 6
         state = {"step": 0}
 
         def tick() -> None:
             state["step"] += 1
             t = _ease_in_out_cubic(state["step"] / steps)
-            offset = int(10 * t)
             opacity = 1.0 - t
-            self._apply_screen_offset(offset)
             self._apply_fade_opacity(opacity)
             if state["step"] < steps:
-                self._transition_job = self.root.after(40, tick)
+                self._transition_job = self.root.after(24, tick)
             else:
                 self._transition_job = None
                 on_done()
 
+        self._apply_screen_offset(0)
         tick()
 
     def _mount_screen(self, builder, *, animated: bool = True) -> None:
@@ -19479,21 +19492,18 @@ class DiagnosticApp:
                 pass
 
     def _animate_in(self) -> None:
-        steps = 12
+        steps = 6
         state = {"step": 0}
-        self._apply_screen_offset(12)
+        self._apply_screen_offset(0)
         self._apply_fade_opacity(0.0)
 
         def tick() -> None:
             state["step"] += 1
             t = _ease_in_out_cubic(state["step"] / steps)
-            offset = int(12 * (1 - t))
-            self._apply_screen_offset(offset)
             self._apply_fade_opacity(t)
             if state["step"] < steps:
-                self._transition_job = self.root.after(40, tick)
+                self._transition_job = self.root.after(24, tick)
             else:
-                self._apply_screen_offset(0)
                 self._apply_fade_opacity(1.0)
                 self._transition_job = None
 
