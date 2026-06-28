@@ -1,6 +1,6 @@
 import React from "react";
 import { Link } from "react-router-dom";
-import { DISCORD_INVITE_URL } from "../config/brand.js";
+import { DISCORD_INVITE_URL, DEMO_VIDEO_URL } from "../config/brand.js";
 import { MaterialIcon } from "../components/MaterialIcon.jsx";
 import { IconDiscord } from "../components/VirelloIcons.jsx";
 
@@ -52,6 +52,32 @@ export function LandingPage() {
             Reviewers sign in with Discord. Scanned users do not need an account.
           </p>
         </aside>
+      </section>
+
+      <section className="demo-section">
+        <div className="demo-section__copy">
+          <p className="demo-section__eyebrow">See it in action</p>
+          <h2>How a Virello scan works</h2>
+          <p>
+            Watch a full walkthrough — from PIN entry to the finished report in the review console.
+          </p>
+        </div>
+        <div className="demo-video">
+          {DEMO_VIDEO_URL ? (
+            <video className="demo-video__player" controls playsInline poster="/assets/demo-poster.png">
+              <source src={DEMO_VIDEO_URL} type="video/mp4" />
+              Your browser does not support embedded video.
+            </video>
+          ) : (
+            <div className="demo-video__placeholder" aria-label="Demo video coming soon">
+              <MaterialIcon name="play_circle" size={56} />
+              <p className="demo-video__title">Demo video coming soon</p>
+              <p className="demo-video__hint muted">
+                A full walkthrough will appear here once it is ready.
+              </p>
+            </div>
+          )}
+        </div>
       </section>
 
       <section className="cta-band">

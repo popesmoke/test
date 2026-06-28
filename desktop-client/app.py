@@ -23,7 +23,7 @@ import sqlite3
 import tempfile
 from collections import Counter, defaultdict
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
-from queue import Empty, PriorityQueue
+from queue import Empty, PriorityQueue, Queue
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Iterable
@@ -51,11 +51,17 @@ SCAN_STAGES = [
     "Uploading Report",
 ]
 
-# Progress bar: real milestones from build_report() plus a light animation between updates.
-PROGRESS_TICK_SEC = 0.22
-PROGRESS_STEP = 0.55
-PROGRESS_CAP_DURING_SCAN = 92.0
-PRE_SCAN_STAGE_DELAY_SEC = 0.08
+# Progress bar: real milestones from build_report() plus staged UI animation.
+PROGRESS_TICK_MS = 180
+PROGRESS_HOLD_PERCENT = 90.0
+PROGRESS_SLOW_STEP = 0.22
+PROGRESS_FAST_STEP = 1.45
+PROGRESS_MED_STEP = 0.38
+PROGRESS_PAUSE_AT = 22.0
+PROGRESS_PAUSE_SEC = 0.55
+PROGRESS_FAST_END = 72.0
+ESTIMATED_SCAN_SECONDS = 300.0
+PRE_SCAN_STAGE_DELAY_SEC = 0.65
 PRE_SCAN_STAGE_PROGRESS = {
     "Initializing Scan": 8.0,
     "System Environment Check": 14.0,
@@ -19335,6 +19341,120 @@ class RectButton(Frame):
         self._animate_state()
 
 
+class GlowProgressBar(Canvas):
+    """Rounded progress bar with a subtle glow on the fill edge."""
+
+    def __init__(
+        self,
+        parent,
+        *,
+        width: int = 360,
+        height: int = 10,
+        bg: str = "#121214",
+        fill: str = "#dc2626",
+        glow: str = "#ef4444",
+        border: str = "#252528",
+    ) -> None:
+        super().__init__(
+            parent,
+            width=width,
+            height=height + 8,
+            bg=parent.cget("bg") if hasattr(parent, "cget") else bg,
+            highlightthickness=0,
+            bd=0,
+        )
+        self._bar_width = width
+        self._bar_height = height
+        self._bar_y = 4
+        self._track_bg = "#1a1a1f"
+        self._bg = bg
+        self._fill = fill
+        self._glow = glow
+        self._border = border
+        self._value = 0.0
+        self._pulse = 0.0
+        self._pulse_job: str | None = None
+        self._draw_static()
+
+    def _draw_static(self) -> None:
+        y = self._bar_y
+        h = self._bar_height
+        self._track = self.create_round_rect(0, y, self._bar_width, y + h, 5, fill=self._track_bg, outline=self._border)
+        self._glow_rect = self.create_round_rect(0, y + 1, 0, y + h - 1, 4, fill=self._glow, outline="")
+        self._fill_rect = self.create_round_rect(0, y + 2, 0, y + h - 2, 3, fill=self._fill, outline="")
+
+    def _ensure_pulse(self) -> None:
+        if self._pulse_job is not None or self._value <= 0:
+            return
+
+        def tick() -> None:
+            if self._value <= 0:
+                self._pulse_job = None
+                return
+            self._pulse = (self._pulse + 0.1) % (2 * math.pi)
+            self._render_fill()
+            self._pulse_job = self.after(220, tick)
+
+        tick()
+
+    def create_round_rect(self, x1, y1, x2, y2, radius, **kwargs):
+        points = [
+            x1 + radius,
+            y1,
+            x2 - radius,
+            y1,
+            x2,
+            y1,
+            x2,
+            y1 + radius,
+            x2,
+            y2 - radius,
+            x2,
+            y2,
+            x2 - radius,
+            y2,
+            x1 + radius,
+            y2,
+            x1,
+            y2,
+            x1,
+            y2 - radius,
+            x1,
+            y1 + radius,
+            x1,
+            y1,
+        ]
+        return self.create_polygon(points, smooth=True, **kwargs)
+
+    def destroy(self) -> None:
+        if self._pulse_job is not None:
+            try:
+                self.after_cancel(self._pulse_job)
+            except Exception:
+                pass
+            self._pulse_job = None
+        super().destroy()
+
+    def set_value(self, percent: float) -> None:
+        self._value = max(0.0, min(100.0, float(percent)))
+        self._render_fill()
+        self._ensure_pulse()
+
+    def _render_fill(self) -> None:
+        y = self._bar_y
+        h = self._bar_height
+        width = self._bar_width * (self._value / 100.0)
+        pulse_boost = 1.0 + 0.08 * math.sin(self._pulse)
+        glow_width = min(self._bar_width, width * pulse_boost + 6)
+        fill_width = min(self._bar_width, width)
+        if fill_width < 1:
+            self.coords(self._glow_rect, 0, y, 0, y + h)
+            self.coords(self._fill_rect, 0, y + 2, 0, y + h - 2)
+            return
+        self.coords(self._glow_rect, 0, y + 1, glow_width, y + h - 1)
+        self.coords(self._fill_rect, 0, y + 2, fill_width, y + h - 2)
+
+
 class DiagnosticApp:
     UI_BG = "#0a0a0c"
     UI_SURFACE = "#121214"
@@ -19344,12 +19464,13 @@ class DiagnosticApp:
     UI_TEXT = "#fafafa"
     UI_MUTED = "#71717a"
     UI_SUCCESS = "#16a34a"
+    UI_GLOW = "#ef4444"
     WIN_WIDTH = 720
-    WIN_HEIGHT = 400
-    TEXT_WRAP = 320
+    WIN_HEIGHT = 440
+    TEXT_WRAP = 380
     BTN_WIDTH = 164
-    RIGHT_COL_WIDTH = 272
-    WELCOME_BTN_WIDTH = 248
+    RIGHT_COL_WIDTH = 260
+    WELCOME_BTN_WIDTH = 200
 
     def __init__(self) -> None:
         self.root = Tk()
@@ -19368,14 +19489,21 @@ class DiagnosticApp:
         self.consent = BooleanVar(value=False)
         self.status = StringVar(value="Ready to scan")
         self.progress_percent = StringVar(value="0%")
+        self.eta_text = StringVar(value="Estimated time: ~5 min")
         self.stage_labels: dict[str, ttk.Label] = {}
         self._screen: Frame | None = None
         self._viewport: Frame | None = None
         self._transition_job: str | None = None
+        self._progress_job: str | None = None
+        self._progress_state: dict | None = None
+        self._progress_lock = threading.Lock()
+        self._ui_queue: Queue = Queue()
         self._fade_widgets: list[tuple[ttk.Label, float]] = []
-        self.progress: ttk.Progressbar | None = None
+        self.progress: GlowProgressBar | None = None
+        self._header_status: ttk.Label | None = None
         self.configure_style()
         self._build_shell()
+        self._poll_ui_queue()
         self._show_screen(self._build_welcome_content)
 
     def load_logo(self) -> PhotoImage | None:
@@ -19403,7 +19531,10 @@ class DiagnosticApp:
         style.configure("Eyebrow.TLabel", background=bg, foreground=self.UI_MUTED, font=("Segoe UI", 8, "bold"))
         style.configure("Title.TLabel", background=bg, foreground="#ffffff", font=("Segoe UI", 19, "bold"))
         style.configure("Heading.TLabel", background=bg, foreground="#ffffff", font=("Segoe UI", 11, "bold"))
-        style.configure("Percent.TLabel", background=bg, foreground=self.UI_TEXT, font=("Segoe UI", 11, "bold"))
+        style.configure("Percent.TLabel", background=bg, foreground=self.UI_TEXT, font=("Segoe UI", 12, "bold"))
+        style.configure("SurfacePercent.TLabel", background=self.UI_SURFACE, foreground=self.UI_TEXT, font=("Segoe UI", 12, "bold"))
+        style.configure("Eta.TLabel", background=bg, foreground=self.UI_MUTED, font=("Segoe UI", 9))
+        style.configure("HeaderMuted.TLabel", background=self.UI_SURFACE, foreground=self.UI_MUTED, font=("Segoe UI", 8))
         style.configure("Stage.TLabel", background=bg, foreground=self.UI_TEXT, font=("Segoe UI", 9))
         style.configure("StageStatus.TLabel", background=bg, foreground=self.UI_MUTED, font=("Segoe UI", 9))
         style.configure("Brand.TLabel", background=self.UI_SURFACE, foreground="#ffffff", font=("Segoe UI", 10, "bold"))
@@ -19423,16 +19554,30 @@ class DiagnosticApp:
         )
 
     def _build_shell(self) -> None:
-        header = Frame(self.root, bg=self.UI_SURFACE, height=44)
+        accent_strip = Frame(self.root, bg=self.UI_ACCENT, height=2)
+        accent_strip.pack(fill="x")
+        header = Frame(self.root, bg=self.UI_SURFACE, height=48)
         header.pack(fill="x")
         header.pack_propagate(False)
-        header_inner = Frame(header, bg=self.UI_SURFACE, padx=20)
+        header_inner = Frame(header, bg=self.UI_SURFACE, padx=24)
         header_inner.pack(fill=BOTH, expand=True)
         if self.logo_image:
             ttk.Label(header_inner, image=self.logo_image, style="Surface.TLabel").pack(side="left", padx=(0, 10))
-        ttk.Label(header_inner, text="VIRELLO SCANNER", style="Brand.TLabel").pack(side="left", pady=10)
+        title_block = Frame(header_inner, bg=self.UI_SURFACE)
+        title_block.pack(side="left", pady=8)
+        ttk.Label(title_block, text="VIRELLO", style="Brand.TLabel").pack(anchor="w")
+        ttk.Label(
+            title_block,
+            text="Secure Forensic Scanner",
+            style="HeaderMuted.TLabel",
+        ).pack(anchor="w")
+        status_chip = Frame(header_inner, bg="#1a1a1e", padx=10, pady=4)
+        status_chip.pack(side="right", pady=10)
+        self._header_status = ttk.Label(status_chip, text="● Ready", style="Surface.TLabel")
+        self._header_status.configure(foreground=self.UI_SUCCESS)
+        self._header_status.pack()
         Frame(self.root, bg=self.UI_BORDER, height=1).pack(fill="x")
-        viewport = Frame(self.root, bg=self.UI_BG, padx=28, pady=22)
+        viewport = Frame(self.root, bg=self.UI_BG, padx=32, pady=24)
         viewport.pack(fill=BOTH, expand=True)
         self._viewport = viewport
         self._screen = Frame(viewport, bg=self.UI_BG)
@@ -19514,12 +19659,38 @@ class DiagnosticApp:
             return
         self._screen.pack_configure(pady=(offset, 0))
 
-    def _split_columns(self) -> tuple[Frame, Frame]:
+    def _dispatch_ui(self, fn, *args) -> None:
+        self._ui_queue.put((fn, args))
+
+    def _poll_ui_queue(self) -> None:
+        while True:
+            try:
+                fn, args = self._ui_queue.get_nowait()
+            except Empty:
+                break
+            try:
+                fn(*args)
+            except Exception:
+                pass
+        self.root.after(40, self._poll_ui_queue)
+
+    def _set_header_status(self, mode: str) -> None:
+        if self._header_status is None:
+            return
+        if mode == "scanning":
+            self._header_status.configure(text="● Scanning", foreground=self.UI_ACCENT)
+        elif mode == "done":
+            self._header_status.configure(text="● Complete", foreground=self.UI_SUCCESS)
+        else:
+            self._header_status.configure(text="● Ready", foreground=self.UI_SUCCESS)
+
+    def _split_columns(self, *, show_divider: bool = True) -> tuple[Frame, Frame]:
         row = Frame(self._screen, bg=self.UI_BG)
         row.pack(fill=BOTH, expand=True)
         left = Frame(row, bg=self.UI_BG)
         left.pack(side="left", fill=BOTH, expand=True)
-        Frame(row, bg=self.UI_BORDER, width=1).pack(side="left", fill="y", padx=24)
+        if show_divider:
+            Frame(row, bg=self.UI_BORDER, width=1).pack(side="left", fill="y", padx=20)
         right = Frame(row, bg=self.UI_BG, width=self.RIGHT_COL_WIDTH)
         right.pack(side="left", fill=BOTH)
         right.pack_propagate(False)
@@ -19581,39 +19752,37 @@ class DiagnosticApp:
         )
 
     def _build_welcome_content(self) -> None:
-        left, right = self._split_columns()
-        left_block = Frame(left, bg=self.UI_BG)
-        left_block.pack(fill=BOTH, expand=True)
-        left_inner = Frame(left_block, bg=self.UI_BG)
-        left_inner.pack(expand=True, anchor="w")
-        self._fade_label(left_inner, "WELCOME", "Eyebrow.TLabel", delay=0.0).pack(anchor="w")
-        self._fade_label(left_inner, "Virello Scanner", "Title.TLabel", delay=0.04).pack(anchor="w", pady=(6, 0))
+        wrap = Frame(self._screen, bg=self.UI_BG)
+        wrap.pack(fill=BOTH, expand=True)
+        col = Frame(wrap, bg=self.UI_BG)
+        col.place(relx=0.5, rely=0.5, anchor="center")
+        if self.logo_image:
+            ttk.Label(col, image=self.logo_image, style="TLabel").pack(pady=(0, 14))
+        self._fade_label(col, "WELCOME", "Eyebrow.TLabel", delay=0.0).pack()
+        self._fade_label(col, "Virello Scanner", "Title.TLabel", delay=0.04).pack(pady=(8, 0))
         self._fade_label(
-            left_inner,
-            "Secure remote system diagnostics. Run a one-time scan with your session PIN and submit results to your reviewer.",
+            col,
+            "Secure remote diagnostics for screenshare reviews. Enter your session PIN, run one scan, and submit results to your reviewer.",
             "Muted.TLabel",
             delay=0.08,
-            wraplength=self.TEXT_WRAP,
-        ).pack(anchor="w", pady=(12, 0))
-        right_block = Frame(right, bg=self.UI_BG)
-        right_block.pack(fill=BOTH, expand=True)
-        btn_col = Frame(right_block, bg=self.UI_BG)
-        btn_col.pack(expand=True)
-        btn_stack = Frame(btn_col, bg=self.UI_BG)
-        btn_stack.pack(expand=True)
+            wraplength=420,
+            justify="center",
+        ).pack(pady=(12, 22))
+        btn_row = Frame(col, bg=self.UI_BG)
+        btn_row.pack()
         self._rect_btn(
-            btn_stack,
+            btn_row,
             "Get Started",
             lambda: self._show_screen(self._build_pin_content),
             width=self.WELCOME_BTN_WIDTH,
-        ).pack(fill="x", pady=(0, 10))
+        ).pack(side="left", padx=(0, 10))
         self._rect_btn(
-            btn_stack,
+            btn_row,
             "Discord",
             lambda: webbrowser.open(DISCORD_URL),
             primary=False,
-            width=self.WELCOME_BTN_WIDTH,
-        ).pack(fill="x")
+            width=132,
+        ).pack(side="left")
 
     def _build_pin_content(self) -> None:
         left, right = self._split_columns()
@@ -19648,33 +19817,52 @@ class DiagnosticApp:
 
     def _build_progress_content(self) -> None:
         left, right = self._split_columns()
-        self._fade_label(left, "SCAN", "Eyebrow.TLabel", delay=0.0).pack(anchor="w")
-        self._fade_label(left, "In progress", "Title.TLabel", delay=0.04).pack(anchor="w", pady=(6, 0))
-        ttk.Label(left, textvariable=self.status, style="Muted.TLabel").pack(anchor="w", pady=(10, 16))
-        progress_header = Frame(left, bg=self.UI_BG)
+        self._fade_label(left, "SCAN IN PROGRESS", "Eyebrow.TLabel", delay=0.0).pack(anchor="w")
+        self._fade_label(left, "Running diagnostics", "Title.TLabel", delay=0.04).pack(anchor="w", pady=(6, 0))
+        status_row = Frame(left, bg=self.UI_BG)
+        status_row.pack(anchor="w", pady=(10, 0), fill="x")
+        ttk.Label(status_row, textvariable=self.status, style="Muted.TLabel").pack(side="left")
+        ttk.Label(status_row, textvariable=self.eta_text, style="Eta.TLabel").pack(side="right")
+        progress_card = Frame(left, bg=self.UI_SURFACE, padx=16, pady=14)
+        progress_card.pack(fill="x", pady=(16, 0))
+        progress_header = Frame(progress_card, bg=self.UI_SURFACE)
         progress_header.pack(fill="x")
-        ttk.Label(progress_header, text="Progress", style="Muted.TLabel").pack(side="left")
-        percent = self._fade_label(progress_header, "0%", "Percent.TLabel", delay=0.06)
-        percent.configure(textvariable=self.progress_percent)
-        percent.pack(side="right")
-        self.progress = ttk.Progressbar(
-            left,
-            maximum=100,
-            mode="determinate",
-            length=320,
-            style="Accent.Horizontal.TProgressbar",
+        ttk.Label(progress_header, text="Overall progress", style="Surface.TLabel", foreground=self.UI_MUTED).pack(
+            side="left"
         )
-        self.progress.pack(fill="x", pady=(10, 0))
-        self._fade_label(right, "STAGES", "Eyebrow.TLabel", delay=0.08).pack(anchor="w", pady=(0, 10))
+        percent = ttk.Label(progress_header, textvariable=self.progress_percent, style="SurfacePercent.TLabel")
+        percent.pack(side="right")
+        self.progress = GlowProgressBar(
+            progress_card,
+            width=340,
+            height=12,
+            bg=self.UI_SURFACE,
+            fill=self.UI_ACCENT,
+            glow=self.UI_GLOW,
+            border="#3f3f46",
+        )
+        self.progress.pack(anchor="w", pady=(12, 0))
+        hint = ttk.Label(
+            progress_card,
+            text="Deep forensic pass — this may pause near 90% while evidence is correlated.",
+            style="Surface.TLabel",
+            foreground=self.UI_MUTED,
+            wraplength=360,
+        )
+        hint.pack(anchor="w", pady=(10, 0))
+        self._fade_label(right, "PIPELINE", "Eyebrow.TLabel", delay=0.08).pack(anchor="w", pady=(0, 10))
         self.stage_labels = {}
         for stage in SCAN_STAGES:
             row = Frame(right, bg=self.UI_BG)
             row.pack(fill="x")
             inner = Frame(row, bg=self.UI_BG)
             inner.pack(fill="x", pady=7)
+            dot = ttk.Label(inner, text="○", style="StageStatus.TLabel")
+            dot.pack(side="left", padx=(0, 8))
             ttk.Label(inner, text=stage, style="Stage.TLabel").pack(side="left")
             status_label = ttk.Label(inner, text="Waiting", style="StageStatus.TLabel")
             status_label.pack(side="right")
+            status_label._stage_dot = dot
             self.stage_labels[stage] = status_label
             Frame(row, bg=self.UI_BORDER, height=1).pack(fill="x")
 
@@ -19691,18 +19879,150 @@ class DiagnosticApp:
         label = self.stage_labels.get(stage)
         if label is None:
             return
+        dot = getattr(label, "_stage_dot", None)
         if state == "complete":
             label.config(text="Complete", foreground=self.UI_SUCCESS)
+            if dot is not None:
+                dot.config(text="●", foreground=self.UI_SUCCESS)
         elif state == "running":
-            label.config(text="In progress", foreground=self.UI_ACCENT)
+            label.config(text="Running", foreground=self.UI_ACCENT)
+            if dot is not None:
+                dot.config(text="◉", foreground=self.UI_ACCENT)
         else:
             label.config(text="Waiting", foreground=self.UI_MUTED)
+            if dot is not None:
+                dot.config(text="○", foreground=self.UI_MUTED)
 
     def set_progress_percent(self, percent: float) -> None:
         clamped = max(0.0, min(100.0, float(percent)))
         if self.progress is not None:
-            self.progress.config(maximum=100, value=clamped)
+            self.progress.set_value(clamped)
         self.progress_percent.set(f"{round(clamped)}%")
+
+    def _format_eta(self, seconds: float) -> str:
+        remaining = max(0, int(round(seconds)))
+        if remaining <= 0:
+            return "Finishing up…"
+        if remaining >= 120:
+            minutes = (remaining + 59) // 60
+            return f"Estimated time: ~{minutes} min"
+        if remaining >= 60:
+            return "Estimated time: ~1 min"
+        return f"Estimated time: ~{remaining}s"
+
+    def _update_eta(self, display: float, state: dict) -> None:
+        if state.get("upload_done"):
+            self.eta_text.set("Complete")
+            return
+        if display >= PROGRESS_HOLD_PERCENT and not state.get("scan_done"):
+            self.eta_text.set("Correlating evidence…")
+            return
+        if display >= PROGRESS_HOLD_PERCENT and state.get("scan_done"):
+            self.eta_text.set("Uploading report…")
+            return
+        elapsed = max(0.0, time.monotonic() - float(state.get("started_at", time.monotonic())))
+        if display < 35:
+            remaining = ESTIMATED_SCAN_SECONDS - elapsed
+        elif display > 8:
+            projected_total = elapsed * (100.0 / max(display, 1.0))
+            remaining = max(ESTIMATED_SCAN_SECONDS - elapsed, projected_total - elapsed)
+        else:
+            remaining = ESTIMATED_SCAN_SECONDS - elapsed
+        self.eta_text.set(self._format_eta(remaining))
+
+    def _stop_progress_animation(self) -> None:
+        if self._progress_job is not None:
+            try:
+                self.root.after_cancel(self._progress_job)
+            except Exception:
+                pass
+            self._progress_job = None
+
+    def _animate_progress_tick(self) -> None:
+        state = self._progress_state
+        if state is None:
+            return
+        with self._progress_lock:
+            display = float(state["display"])
+            milestone = float(state["milestone"])
+            scan_done = bool(state["scan_done"])
+            upload_done = bool(state["upload_done"])
+            pause_until = float(state.get("pause_until", 0.0))
+            started_at = float(state["started_at"])
+            snapshot = {
+                "display": display,
+                "milestone": milestone,
+                "scan_done": scan_done,
+                "upload_done": upload_done,
+                "pause_until": pause_until,
+                "started_at": started_at,
+            }
+
+        now = time.monotonic()
+        if upload_done:
+            display = min(100.0, display + 2.8)
+        elif display >= PROGRESS_HOLD_PERCENT and not scan_done:
+            display = PROGRESS_HOLD_PERCENT
+        elif now < pause_until:
+            pass
+        elif display < PROGRESS_PAUSE_AT:
+            display += PROGRESS_SLOW_STEP
+            if display >= PROGRESS_PAUSE_AT:
+                with self._progress_lock:
+                    if self._progress_state is not None:
+                        self._progress_state["pause_until"] = now + PROGRESS_PAUSE_SEC
+        elif display < PROGRESS_FAST_END:
+            display += PROGRESS_FAST_STEP
+        elif display < PROGRESS_HOLD_PERCENT:
+            display += PROGRESS_MED_STEP
+
+        floor = min(milestone, PROGRESS_HOLD_PERCENT - 0.5)
+        display = max(display, floor)
+        if not scan_done:
+            display = min(display, PROGRESS_HOLD_PERCENT)
+        display = max(0.0, min(100.0, display))
+
+        with self._progress_lock:
+            if self._progress_state is not None:
+                self._progress_state["display"] = display
+
+        self.set_progress_percent(display)
+        self._update_eta(display, snapshot)
+
+        if display < 100.0 or not upload_done:
+            self._progress_job = self.root.after(PROGRESS_TICK_MS, self._animate_progress_tick)
+
+    def _start_progress_animation(self) -> None:
+        self._stop_progress_animation()
+        self._progress_state = {
+            "milestone": 5.0,
+            "display": 5.0,
+            "scan_done": False,
+            "upload_done": False,
+            "pause_until": 0.0,
+            "started_at": time.monotonic(),
+        }
+        self.eta_text.set(self._format_eta(ESTIMATED_SCAN_SECONDS))
+        self.set_progress_percent(5.0)
+        self._progress_job = self.root.after(PROGRESS_TICK_MS, self._animate_progress_tick)
+
+    def _set_progress_milestone(self, percent: float) -> None:
+        with self._progress_lock:
+            if self._progress_state is None:
+                return
+            self._progress_state["milestone"] = max(self._progress_state["milestone"], float(percent))
+
+    def _mark_scan_done(self) -> None:
+        with self._progress_lock:
+            if self._progress_state is not None:
+                self._progress_state["scan_done"] = True
+                self._progress_state["milestone"] = max(self._progress_state["milestone"], PROGRESS_HOLD_PERCENT)
+
+    def _mark_upload_done(self) -> None:
+        with self._progress_lock:
+            if self._progress_state is not None:
+                self._progress_state["upload_done"] = True
+                self._progress_state["milestone"] = 100.0
 
     def start_scan(self) -> None:
         if not self.pin.get().strip():
@@ -19712,91 +20032,94 @@ class DiagnosticApp:
             messagebox.showerror("Agreement required", "Please agree to run the diagnostic scan before continuing.")
             return
         self.progress_percent.set("0%")
-        self.status.set("Starting scan...")
+        self.eta_text.set(self._format_eta(ESTIMATED_SCAN_SECONDS))
+        self.status.set("Preparing scan…")
         self.stage_labels = {}
+        self._set_header_status("scanning")
         self.build_progress_screen()
         self.root.after_idle(self._begin_scan_thread)
 
     def _begin_scan_thread(self) -> None:
+        self._start_progress_animation()
         thread = threading.Thread(target=self.scan_and_upload, daemon=True)
         thread.start()
 
     def scan_and_upload(self) -> None:
         try:
-            progress_value = {"v": 5.0}
-            progress_lock = threading.Lock()
-            stage_state = {"current": SCAN_STAGES[0]}
-            last_ui_update = {"t": 0.0}
+            pre_scan_done = {"v": False}
 
             def on_scan_progress(percent: float, stage: str | None = None) -> None:
-                with progress_lock:
-                    progress_value["v"] = max(progress_value["v"], float(percent))
-                    if stage:
-                        stage_state["current"] = stage
-                now = time.monotonic()
-                if now - last_ui_update["t"] < 0.5 and progress_value["v"] < 99:
-                    return
-                last_ui_update["t"] = now
-                self.root.after(0, self.set_progress_percent, progress_value["v"])
-                if stage:
-                    self.root.after(0, self.set_stage, stage, "running")
+                self._dispatch_ui(self._set_progress_milestone, float(percent))
+                if stage and pre_scan_done["v"]:
+                    self._dispatch_ui(self.set_stage, stage, "running")
 
             set_scan_progress_callback(on_scan_progress)
             try:
+                self._dispatch_ui(self.status.set, "Running pre-checks…")
+                for stage in SCAN_STAGES[:3]:
+                    self._dispatch_ui(self.set_stage, stage, "running")
+                    self._dispatch_ui(self._set_progress_milestone, PRE_SCAN_STAGE_PROGRESS.get(stage, 8.0))
+                    time.sleep(PRE_SCAN_STAGE_DELAY_SEC)
+                    self._dispatch_ui(self.set_stage, stage, "complete")
+
+                pre_scan_done["v"] = True
+                collect_stage = SCAN_STAGES[3]
+                self._dispatch_ui(self.set_stage, collect_stage, "running")
+                self._dispatch_ui(self.status.set, "Collecting forensic evidence…")
+
                 with ThreadPoolExecutor(max_workers=1) as pool:
                     report_future = pool.submit(build_report)
 
-                    self.root.after(0, self.set_progress_percent, progress_value["v"])
-                    for stage in SCAN_STAGES[:3]:
-                        self.root.after(0, self.set_stage, stage, "running")
-                        progress_value["v"] = max(
-                            progress_value["v"],
-                            PRE_SCAN_STAGE_PROGRESS.get(stage, progress_value["v"]),
-                        )
-                        self.root.after(0, self.set_progress_percent, progress_value["v"])
-                        self.root.after(0, self.set_stage, stage, "complete")
-
-                    collect_stage = SCAN_STAGES[3]
-                    self.root.after(0, self.set_stage, collect_stage, "running")
-
                     while not report_future.done():
-                        time.sleep(0.5)
+                        time.sleep(0.25)
 
                     report = report_future.result(timeout=15)
-                    self.root.after(0, self.set_stage, collect_stage, "complete")
 
-                    finalize_stage = SCAN_STAGES[4]
-                    self.root.after(0, self.set_stage, finalize_stage, "running")
-                    progress_value["v"] = max(progress_value["v"], 90.0)
-                    self.root.after(0, self.set_progress_percent, progress_value["v"])
-                    time.sleep(0.04)
-                    self.root.after(0, self.set_stage, finalize_stage, "complete")
+                self._dispatch_ui(self.set_stage, collect_stage, "complete")
 
-                    upload_stage = SCAN_STAGES[5]
-                    self.root.after(0, self.set_stage, upload_stage, "running")
-                    payload = {
-                        "pin": self.pin.get().strip(),
-                        "consent_version": CONSENT_VERSION,
-                        "collected_categories": COLLECTED_CATEGORIES,
-                        "report": report,
-                    }
-                    response = requests.post(f"{API_URL}/reports", json=payload, timeout=20)
-                    if response.status_code == 410:
-                        raise RuntimeError("This PIN has expired. Ask your reviewer for a new PIN.")
-                    if response.status_code == 404:
-                        raise RuntimeError("PIN not found. Check the code and try again.")
-                    if response.status_code == 409:
-                        raise RuntimeError("This PIN was already used or is no longer valid.")
-                    response.raise_for_status()
-                    self.root.after(0, self.set_progress_percent, 100)
-                    self.root.after(0, self.set_stage, upload_stage, "complete")
+                finalize_stage = SCAN_STAGES[4]
+                self._dispatch_ui(self.set_stage, finalize_stage, "running")
+                self._dispatch_ui(self.status.set, "Correlating evidence…")
+                self._dispatch_ui(self._set_progress_milestone, 90.0)
+                self._dispatch_ui(self._mark_scan_done)
+                time.sleep(0.8)
+                self._dispatch_ui(self.set_stage, finalize_stage, "complete")
+
+                upload_stage = SCAN_STAGES[5]
+                self._dispatch_ui(self.set_stage, upload_stage, "running")
+                self._dispatch_ui(self.status.set, "Uploading report…")
+                payload = {
+                    "pin": self.pin.get().strip(),
+                    "consent_version": CONSENT_VERSION,
+                    "collected_categories": COLLECTED_CATEGORIES,
+                    "report": report,
+                }
+                response = requests.post(f"{API_URL}/reports", json=payload, timeout=20)
+                if response.status_code == 410:
+                    raise RuntimeError("This PIN has expired. Ask your reviewer for a new PIN.")
+                if response.status_code == 404:
+                    raise RuntimeError("PIN not found. Check the code and try again.")
+                if response.status_code == 409:
+                    raise RuntimeError("This PIN was already used or is no longer valid.")
+                response.raise_for_status()
+                self._dispatch_ui(self._mark_upload_done)
+                self._dispatch_ui(self.set_stage, upload_stage, "complete")
             finally:
                 set_scan_progress_callback(None)
 
-            self.root.after(0, self.complete)
+            deadline = time.monotonic() + 4.0
+            while time.monotonic() < deadline:
+                with self._progress_lock:
+                    done = bool(self._progress_state and self._progress_state.get("display", 0) >= 99.5)
+                if done:
+                    break
+                time.sleep(0.1)
+
+            self._dispatch_ui(self.complete)
         except Exception as exc:
             set_scan_progress_callback(None)
-            self.root.after(0, self.fail, str(exc))
+            self._dispatch_ui(self._stop_progress_animation)
+            self._dispatch_ui(self.fail, str(exc))
 
     def _exit_after_success(self) -> None:
         """End the UI and process; Windows often needs quit + destroy + hard exit."""
@@ -19811,6 +20134,10 @@ class DiagnosticApp:
         os._exit(0)
 
     def complete(self) -> None:
+        self._stop_progress_animation()
+        self.set_progress_percent(100.0)
+        self.eta_text.set("Complete")
+        self._set_header_status("done")
         self.status.set("Scan completed. Your results have been submitted.")
         self._show_completion_overlay()
 
