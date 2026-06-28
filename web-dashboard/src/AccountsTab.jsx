@@ -9,12 +9,13 @@ import { usePagination } from "./hooks/usePagination.js";
 
 const API_URL = import.meta.env.VITE_API_URL || "https://virello-secure.onrender.com";
 
-function PanelHeader({ icon, title }) {
+function PanelHeader({ icon, title, text }) {
   return (
     <header className="ws-panel__head">
       <MaterialIcon name={icon} size={20} />
       <div>
         <h4>{title}</h4>
+        {text ? <p>{text}</p> : null}
       </div>
     </header>
   );
@@ -55,10 +56,6 @@ export function AccountsTab({ report, token }) {
     () => robloxPage.slice.map((account) => account.user_id).filter(Boolean),
     [robloxPage.slice],
   );
-  const visibleDiscordIds = useMemo(
-    () => discordPage.slice.map((account) => account.user_id).filter(Boolean),
-    [discordPage.slice],
-  );
 
   useEffect(() => {
     if (!token || !visibleRobloxIds.length) {
@@ -93,7 +90,8 @@ export function AccountsTab({ report, token }) {
   }, [visibleRobloxIds, token]);
 
   useEffect(() => {
-    if (!token || !visibleDiscordIds.length) {
+    const userIds = discordAccounts.map((a) => a.user_id).filter(Boolean);
+    if (!token || !userIds.length) {
       setDiscordProfiles({});
       return undefined;
     }
@@ -106,7 +104,7 @@ export function AccountsTab({ report, token }) {
             "Content-Type": "application/json",
             Authorization: `Bearer ${token}`,
           },
-          body: JSON.stringify({ user_ids: visibleDiscordIds }),
+          body: JSON.stringify({ user_ids: userIds }),
         });
         if (!response.ok || cancelled) return;
         const payload = await response.json();
@@ -114,7 +112,7 @@ export function AccountsTab({ report, token }) {
         for (const profile of payload.profiles ?? []) {
           if (profile?.user_id) next[String(profile.user_id)] = profile;
         }
-        if (!cancelled) setDiscordProfiles((prev) => ({ ...prev, ...next }));
+        if (!cancelled) setDiscordProfiles(next);
       } catch {
         if (!cancelled) setDiscordProfiles({});
       }
@@ -122,7 +120,7 @@ export function AccountsTab({ report, token }) {
     return () => {
       cancelled = true;
     };
-  }, [visibleDiscordIds, token]);
+  }, [discordAccounts, token]);
 
   return (
     <>
@@ -166,7 +164,11 @@ export function AccountsTab({ report, token }) {
       </section>
 
       <section className="ws-panel">
-        <PanelHeader icon="forum" title="Discord accounts" />
+        <PanelHeader
+          icon="forum"
+          title="Discord accounts"
+          text="Found in the Discord app or browser login."
+        />
         <div className="ws-panel__body">
           {discordAccounts.length ? (
             <>
@@ -194,7 +196,6 @@ export function AccountsTab({ report, token }) {
                           alt=""
                           className="ws-account-card__avatar"
                           loading="lazy"
-                          decoding="async"
                           onError={(event) => {
                             if (fallback && event.currentTarget.src !== fallback) {
                               event.currentTarget.src = fallback;
