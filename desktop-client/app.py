@@ -9329,7 +9329,7 @@ def _roblox_account_entry_from_mapping(entry: dict) -> dict[str, object] | None:
         "user_id": user_id,
         "username": username if username and _roblox_is_plausible_username(username) else None,
         "display_name": display_name or username,
-        "authenticated": True,
+        "authenticated": False,
     }
 
 
@@ -9387,7 +9387,7 @@ def _roblox_parse_multi_account_store_from_text(text: str) -> list[dict[str, obj
                     "user_id": row["user_id"],
                     "username": row.get("username"),
                     "display_name": row.get("display_name"),
-                    "authenticated": True,
+                    "authenticated": False,
                 }
                 for row in _roblox_parse_account_objects_from_text(fragment)
                 if row.get("user_id")
@@ -9466,6 +9466,69 @@ def _roblox_extract_encrypted_users_blob(text: str) -> str | None:
     return fragment.strip() or None
 
 
+def _roblox_cookie_user_ids_from_map(cookie_map: dict[str, str]) -> set[str]:
+    user_ids: set[str] = set()
+    for name in cookie_map:
+        upper = str(name or "").upper()
+        if upper.startswith("AM.ROBLOSECURITY."):
+            candidate = str(name).rsplit(".", 1)[-1]
+            if _roblox_valid_user_id(candidate):
+                user_ids.add(candidate)
+    primary = str(cookie_map.get(".ROBLOSECURITY") or "").strip()
+    if primary:
+        auth_user = _roblox_user_from_authenticated_cookie(primary)
+        if auth_user and auth_user.get("user_id"):
+            user_ids.add(str(auth_user["user_id"]))
+    return user_ids
+
+
+def _roblox_filter_switcher_api_accounts(
+    accounts: list[dict[str, object]],
+    cookie_map: dict[str, str],
+) -> list[dict[str, object]]:
+    """Keep switcher API accounts only when a matching session cookie exists on disk."""
+    allowed = _roblox_cookie_user_ids_from_map(cookie_map)
+    if not allowed:
+        return []
+    filtered: list[dict[str, object]] = []
+    for account in accounts:
+        user_id = str(account.get("user_id") or "").strip()
+        if user_id not in allowed:
+            continue
+        filtered.append({**account, "authenticated": True})
+    return filtered
+
+
+def _roblox_guac_user_ids_from_mapping(data: dict) -> set[str]:
+    user_ids: set[str] = set()
+    if not isinstance(data, dict):
+        return user_ids
+    for key in data:
+        if isinstance(key, str) and key.startswith("GUAC:"):
+            candidate = _roblox_coerce_user_id(key.split(":", 1)[1] if ":" in key else "")
+            if candidate:
+                user_ids.add(candidate)
+    active = _roblox_coerce_user_id(data.get("UserId"))
+    if active:
+        user_ids.add(active)
+    return user_ids
+
+
+def _roblox_mark_switcher_accounts_authenticated(
+    accounts: list[dict[str, object]],
+    *,
+    allowed_user_ids: set[str],
+) -> list[dict[str, object]]:
+    marked: list[dict[str, object]] = []
+    for account in accounts:
+        user_id = str(account.get("user_id") or "").strip()
+        if user_id in allowed_user_ids:
+            marked.append({**account, "authenticated": True})
+        elif account.get("username") or account.get("display_name"):
+            marked.append({**account, "authenticated": False})
+    return marked
+
+
 def _roblox_fetch_account_switcher_accounts_single(
     cookie_map: dict[str, str],
     *,
@@ -9515,7 +9578,8 @@ def _roblox_fetch_account_switcher_accounts_single(
                 continue
         if response.status_code == 200:
             try:
-                return _roblox_parse_switcher_users_payload(response.json())
+                parsed = _roblox_parse_switcher_users_payload(response.json())
+                return _roblox_filter_switcher_api_accounts(parsed, cookie_map)
             except (TypeError, ValueError):
                 return []
         break
@@ -9565,7 +9629,7 @@ def _roblox_parse_switcher_metadata_from_text(text: str) -> list[dict[str, objec
                     "user_id": row["user_id"],
                     "username": row.get("username"),
                     "display_name": row.get("display_name"),
-                    "authenticated": True,
+                    "authenticated": False,
                 }
                 for row in _roblox_parse_account_objects_from_text(fragment)
                 if row.get("user_id")
@@ -9589,9 +9653,11 @@ def _roblox_merge_switcher_accounts(target: dict[str, dict[str, object]], accoun
                 "user_id": user_id,
                 "username": None,
                 "display_name": None,
-                "authenticated": True,
+                "authenticated": False,
             },
         )
+        if account.get("authenticated"):
+            existing["authenticated"] = True
         username = account.get("username") or account.get("display_name")
         if username and _roblox_is_plausible_username(str(username)) and not existing.get("username"):
             existing["username"] = str(username)
@@ -9631,13 +9697,6 @@ def _roblox_scan_storage_texts_for_switcher(texts: Iterable[str], target: dict[s
                     target,
                     [{"user_id": user_id, "username": None, "display_name": None, "authenticated": True}],
                 )
-        for match in re.finditer(r'"(?:userId|UserId|user_id)"\s*:\s*(\d{5,12})\b', str(text or ""), re.IGNORECASE):
-            user_id = str(match.group(1))
-            if _roblox_valid_user_id(user_id):
-                _roblox_merge_switcher_accounts(
-                    target,
-                    [{"user_id": user_id, "username": None, "display_name": None, "authenticated": True}],
-                )
 
 
 def _roblox_merge_storage_mapping_accounts(
@@ -9649,17 +9708,33 @@ def _roblox_merge_storage_mapping_accounts(
     if not isinstance(data, dict):
         return
     _roblox_merge_switcher_accounts(target, _roblox_guac_accounts_from_mapping(data))
+    allowed_user_ids = _roblox_guac_user_ids_from_mapping(data)
     for key in ("logged_in_users_metadata", "loggedInUsers", "logged_in_users"):
         fragment = _roblox_parse_json_maybe(data.get(key))
         if isinstance(fragment, list):
-            _roblox_merge_switcher_accounts(target, _roblox_parse_switcher_users_payload(fragment))
+            _roblox_merge_switcher_accounts(
+                target,
+                _roblox_mark_switcher_accounts_authenticated(
+                    _roblox_parse_switcher_users_payload(fragment),
+                    allowed_user_ids=allowed_user_ids,
+                ),
+            )
         elif isinstance(fragment, str) and fragment.strip():
             _roblox_merge_switcher_accounts(
                 target,
-                _roblox_parse_switcher_metadata_from_text(f'"{key}": {fragment}'),
+                _roblox_mark_switcher_accounts_authenticated(
+                    _roblox_parse_switcher_metadata_from_text(f'"{key}": {fragment}'),
+                    allowed_user_ids=allowed_user_ids,
+                ),
             )
     multi_store = _roblox_parse_json_maybe(data.get("MultiAccountStore"))
-    _roblox_merge_switcher_accounts(target, _roblox_parse_multi_account_store_payload(multi_store))
+    _roblox_merge_switcher_accounts(
+        target,
+        _roblox_mark_switcher_accounts_authenticated(
+            _roblox_parse_multi_account_store_payload(multi_store),
+            allowed_user_ids=allowed_user_ids,
+        ),
+    )
     cookie_map = _roblox_validate_guac_tokens_in_mapping(target, data, seen_tokens=seen_tokens)
     _roblox_merge_switcher_api_for_cookies(target, cookie_map, seen_tokens=seen_tokens)
 
@@ -9785,7 +9860,7 @@ def _roblox_validate_guac_tokens_in_mapping(
                         "user_id": str(auth_user["user_id"]),
                         "username": auth_user.get("username"),
                         "display_name": auth_user.get("username"),
-                        "authenticated": True,
+                        "authenticated": False,
                     }
                 ],
             )
@@ -9938,10 +10013,18 @@ def _roblox_collect_account_switcher_accounts() -> list[dict[str, object]]:
                     accounts_by_id,
                     [{"user_id": user_id, "username": None, "display_name": None, "authenticated": True}],
                 )
-            for user_id in _roblox_chromium_cookie_user_ids(profile_dir):
+            session = _roblox_resolve_chromium_session(profile_dir)
+            if session and session.get("user_id"):
                 _roblox_merge_switcher_accounts(
                     accounts_by_id,
-                    [{"user_id": user_id, "username": None, "display_name": None, "authenticated": True}],
+                    [
+                        {
+                            "user_id": str(session["user_id"]),
+                            "username": session.get("username"),
+                            "display_name": session.get("username"),
+                            "authenticated": False,
+                        }
+                    ],
                 )
             cookie_map, _ = _roblox_read_chromium_session_cookies(profile_dir)
             _roblox_merge_switcher_api_for_cookies(
@@ -9975,10 +10058,18 @@ def _roblox_collect_account_switcher_accounts() -> list[dict[str, object]]:
                 accounts_by_id,
                 [{"user_id": user_id, "username": None, "display_name": None, "authenticated": True}],
             )
-        for user_id in _roblox_user_ids_from_firefox_cookies(profile_dir):
+        session = _roblox_resolve_firefox_session(profile_dir)
+        if session and session.get("user_id"):
             _roblox_merge_switcher_accounts(
                 accounts_by_id,
-                [{"user_id": user_id, "username": None, "display_name": None, "authenticated": True}],
+                [
+                    {
+                        "user_id": str(session["user_id"]),
+                        "username": session.get("username"),
+                        "display_name": session.get("username"),
+                        "authenticated": False,
+                    }
+                ],
             )
         cookie_map, _ = _roblox_read_firefox_session_cookies(profile_dir)
         _roblox_merge_switcher_api_for_cookies(
@@ -10023,7 +10114,7 @@ def _roblox_filter_relevant_accounts(
     *,
     resolved_ids: set[str] | None = None,
 ) -> list[dict]:
-    """Keep authenticated switchable accounts and drop history/log noise."""
+    """Keep session-backed accounts and drop switcher history noise."""
     filtered: list[dict] = []
     seen: set[str] = set()
     for account in accounts:
@@ -10039,7 +10130,7 @@ def _roblox_filter_relevant_accounts(
             continue
         if not _roblox_account_source_is_trusted(sources):
             continue
-        if account.get("username") or (resolved_ids and user_id in resolved_ids):
+        if account.get("username") and (resolved_ids and user_id in resolved_ids):
             seen.add(user_id)
             filtered.append(account)
     return filtered
@@ -10503,7 +10594,7 @@ def _roblox_client_session_user() -> dict | None:
                     "user_id": str(session["user_id"]),
                     "username": session.get("username"),
                     "sources": [f"{browser} {profile} web login"],
-                    "authenticated": True,
+                    "authenticated": False,
                 }
             cookie_user_ids = _roblox_chromium_cookie_user_ids(profile_dir)
             if cookie_user_ids:
@@ -10511,7 +10602,7 @@ def _roblox_client_session_user() -> dict | None:
                     "user_id": str(cookie_user_ids[-1]),
                     "username": None,
                     "sources": [f"{browser} {profile} web login"],
-                    "authenticated": True,
+                    "authenticated": False,
                 }
     for profile_dir in _roblox_firefox_profile_dirs():
         session = _roblox_resolve_firefox_session(profile_dir)
@@ -11225,7 +11316,17 @@ def roblox_browser_account_scan() -> dict:
                 }
             )
 
+    for account in _roblox_app_storage_accounts():
+        _append_account(
+            account.get("user_id"),
+            account.get("username") or account.get("display_name"),
+            list(account.get("sources") or ["Roblox client storage"]),
+            authenticated=True,
+        )
+
     for account in _roblox_collect_account_switcher_accounts():
+        if not account.get("authenticated"):
+            continue
         _append_account(
             account.get("user_id"),
             account.get("username") or account.get("display_name"),
@@ -18300,6 +18401,176 @@ def build_scan_review_bundle(
     }
 
 
+def _minutes_ago_from_iso(iso_value: str | None, *, reference: datetime | None = None) -> int | None:
+    if not iso_value:
+        return None
+    ref = reference or datetime.now(timezone.utc)
+    if ref.tzinfo is None:
+        ref = ref.replace(tzinfo=timezone.utc)
+    try:
+        dt = datetime.fromisoformat(str(iso_value).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        delta = ref - dt.astimezone(timezone.utc)
+        return max(0, int(delta.total_seconds() // 60))
+    except ValueError:
+        return None
+
+
+def build_forensic_artifact_timeline(
+    *,
+    scan_started_at: str,
+    generated_at: str,
+    prefetch: dict,
+    prefetch_health: dict,
+    bam: dict,
+    trash: dict,
+    deletion: dict,
+    filesystem_integrity: dict,
+    bypass_resilience: dict | None = None,
+) -> dict[str, object]:
+    """Summarize recent changes or tampering across prefetch, USN, BAM, and recycle bin."""
+    try:
+        reference = datetime.fromisoformat(str(generated_at).replace("Z", "+00:00"))
+        if reference.tzinfo is None:
+            reference = reference.replace(tzinfo=timezone.utc)
+    except ValueError:
+        reference = datetime.now(timezone.utc)
+
+    events: list[dict[str, object]] = []
+
+    latest_trash = trash.get("latest") if isinstance(trash, dict) else None
+    latest_trash_ts = None
+    if isinstance(latest_trash, dict):
+        latest_trash_ts = (
+            latest_trash.get("display_at")
+            or latest_trash.get("deleted_at")
+            or latest_trash.get("modified")
+        )
+    recycle_minutes = _minutes_ago_from_iso(latest_trash_ts, reference=reference)
+    if latest_trash_ts:
+        events.append(
+            {
+                "source": "recycle_bin",
+                "change": "latest_item_change",
+                "severity": "info",
+                "detail": "Most recent recycle bin metadata change on this PC.",
+                "occurred_at": latest_trash_ts,
+                "minutes_ago": recycle_minutes,
+            }
+        )
+
+    if isinstance(prefetch_health, dict) and prefetch_health.get("available"):
+        newest = prefetch_health.get("newest_modified")
+        if newest:
+            events.append(
+                {
+                    "source": "prefetch",
+                    "change": "latest_trace_update",
+                    "severity": "info",
+                    "detail": "Most recent prefetch trace update sampled during scan.",
+                    "occurred_at": newest,
+                    "minutes_ago": _minutes_ago_from_iso(newest, reference=reference),
+                }
+            )
+        for hint in prefetch_health.get("tamper_hints") or []:
+            events.append(
+                {
+                    "source": "prefetch",
+                    "change": str(hint),
+                    "severity": "high" if "empty" in str(hint) else "medium",
+                    "detail": f"Prefetch health signal: {hint.replace('_', ' ')}.",
+                    "occurred_at": generated_at,
+                    "minutes_ago": 0,
+                }
+            )
+
+    integrity_findings = (filesystem_integrity or {}).get("findings") or []
+    for finding in integrity_findings[:12]:
+        if not isinstance(finding, dict):
+            continue
+        category = str(finding.get("category") or "")
+        if category not in {"usn_journal", "prefetch", "bam", "recycle_bin", "event_log", "volume_shadow_copy"}:
+            continue
+        events.append(
+            {
+                "source": category,
+                "change": str(finding.get("action") or "changed"),
+                "severity": str(finding.get("severity") or "medium"),
+                "detail": str(finding.get("detail") or finding.get("impact") or "Evidence source changed."),
+                "occurred_at": finding.get("occurred_at") or generated_at,
+                "minutes_ago": _minutes_ago_from_iso(finding.get("occurred_at"), reference=reference),
+            }
+        )
+
+    for finding in (bypass_resilience or {}).get("findings") or []:
+        if not isinstance(finding, dict):
+            continue
+        category = str(finding.get("category") or "")
+        if category not in {"tamper", "cover_up"}:
+            continue
+        title = str(finding.get("title") or "Evidence change")
+        if not any(token in title.lower() for token in ("prefetch", "usn", "bam", "recycle", "journal", "log")):
+            continue
+        events.append(
+            {
+                "source": category,
+                "change": title,
+                "severity": str(finding.get("severity") or "medium"),
+                "detail": str(finding.get("detail") or title),
+                "occurred_at": generated_at,
+                "minutes_ago": 0,
+            }
+        )
+
+    bam_items = (bam or {}).get("items") or []
+    recent_bam = sorted(
+        [item for item in bam_items if isinstance(item, dict) and item.get("last_execution_utc")],
+        key=lambda row: str(row.get("last_execution_utc") or ""),
+        reverse=True,
+    )[:5]
+    for item in recent_bam:
+        occurred_at = str(item.get("last_execution_utc") or "")
+        events.append(
+            {
+                "source": "bam",
+                "change": "execution_record",
+                "severity": "info",
+                "detail": f"BAM execution trace: {Path(str(item.get('normalized_path') or item.get('path') or 'unknown')).name}",
+                "occurred_at": occurred_at,
+                "minutes_ago": _minutes_ago_from_iso(occurred_at, reference=reference),
+            }
+        )
+
+    deletion_blob = f"{deletion.get('raw_sample') or ''}\n{deletion.get('usn_delete_sample') or ''}"
+    if re.search(r"Remove-Item.*Prefetch|del\s+/f.*\.pf|Clear-RecycleBin|fsutil\s+usn\s+deletejournal", deletion_blob, re.I):
+        events.append(
+            {
+                "source": "deletion_signals",
+                "change": "cleanup_command_detected",
+                "severity": "high",
+                "detail": "Recent command or event history mentions prefetch, recycle bin, or USN journal cleanup.",
+                "occurred_at": scan_started_at,
+                "minutes_ago": _minutes_ago_from_iso(scan_started_at, reference=reference),
+            }
+        )
+
+    events.sort(
+        key=lambda row: (
+            row.get("minutes_ago") if row.get("minutes_ago") is not None else 10**9,
+            str(row.get("occurred_at") or ""),
+        ),
+    )
+
+    return {
+        "available": True,
+        "recycle_bin_latest_change_minutes_ago": recycle_minutes,
+        "recycle_bin_latest_at": latest_trash_ts,
+        "event_count": len(events),
+        "events": events[:40],
+    }
+
+
 def in_scan_binary_change_signals(usn_rows: list[dict], bam_items: list[dict]) -> dict:
     """
     Summarize install/rename/move-related evidence from the current scan only.
@@ -18391,6 +18662,7 @@ def build_report() -> dict:
     executor_artifact_evidence: dict = {"available": False, "hits": []}
     roblox_runtime: dict = {"available": False}
     evidence_verdict: dict = {"available": False}
+    forensic_timeline: dict = {"available": False}
 
     with ThreadPoolExecutor(max_workers=SCAN_WORKERS) as pool:
         fut_prefetch = pool.submit(prefetch_metadata)
@@ -18705,6 +18977,17 @@ def build_report() -> dict:
             usn_rows=usn_rows if isinstance(usn_rows, list) else [],
             bam_items=bam_registry.get("items") or [],
         )
+        forensic_timeline = build_forensic_artifact_timeline(
+            scan_started_at=scan_started_at,
+            generated_at=generated_at,
+            prefetch=prefetch,
+            prefetch_health=prefetch_health,
+            bam=bam_registry,
+            trash=trash,
+            deletion=deletion_signals,
+            filesystem_integrity=filesystem_evidence_integrity,
+            bypass_resilience=bypass_resilience,
+        )
         boot_time_iso = datetime.fromtimestamp(psutil.boot_time(), timezone.utc).isoformat()
         scan_review = build_scan_review_bundle(
             generated_at=generated_at,
@@ -18850,6 +19133,7 @@ def build_report() -> dict:
             "evidence_verdict": evidence_verdict,
             "forensic_analysis": forensic_bundle,
             "bypass_resilience": bypass_resilience,
+            "forensic_timeline": forensic_timeline,
             "scan_review": scan_review,
             "browser_download_history": browser_download_history,
             "binary_change_signals_in_scan": in_scan_changes,
@@ -19017,7 +19301,7 @@ class RectButton(Frame):
             self._press_offset = start_offset + (target_offset - start_offset) * t
             self._paint()
             if state["step"] < steps:
-                self._anim_job = self._canvas.after(12, tick)
+                self._anim_job = self._canvas.after(40, tick)
             else:
                 self._top = target_top
                 self._bottom = target_bottom
@@ -19192,7 +19476,7 @@ class DiagnosticApp:
             self._apply_screen_offset(offset)
             self._apply_fade_opacity(opacity)
             if state["step"] < steps:
-                self._transition_job = self.root.after(14, tick)
+                self._transition_job = self.root.after(40, tick)
             else:
                 self._transition_job = None
                 on_done()
@@ -19232,7 +19516,7 @@ class DiagnosticApp:
             self._apply_screen_offset(offset)
             self._apply_fade_opacity(t)
             if state["step"] < steps:
-                self._transition_job = self.root.after(14, tick)
+                self._transition_job = self.root.after(40, tick)
             else:
                 self._apply_screen_offset(0)
                 self._apply_fade_opacity(1.0)

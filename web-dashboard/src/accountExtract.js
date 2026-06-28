@@ -163,11 +163,7 @@ export function collectRobloxAccountsFromReport(roblox) {
 
   const ranked = [...byId.values()]
     .map((account) => ({ ...account, _score: robloxAccountScore(account) }))
-    .filter(
-      (account) =>
-        account.authenticated
-        || (account.username && (account.sources ?? []).some((source) => isTrustedRobloxSource(source))),
-    )
+    .filter((account) => account.authenticated && account._score >= 180)
     .sort((left, right) => {
       if (right._score !== left._score) return right._score - left._score;
       const leftId = Number(left.user_id);

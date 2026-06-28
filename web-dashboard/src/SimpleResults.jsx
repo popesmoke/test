@@ -1,21 +1,18 @@
-﻿import React, { useEffect, useMemo, useState } from "react";
+﻿import React, { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { MaterialIcon } from "./components/MaterialIcon.jsx";
 import { SeverityBadge, severityRank } from "./components/SeverityBadge.jsx";
 import { defenderSummary } from "./defenderSignals.js";
 import { scanReviewFromReport } from "./reportDigest.js";
 import { formatDisplayLocation, groupFlaggedPrograms, privacyPath, publicFindingDetail, publicFindingTitle } from "./resultPrivacy.js";
-import {
-  collectRobloxAccountsFromReport,
-  collectDiscordAccountsFromReport,
-} from "./accountExtract.js";
 import { CollapseCard } from "./components/CollapseCard.jsx";
 import { BypassPanel } from "./components/BypassPanel.jsx";
+import { ForensicTimelinePanel } from "./components/ForensicTimelinePanel.jsx";
 import { Pagination } from "./components/Pagination.jsx";
 import { buildBypassReport } from "./bypassDetection.js";
 import { usePagination } from "./hooks/usePagination.js";
 import { genericReasonLabel, genericReasonDetail, plainDisplayText } from "./reviewerCopy.js";
 
-const API_URL = import.meta.env.VITE_API_URL || "https://virello-secure.onrender.com";
+const AccountsTab = lazy(() => import("./AccountsTab.jsx").then((module) => ({ default: module.AccountsTab })));
 
 const TABS = [
   { id: "summary", label: "Summary", icon: "description" },
@@ -474,209 +471,6 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
   );
 }
 
-function robloxHeadshotUrl(account) {
-  return account.headshot_url || null;
-}
-
-function discordAvatarUrl(account) {
-  const userId = String(account.user_id || "");
-  if (!userId) return null;
-  const hash = account.avatar_hash;
-  if (hash) return `https://cdn.discordapp.com/avatars/${userId}/${hash}.webp?size=128`;
-  try {
-    const avatarIndex = (BigInt(userId) >> 22n) % 6n;
-    return `https://cdn.discordapp.com/embed/avatars/${avatarIndex}.png`;
-  } catch {
-    return null;
-  }
-}
-
-function AccountsTab({ report, token }) {
-  const roblox = report.application_diagnostics?.roblox ?? {};
-  const discord = report.application_diagnostics?.discord ?? {};
-  const robloxAccounts = useMemo(() => collectRobloxAccountsFromReport(roblox), [roblox]);
-  const discordAccounts = useMemo(
-    () => collectDiscordAccountsFromReport(discord, report),
-    [discord, report],
-  );
-  const [robloxProfiles, setRobloxProfiles] = useState({});
-  const [discordProfiles, setDiscordProfiles] = useState({});
-
-  useEffect(() => {
-    const userIds = robloxAccounts.map((a) => a.user_id).filter(Boolean);
-    if (!token || !userIds.length) {
-      setRobloxProfiles({});
-      return undefined;
-    }
-    let cancelled = false;
-    (async () => {
-      try {
-        const response = await fetch(`${API_URL}/roblox/profiles`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({ user_ids: userIds }),
-        });
-        if (!response.ok || cancelled) return;
-        const payload = await response.json();
-        const next = {};
-        for (const profile of payload.profiles ?? []) {
-          if (profile?.user_id) next[String(profile.user_id)] = profile;
-        }
-        if (!cancelled) setRobloxProfiles(next);
-      } catch {
-        if (!cancelled) setRobloxProfiles({});
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [robloxAccounts, token]);
-
-  useEffect(() => {
-    const userIds = discordAccounts.map((a) => a.user_id).filter(Boolean);
-    if (!token || !userIds.length) {
-      setDiscordProfiles({});
-      return undefined;
-    }
-    let cancelled = false;
-    (async () => {
-      try {
-        const response = await fetch(`${API_URL}/discord/profiles`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({ user_ids: userIds }),
-        });
-        if (!response.ok || cancelled) return;
-        const payload = await response.json();
-        const next = {};
-        for (const profile of payload.profiles ?? []) {
-          if (profile?.user_id) next[String(profile.user_id)] = profile;
-        }
-        if (!cancelled) setDiscordProfiles(next);
-      } catch {
-        if (!cancelled) setDiscordProfiles({});
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [discordAccounts, token]);
-
-  const robloxPage = usePagination(robloxAccounts, 12);
-  const discordPage = usePagination(discordAccounts, 12);
-
-  return (
-    <>
-      <section className="ws-panel">
-        <PanelHeader
-          icon="sports_esports"
-          title="Roblox accounts"
-          text="Found in the game client, browser, or local storage."
-        />
-        <div className="ws-panel__body">
-          {robloxAccounts.length ? (
-            <>
-              <div className="ws-account-grid">
-                {robloxPage.slice.map((account) => {
-                const resolved = robloxProfiles[account.user_id] ?? {};
-                const displayName = account.username || resolved.username || `Account ${account.user_id}`;
-                const avatar = robloxHeadshotUrl({ ...account, headshot_url: resolved.headshot_url });
-                return (
-                  <a
-                    key={account.user_id}
-                    href={`https://www.roblox.com/users/${encodeURIComponent(account.user_id)}/profile`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="ws-account-card"
-                  >
-                    {avatar ? (
-                      <img src={avatar} alt="" className="ws-account-card__avatar" loading="lazy" />
-                    ) : (
-                      <span className="ws-account-card__avatar" aria-hidden />
-                    )}
-                    <span className="ws-account-card__body">
-                      <span className="ws-account-card__name">{displayName}</span>
-                      <span className="ws-account-card__link">View profile</span>
-                    </span>
-                  </a>
-                );
-              })}
-              </div>
-              <Pagination {...robloxPage} onPageChange={robloxPage.goTo} />
-            </>
-          ) : (
-            <p className="muted">No Roblox accounts found on this device.</p>
-          )}
-        </div>
-      </section>
-
-      <section className="ws-panel">
-        <PanelHeader
-          icon="forum"
-          title="Discord accounts"
-          text="Found in the Discord app or browser login."
-        />
-        <div className="ws-panel__body">
-          {discordAccounts.length ? (
-            <>
-              <div className="ws-account-grid">
-                {discordPage.slice.map((account) => {
-                const userId = String(account.user_id || "");
-                const resolved = discordProfiles[userId] ?? {};
-                const displayName =
-                  resolved.display_name
-                  || account.display_name
-                  || `User ${userId}`;
-                const avatar =
-                  resolved.avatar_url
-                  || account.avatar_url
-                  || discordAvatarUrl({
-                    ...account,
-                    avatar_hash: resolved.avatar_hash || account.avatar_hash,
-                  });
-                const fallback = discordAvatarUrl({ user_id: userId });
-                return (
-                  <div key={userId} className="ws-account-card ws-account-card--static">
-                    {avatar ? (
-                      <img
-                        src={avatar}
-                        alt=""
-                        className="ws-account-card__avatar"
-                        loading="lazy"
-                        onError={(event) => {
-                          if (fallback && event.currentTarget.src !== fallback) {
-                            event.currentTarget.src = fallback;
-                          }
-                        }}
-                      />
-                    ) : (
-                      <span className="ws-account-card__avatar" aria-hidden />
-                    )}
-                    <span className="ws-account-card__body">
-                      <span className="ws-account-card__name">{displayName}</span>
-                      <span className="ws-account-card__link">Discord account</span>
-                    </span>
-                  </div>
-                );
-              })}
-              </div>
-              <Pagination {...discordPage} onPageChange={discordPage.goTo} />
-            </>
-          ) : (
-            <p className="muted">No Discord accounts found on this device.</p>
-          )}
-        </div>
-      </section>
-    </>
-  );
-}
-
 export function SimpleResults({ report, summary, activity, activityEventSummary, formatGmtPlus3, token }) {
   const [tab, setTab] = useState("summary");
   const sec = report.security_integrity_signals ?? {};
@@ -724,7 +518,12 @@ export function SimpleResults({ report, summary, activity, activityEventSummary,
         {tab === "findings" ? (
           <FindingsTab problems={problems} review={review} formatGmtPlus3={formatGmtPlus3} />
         ) : null}
-        {tab === "bypass" ? <BypassPanel report={report} /> : null}
+        {tab === "bypass" ? (
+          <>
+            <BypassPanel report={report} />
+            <ForensicTimelinePanel report={report} formatGmtPlus3={formatGmtPlus3} />
+          </>
+        ) : null}
         {tab === "activity" ? (
           <ActivityTab
             review={review}
@@ -733,7 +532,11 @@ export function SimpleResults({ report, summary, activity, activityEventSummary,
             formatGmtPlus3={formatGmtPlus3}
           />
         ) : null}
-        {tab === "accounts" ? <AccountsTab report={report} token={token} /> : null}
+        {tab === "accounts" ? (
+          <Suspense fallback={<p className="muted">Loading accounts…</p>}>
+            <AccountsTab report={report} token={token} />
+          </Suspense>
+        ) : null}
       </div>
     </div>
   );
