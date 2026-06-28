@@ -91,6 +91,7 @@ function isTrustedRobloxSource(source) {
 
 function robloxAccountScore(account) {
   let score = 0;
+  if (account.on_switcher_list) score += 300;
   if (account.authenticated) score += 200;
   if (account.username) score += 20;
   for (const source of account.sources ?? []) {
@@ -115,10 +116,12 @@ function mergeRobloxAccount(map, account, sourceLabel) {
     headshot_url: null,
     sources: [],
     authenticated: false,
+    on_switcher_list: false,
   };
   if (account.username) existing.username = account.username;
   if (account.headshot_url) existing.headshot_url = account.headshot_url;
   if (account.authenticated) existing.authenticated = true;
+  if (account.on_switcher_list) existing.on_switcher_list = true;
   const sources = account.sources?.length ? account.sources : sourceLabel ? [sourceLabel] : [];
   if (sources.length) {
     existing.sources = [...new Set([...existing.sources, ...sources])];
@@ -163,7 +166,15 @@ export function collectRobloxAccountsFromReport(roblox) {
 
   const ranked = [...byId.values()]
     .map((account) => ({ ...account, _score: robloxAccountScore(account) }))
-    .filter((account) => account.authenticated && account._score >= 180)
+    .filter(
+      (account) =>
+        account.on_switcher_list
+        || (account.authenticated && account._score >= 180)
+        || (
+          account.username
+          && (account.sources ?? []).some((source) => isTrustedRobloxSource(source))
+        ),
+    )
     .sort((left, right) => {
       if (right._score !== left._score) return right._score - left._score;
       const leftId = Number(left.user_id);
