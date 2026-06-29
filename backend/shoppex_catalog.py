@@ -106,6 +106,19 @@ def fetch_order(order_id: str) -> dict | None:
     return payload if isinstance(payload, dict) else None
 
 
+def fetch_subscription(subscription_id: str) -> dict | None:
+    normalized = str(subscription_id or "").strip()
+    if not normalized:
+        return None
+    try:
+        payload = _api_request("GET", f"/dev/v1/subscriptions/{normalized}")
+    except RuntimeError:
+        return None
+    if isinstance(payload.get("data"), dict):
+        return payload["data"]
+    return payload if isinstance(payload, dict) else None
+
+
 def _product_description(plan: dict) -> str:
     features = "\n".join(f"• {feature}" for feature in plan.get("features", []))
     return (

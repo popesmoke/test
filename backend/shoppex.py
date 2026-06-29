@@ -380,17 +380,66 @@ def plan_by_id_safe(plan_id: str) -> bool:
     return pricing.plan_by_id(plan_id) is not None
 
 
+def _event_type(payload: dict) -> str:
+    return str(payload.get("event") or payload.get("type") or "").strip().lower()
+
+
+def _is_subscription_event(payload: dict) -> bool:
+    return _event_type(payload).startswith("subscription:")
+
+
+def extract_subscription_id(payload: dict) -> str | None:
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        data = payload
+    subscription = payload.get("subscription")
+    if isinstance(subscription, dict):
+        for key in ("id", "subscription_id", "subscriptionId", "uniqid"):
+            value = subscription.get(key)
+            if value:
+                return str(value)
+    for key in ("subscription_id", "subscriptionId"):
+        value = data.get(key) or payload.get(key)
+        if value:
+            return str(value)
+    if _is_subscription_event(payload):
+        value = data.get("id") or data.get("uniqid")
+        if value:
+            return str(value)
+    return None
+
+
 def extract_invoice_id(payload: dict) -> str | None:
     data = payload.get("data")
     if not isinstance(data, dict):
         data = payload
+
+    subscription = payload.get("subscription")
+    if isinstance(subscription, dict):
+        invoices = subscription.get("invoices") or []
+        for invoice in reversed(invoices):
+            if not isinstance(invoice, dict):
+                continue
+            for key in ("uniqid", "invoice_id", "invoiceId", "id"):
+                value = invoice.get(key)
+                if value:
+                    return str(value)
+
+    invoice = payload.get("invoice")
+    if isinstance(invoice, dict):
+        for key in ("uniqid", "id", "invoice_id", "invoiceId"):
+            value = invoice.get(key)
+            if value:
+                return str(value)
+
     for container in (payload, data):
         for key in (
             "invoice_id",
             "invoiceId",
             "invoice_db_id",
             "invoiceDbId",
-            "id",
+            "invoice_uniqid",
+            "invoiceUniqid",
             "uniqid",
             "order_id",
             "orderId",
@@ -399,17 +448,105 @@ def extract_invoice_id(payload: dict) -> str | None:
             if value:
                 return str(value)
 
-    invoice = payload.get("invoice")
-    if isinstance(invoice, dict):
-        for key in ("uniqid", "id", "invoice_id", "invoiceId"):
-            value = invoice.get(key)
+    if not _is_subscription_event(payload):
+        for container in (payload, data):
+            value = container.get("id")
             if value:
                 return str(value)
     return None
 
 
+def _merge_shoppex_source(payload: dict, source: dict) -> dict:
+    merged = dict(payload)
+    data = dict(merged.get("data") or {})
+    if source.get("custom_fields"):
+        data["custom_fields"] = source.get("custom_fields")
+    items = source.get("items") or []
+    if items:
+        data["items"] = items
+        first = items[0] if isinstance(items[0], dict) else {}
+        if first.get("product_id") and not data.get("product_id"):
+            data["product_id"] = first.get("product_id")
+        if first.get("product_title") and not data.get("product_title"):
+            data["product_title"] = first.get("product_title")
+        if first.get("custom_fields"):
+            existing = data.get("custom_fields")
+            if isinstance(existing, dict) and isinstance(first.get("custom_fields"), dict):
+                data["custom_fields"] = {**existing, **first.get("custom_fields")}
+            elif not existing:
+                data["custom_fields"] = first.get("custom_fields")
+    if source.get("product_id") and not data.get("product_id"):
+        data["product_id"] = source.get("product_id")
+    if source.get("product_title") and not data.get("product_title"):
+        data["product_title"] = source.get("product_title")
+    if source.get("total") is not None and data.get("total") is None:
+        data["total"] = source.get("total")
+    if source.get("total_display") is not None and data.get("total_display") is None:
+        data["total_display"] = source.get("total_display")
+    merged["data"] = data
+    return merged
+
+
+def enrich_payload_from_subscription_api(payload: dict) -> dict:
+    if extract_discord_id(payload) and extract_plan_id(payload):
+        return payload
+
+    subscription_id = extract_subscription_id(payload)
+    if not subscription_id:
+        return payload
+
+    try:
+        import shoppex_catalog
+
+        subscription = shoppex_catalog.fetch_subscription(subscription_id)
+        if not subscription:
+            return payload
+
+        merged = dict(payload)
+        data = dict(merged.get("data") or {})
+        if subscription.get("custom_fields"):
+            data["custom_fields"] = subscription.get("custom_fields")
+
+        product = subscription.get("product")
+        if isinstance(product, dict):
+            if product.get("id") and not data.get("product_id"):
+                data["product_id"] = product.get("id")
+            if product.get("title") and not data.get("product_title"):
+                data["product_title"] = product.get("title")
+            if product.get("uniqid") and not data.get("product_uniqid"):
+                data["product_uniqid"] = product.get("uniqid")
+
+        invoices = subscription.get("invoices") or []
+        paid_invoice = None
+        for invoice in reversed(invoices):
+            if not isinstance(invoice, dict):
+                continue
+            status = str(invoice.get("status") or invoice.get("payment_status") or "").upper()
+            if status in {"COMPLETED", "PAID", "ACTIVE", "FULFILLED"}:
+                paid_invoice = invoice
+                break
+        if paid_invoice is None and invoices:
+            paid_invoice = invoices[-1] if isinstance(invoices[-1], dict) else None
+
+        if isinstance(paid_invoice, dict):
+            merged = _merge_shoppex_source({**merged, "data": data}, paid_invoice)
+            data = merged["data"]
+            invoice_uniqid = paid_invoice.get("uniqid") or paid_invoice.get("id")
+            if invoice_uniqid:
+                data["invoice_uniqid"] = str(invoice_uniqid)
+            merged["invoice"] = paid_invoice
+        else:
+            merged["data"] = data
+
+        merged["subscription"] = subscription
+        return merged
+    except Exception as error:
+        print(f"Shoppex subscription enrichment failed: {error}", flush=True)
+        return payload
+
+
 def enrich_payload_from_invoice_api(payload: dict) -> dict:
-    if extract_discord_id(payload):
+    if extract_discord_id(payload) and extract_plan_id(payload):
         return payload
 
     invoice_id = extract_invoice_id(payload)
@@ -425,29 +562,21 @@ def enrich_payload_from_invoice_api(payload: dict) -> dict:
         if not source:
             return payload
 
-        merged = dict(payload)
-        data = dict(merged.get("data") or {})
-        if source.get("custom_fields"):
-            data["custom_fields"] = source.get("custom_fields")
-        items = source.get("items") or []
-        if items:
-            data["items"] = items
-            first = items[0] if isinstance(items[0], dict) else {}
-            if first.get("product_id") and not data.get("product_id"):
-                data["product_id"] = first.get("product_id")
-            if first.get("product_title") and not data.get("product_title"):
-                data["product_title"] = first.get("product_title")
-            if first.get("custom_fields"):
-                data.setdefault("custom_fields", first.get("custom_fields"))
-        if source.get("product_id") and not data.get("product_id"):
-            data["product_id"] = source.get("product_id")
-        if source.get("product_title") and not data.get("product_title"):
-            data["product_title"] = source.get("product_title")
-        merged["data"] = data
+        merged = _merge_shoppex_source(payload, source)
         merged["invoice"] = source
         return merged
-    except Exception:
+    except Exception as error:
+        print(f"Shoppex invoice enrichment failed: {error}", flush=True)
         return payload
+
+
+def enrich_shoppex_payload(payload: dict) -> dict:
+    enriched = payload
+    if _is_subscription_event(payload) or extract_subscription_id(payload):
+        enriched = enrich_payload_from_subscription_api(enriched)
+    if not extract_discord_id(enriched) or not extract_plan_id(enriched):
+        enriched = enrich_payload_from_invoice_api(enriched)
+    return enriched
 
 
 def extract_amount_cents(payload: dict) -> int:

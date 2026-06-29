@@ -10,6 +10,13 @@ import urllib.request
 DISCORD_API_BASE = "https://discord.com/api/v10"
 
 
+def role_grant_configured() -> bool:
+    guild_id = os.getenv("DISCORD_GUILD_ID", "1510614253508493373").strip()
+    role_id = os.getenv("DISCORD_ACCESS_ROLE_ID", "1510614274299531334").strip()
+    bot_token = os.getenv("DISCORD_BOT_TOKEN") or os.getenv("DISCORD_TOKEN", "")
+    return bool(guild_id and role_id and bot_token)
+
+
 def grant_access_role(discord_id: str) -> dict:
     guild_id = os.getenv("DISCORD_GUILD_ID", "1510614253508493373").strip()
     role_id = os.getenv("DISCORD_ACCESS_ROLE_ID", "1510614274299531334").strip()

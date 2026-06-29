@@ -25,6 +25,7 @@ import discord_sync
 import pricing
 import rate_limit
 import shoppex
+import shoppex_catalog
 import site_store
 import stripe_checkout
 
@@ -1214,7 +1215,9 @@ class Handler(BaseHTTPRequestHandler):
                     "storage": sync_status,
                     "shoppex": {
                         "webhook_configured": bool(shoppex.SHOPPEX_WEBHOOK_SECRET),
+                        "api_configured": shoppex_catalog.shoppex_api_configured(),
                         "bot_fulfillment_configured": bot_fulfillment.bot_fulfillment_configured(),
+                        "discord_role_grant_configured": discord_roles.role_grant_configured(),
                     },
                 }
                 self.send_json(HTTPStatus.OK if payload["status"] == "ok" else HTTPStatus.SERVICE_UNAVAILABLE, payload)
@@ -1223,7 +1226,9 @@ class Handler(BaseHTTPRequestHandler):
             status_code, payload = backup.get_health_status()
             payload["shoppex"] = {
                 "webhook_configured": bool(shoppex.SHOPPEX_WEBHOOK_SECRET),
+                "api_configured": shoppex_catalog.shoppex_api_configured(),
                 "bot_fulfillment_configured": bot_fulfillment.bot_fulfillment_configured(),
+                "discord_role_grant_configured": discord_roles.role_grant_configured(),
             }
             self.send_json(HTTPStatus(status_code), payload)
             return
@@ -1556,7 +1561,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(HTTPStatus.OK, {"received": True})
 
     def fulfill_shoppex_purchase(self, payload: dict) -> dict:
-        enriched = shoppex.enrich_payload_from_invoice_api(payload)
+        enriched = shoppex.enrich_shoppex_payload(payload)
         discord_id = shoppex.extract_discord_id(enriched)
         plan_id = shoppex.resolve_plan_id(enriched)
         invoice_id = shoppex.extract_invoice_id(enriched)
@@ -1598,10 +1603,10 @@ class Handler(BaseHTTPRequestHandler):
                 )
             db_changed()
 
-        if plan_id:
+        if discord_id and (plan_id or invoice_id):
             result["bot"] = bot_fulfillment.notify_bot_shoppex_fulfillment(
                 discord_id,
-                plan_id,
+                plan_id or "",
                 invoice_id=invoice_id,
             )
 
@@ -1636,6 +1641,18 @@ class Handler(BaseHTTPRequestHandler):
             delivery_id=delivery_id,
             timestamp_header=timestamp,
         ):
+            print(
+                "Shoppex webhook rejected: invalid signature",
+                json.dumps(
+                    {
+                        "has_delivery_id": bool(delivery_id),
+                        "has_timestamp": bool(timestamp),
+                        "has_signature": bool(signature),
+                        "body_bytes": len(raw),
+                    },
+                ),
+                flush=True,
+            )
             self.send_json(HTTPStatus.UNAUTHORIZED, {"detail": "Invalid Shoppex signature"})
             return
         try:
@@ -1651,8 +1668,9 @@ class Handler(BaseHTTPRequestHandler):
         if result["action"] == "fulfill":
             self.fulfill_shoppex_purchase(payload)
         elif result["action"] == "revoke":
-            invoice_id = shoppex.extract_invoice_id(payload)
-            discord_id = shoppex.extract_discord_id(shoppex.enrich_payload_from_invoice_api(payload))
+            enriched = shoppex.enrich_shoppex_payload(payload)
+            invoice_id = shoppex.extract_invoice_id(enriched)
+            discord_id = shoppex.extract_discord_id(enriched)
             if invoice_id:
                 with connect() as conn:
                     site_store.revoke_shoppex_access(conn, db_execute, invoice_id)
