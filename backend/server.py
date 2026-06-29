@@ -1573,12 +1573,21 @@ class Handler(BaseHTTPRequestHandler):
             "bot": None,
         }
 
-        # Shoppex webhook → notify bot only. Discord roles must be added by the bot, not the backend.
+        # Shoppex webhook → bot adds the Access role. Pass enriched checkout data from the webhook.
+        event_type = str(payload.get("event") or payload.get("type") or "").strip().lower()
+        trust_paid = event_type in {
+            "order:paid",
+            "order:paid:product",
+            "subscription:created",
+            "subscription:renewed",
+            "product:dynamic",
+        }
         if invoice_id or discord_id:
             result["bot"] = bot_fulfillment.notify_bot_shoppex_fulfillment(
-                "",
+                discord_id or "",
                 plan_id or "",
                 invoice_id=invoice_id,
+                trust_paid=trust_paid,
             )
             if result["bot"].get("ok"):
                 bot_payload = result["bot"].get("payload") or {}
@@ -1614,6 +1623,7 @@ class Handler(BaseHTTPRequestHandler):
             db_changed()
 
         bot_payload = (result.get("bot") or {}).get("payload") or {}
+        bot_detail = (result.get("bot") or {}).get("detail") or {}
         print(
             "Shoppex fulfillment:",
             json.dumps(
@@ -1623,6 +1633,7 @@ class Handler(BaseHTTPRequestHandler):
                     "invoice_id": invoice_id,
                     "bot_ok": bool(result["bot"] and result["bot"].get("ok")),
                     "bot_reason": (result["bot"] or {}).get("reason"),
+                    "bot_detail": bot_detail.get("reason") or bot_detail,
                     "access_role_id": bot_payload.get("accessRoleId"),
                     "role_granted_by": "bot" if result.get("bot", {}).get("ok") else None,
                 },

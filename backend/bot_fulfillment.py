@@ -86,6 +86,7 @@ def notify_bot_shoppex_fulfillment(
     plan_id: str,
     *,
     invoice_id: str | None = None,
+    trust_paid: bool = False,
 ) -> dict:
     url = _fulfillment_url()
     secret = _fulfillment_secret()
@@ -104,6 +105,7 @@ def notify_bot_shoppex_fulfillment(
             "discord_id": normalized_id,
             "plan_id": normalized_plan,
             "invoice_id": invoice_id,
+            "trust_paid": trust_paid,
         },
     ).encode("utf-8")
 
