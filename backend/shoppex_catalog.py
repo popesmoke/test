@@ -80,6 +80,19 @@ def list_products() -> list[dict]:
     return list(payload.get("data") or payload.get("products") or [])
 
 
+def fetch_invoice(uniqid: str) -> dict | None:
+    normalized = str(uniqid or "").strip()
+    if not normalized:
+        return None
+    try:
+        payload = _api_request("GET", f"/dev/v1/invoices/{normalized}")
+    except RuntimeError:
+        return None
+    if isinstance(payload.get("data"), dict):
+        return payload["data"]
+    return payload if isinstance(payload, dict) else None
+
+
 def _product_description(plan: dict) -> str:
     features = "\n".join(f"• {feature}" for feature in plan.get("features", []))
     return (
@@ -114,6 +127,7 @@ def build_product_payload(plan: dict) -> dict:
         "custom_fields": [
             {
                 "name": "Discord user ID",
+                "key": "discord_user_id",
                 "type": "text",
                 "required": True,
                 "placeholder": "123456789012345678",

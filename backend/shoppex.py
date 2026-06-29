@@ -79,10 +79,47 @@ def verify_event_webhook(raw_body: bytes, signature_header: str) -> bool:
     )
 
 
-def verify_dynamic_webhook(raw_body: bytes, signature_header: str) -> bool:
+def verify_dynamic_webhook(
+    raw_body: bytes,
+    signature_header: str,
+    *,
+    delivery_id: str = "",
+    timestamp_header: str = "",
+) -> bool:
     secrets = _dynamic_webhook_secrets()
     if not secrets:
         return False
+
+    delivery_id = str(delivery_id or "").strip()
+    timestamp_header = str(timestamp_header or "").strip()
+    if delivery_id and timestamp_header:
+        try:
+            timestamp_int = int(timestamp_header)
+        except ValueError:
+            return False
+        if abs(int(time.time()) - timestamp_int) > SHOPPEX_SIGNATURE_TOLERANCE_SECONDS:
+            return False
+
+        header = str(signature_header or "").strip()
+        provided_hash = None
+        for part in header.split(","):
+            key, _, value = part.partition("=")
+            if key.strip().lower() == "h":
+                provided_hash = value.strip()
+                break
+        if not provided_hash:
+            match = re.search(r"h=([a-fA-F0-9]+)", header)
+            provided_hash = match.group(1) if match else None
+        if not provided_hash:
+            return False
+
+        signed_payload = f"{delivery_id}.{timestamp_header}.{raw_body.decode('utf-8')}".encode("utf-8")
+        for secret in secrets:
+            expected = hmac.new(secret.encode("utf-8"), signed_payload, hashlib.sha256).hexdigest()
+            if hmac.compare_digest(expected, provided_hash):
+                return True
+        return False
+
     return any(
         verify_signature_v2(
             raw_body=raw_body,
@@ -91,6 +128,35 @@ def verify_dynamic_webhook(raw_body: bytes, signature_header: str) -> bool:
         )
         for secret in secrets
     )
+
+
+def _collect_custom_field_candidates(custom_fields) -> list:
+    candidates: list = []
+    if isinstance(custom_fields, dict):
+        for key, value in custom_fields.items():
+            key_text = str(key).strip().lower()
+            if "discord" in key_text:
+                candidates.append(value)
+        for key in (
+            "discord_id",
+            "discordId",
+            "discord_user_id",
+            "discordUserId",
+            "Discord user ID",
+            "Discord ID",
+            "discord user id",
+            "discord id",
+        ):
+            if custom_fields.get(key):
+                candidates.append(custom_fields.get(key))
+    elif isinstance(custom_fields, list):
+        for field in custom_fields:
+            if not isinstance(field, dict):
+                continue
+            name = str(field.get("name") or field.get("key") or "").strip().lower()
+            if "discord" in name:
+                candidates.append(field.get("value"))
+    return candidates
 
 
 def _walk_strings(value) -> list[str]:
@@ -121,6 +187,24 @@ def extract_discord_id(payload: dict) -> str | None:
         payload.get("customer_discord_id"),
         payload.get("customerDiscordId"),
     ]
+
+    for key in ("custom_fields", "customFields"):
+        candidates.extend(_collect_custom_field_candidates(payload.get(key)))
+
+    line_item = payload.get("line_item") or payload.get("lineItem")
+    if isinstance(line_item, dict):
+        for key in ("custom_fields", "customFields"):
+            candidates.extend(_collect_custom_field_candidates(line_item.get(key)))
+
+    invoice = payload.get("invoice")
+    if isinstance(invoice, dict):
+        for key in ("custom_fields", "customFields"):
+            candidates.extend(_collect_custom_field_candidates(invoice.get(key)))
+        for item in invoice.get("items") or []:
+            if isinstance(item, dict):
+                for key in ("custom_fields", "customFields"):
+                    candidates.extend(_collect_custom_field_candidates(item.get(key)))
+
     data = payload.get("data")
     if isinstance(data, dict):
         candidates.extend(
@@ -150,18 +234,18 @@ def extract_discord_id(payload: dict) -> str | None:
                     customer.get("discordId"),
                 ],
             )
-        custom_fields = data.get("custom_fields") or data.get("customFields")
-        if isinstance(custom_fields, dict):
-            for key in ("discord_id", "discordId", "Discord ID", "discord id", "Discord user ID", "discord user id"):
-                if custom_fields.get(key):
-                    candidates.append(custom_fields.get(key))
-        elif isinstance(custom_fields, list):
-            for field in custom_fields:
-                if not isinstance(field, dict):
-                    continue
-                name = str(field.get("name") or "").strip().lower()
-                if "discord" in name and "id" in name:
-                    candidates.append(field.get("value"))
+        for key in ("custom_fields", "customFields"):
+            candidates.extend(_collect_custom_field_candidates(data.get(key)))
+
+        nested_line_item = data.get("line_item") or data.get("lineItem")
+        if isinstance(nested_line_item, dict):
+            for key in ("custom_fields", "customFields"):
+                candidates.extend(_collect_custom_field_candidates(nested_line_item.get(key)))
+
+        for item in data.get("items") or []:
+            if isinstance(item, dict):
+                for key in ("custom_fields", "customFields"):
+                    candidates.extend(_collect_custom_field_candidates(item.get(key)))
 
     for candidate in candidates:
         normalized = _normalize_discord_id(candidate)
@@ -190,29 +274,30 @@ def extract_plan_id(payload: dict) -> str | None:
         data = payload
 
     for key in ("plan_id", "planId"):
-        plan_id = str(data.get(key) or "").strip()
+        plan_id = str(data.get(key) or payload.get(key) or "").strip()
         if plan_by_id_safe(plan_id):
             return plan_id
 
     product_candidates: list[str] = []
     for key in ("product_id", "productId", "product_uniqid", "productUniqid", "slug"):
-        value = data.get(key)
+        value = data.get(key) or payload.get(key)
         if value:
             product_candidates.append(str(value))
 
-    line_item = data.get("line_item") or data.get("lineItem")
-    if isinstance(line_item, dict):
-        for key in ("product_id", "productId", "product_slug", "productSlug", "product_title", "productTitle"):
-            value = line_item.get(key)
-            if value:
-                product_candidates.append(str(value))
+    for container in (data, payload):
+        line_item = container.get("line_item") or container.get("lineItem")
+        if isinstance(line_item, dict):
+            for key in ("product_id", "productId", "product_slug", "productSlug", "product_title", "productTitle"):
+                value = line_item.get(key)
+                if value:
+                    product_candidates.append(str(value))
 
-    product = data.get("product")
-    if isinstance(product, dict):
-        for key in ("id", "uniqid", "slug", "title"):
-            value = product.get(key)
-            if value:
-                product_candidates.append(str(value))
+        product = container.get("product")
+        if isinstance(product, dict):
+            for key in ("id", "uniqid", "slug", "title"):
+                value = product.get(key)
+                if value:
+                    product_candidates.append(str(value))
 
     for candidate in product_candidates:
         plan = pricing.plan_by_shoppex_product_id(candidate)
@@ -239,11 +324,60 @@ def extract_invoice_id(payload: dict) -> str | None:
     data = payload.get("data")
     if not isinstance(data, dict):
         data = payload
-    for key in ("invoice_id", "invoiceId", "id", "uniqid", "order_id", "orderId"):
-        value = data.get(key)
-        if value:
-            return str(value)
+    for container in (payload, data):
+        for key in (
+            "invoice_id",
+            "invoiceId",
+            "invoice_db_id",
+            "invoiceDbId",
+            "id",
+            "uniqid",
+            "order_id",
+            "orderId",
+        ):
+            value = container.get(key)
+            if value:
+                return str(value)
+
+    invoice = payload.get("invoice")
+    if isinstance(invoice, dict):
+        for key in ("uniqid", "id", "invoice_id", "invoiceId"):
+            value = invoice.get(key)
+            if value:
+                return str(value)
     return None
+
+
+def enrich_payload_from_invoice_api(payload: dict) -> dict:
+    if extract_discord_id(payload):
+        return payload
+
+    invoice_id = extract_invoice_id(payload)
+    if not invoice_id:
+        return payload
+
+    try:
+        import shoppex_catalog
+
+        invoice = shoppex_catalog.fetch_invoice(invoice_id)
+        if not invoice:
+            return payload
+
+        merged = dict(payload)
+        data = dict(merged.get("data") or {})
+        if invoice.get("custom_fields"):
+            data["custom_fields"] = invoice.get("custom_fields")
+        if invoice.get("items"):
+            data["items"] = invoice.get("items")
+        if invoice.get("product_id") and not data.get("product_id"):
+            data["product_id"] = invoice.get("product_id")
+        if invoice.get("product_title") and not data.get("product_title"):
+            data["product_title"] = invoice.get("product_title")
+        merged["data"] = data
+        merged["invoice"] = invoice
+        return merged
+    except Exception:
+        return payload
 
 
 def extract_amount_cents(payload: dict) -> int:

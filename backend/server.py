@@ -19,6 +19,7 @@ from urllib import request as urlrequest
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 import backup
+import bot_fulfillment
 import discord_roles
 import discord_sync
 import pricing
@@ -1519,6 +1520,41 @@ class Handler(BaseHTTPRequestHandler):
                 db_changed()
         self.send_json(HTTPStatus.OK, {"received": True})
 
+    def fulfill_shoppex_purchase(self, payload: dict) -> dict:
+        enriched = shoppex.enrich_payload_from_invoice_api(payload)
+        discord_id = shoppex.extract_discord_id(enriched)
+        plan_id = shoppex.extract_plan_id(enriched)
+        invoice_id = shoppex.extract_invoice_id(enriched)
+        result = {
+            "discord_id": discord_id,
+            "plan_id": plan_id,
+            "invoice_id": invoice_id,
+            "role": None,
+            "bot": None,
+        }
+
+        if not (discord_id and plan_id and invoice_id):
+            return result
+
+        with connect() as conn:
+            site_store.grant_shoppex_access(
+                conn,
+                db_execute,
+                shoppex_invoice_id=invoice_id,
+                discord_id=discord_id,
+                plan_id=plan_id,
+                amount_cents=shoppex.extract_amount_cents(enriched),
+            )
+        db_changed()
+
+        result["role"] = discord_roles.grant_access_role(discord_id)
+        result["bot"] = bot_fulfillment.notify_bot_shoppex_fulfillment(
+            discord_id,
+            plan_id,
+            invoice_id=invoice_id,
+        )
+        return result
+
     def handle_shoppex_event_webhook(self) -> None:
         raw = self.read_raw_body()
         if not shoppex.SHOPPEX_WEBHOOK_SECRET:
@@ -1536,21 +1572,7 @@ class Handler(BaseHTTPRequestHandler):
 
         result = shoppex.handle_event(payload)
         if result["action"] == "fulfill":
-            discord_id = shoppex.extract_discord_id(payload)
-            plan_id = shoppex.extract_plan_id(payload)
-            invoice_id = shoppex.extract_invoice_id(payload)
-            if discord_id and plan_id and invoice_id:
-                with connect() as conn:
-                    site_store.grant_shoppex_access(
-                        conn,
-                        db_execute,
-                        shoppex_invoice_id=invoice_id,
-                        discord_id=discord_id,
-                        plan_id=plan_id,
-                        amount_cents=shoppex.extract_amount_cents(payload),
-                    )
-                discord_roles.grant_access_role(discord_id)
-                db_changed()
+            self.fulfill_shoppex_purchase(payload)
         elif result["action"] == "revoke":
             invoice_id = shoppex.extract_invoice_id(payload)
             if invoice_id:
@@ -1565,7 +1587,14 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"detail": "Shoppex dynamic webhook not configured"})
             return
         signature = self.headers.get("X-Shoppex-Signature-V2") or self.headers.get("X-Shoppex-Signature", "")
-        if not shoppex.verify_dynamic_webhook(raw, signature):
+        delivery_id = self.headers.get("X-Shoppex-Delivery-Id") or self.headers.get("X-Shoppex-Delivery", "")
+        timestamp = self.headers.get("X-Shoppex-Timestamp", "")
+        if not shoppex.verify_dynamic_webhook(
+            raw,
+            signature,
+            delivery_id=delivery_id,
+            timestamp_header=timestamp,
+        ):
             self.send_json(HTTPStatus.UNAUTHORIZED, {"detail": "Invalid Shoppex signature"})
             return
         try:
@@ -1576,20 +1605,9 @@ class Handler(BaseHTTPRequestHandler):
 
         plan_id = shoppex.extract_plan_id(payload)
         plan = pricing.plan_by_id(plan_id) if plan_id else None
-        discord_id = shoppex.extract_discord_id(payload)
-        invoice_id = shoppex.extract_invoice_id(payload)
-        if discord_id and plan_id and invoice_id:
-            with connect() as conn:
-                site_store.grant_shoppex_access(
-                    conn,
-                    db_execute,
-                    shoppex_invoice_id=invoice_id,
-                    discord_id=discord_id,
-                    plan_id=plan_id,
-                    amount_cents=shoppex.extract_amount_cents(payload),
-                )
-            discord_roles.grant_access_role(discord_id)
-            db_changed()
+        fulfillment = self.fulfill_shoppex_purchase(payload)
+        if not fulfillment.get("discord_id"):
+            print("Shoppex dynamic webhook: missing Discord user ID in payload", flush=True)
         self.send_json(HTTPStatus.OK, shoppex.dynamic_fulfillment_response(plan))
 
     def handle_post(self) -> None:
