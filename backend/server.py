@@ -8,6 +8,7 @@ import secrets
 import sqlite3
 import base64
 import smtplib
+import threading
 from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
@@ -1573,25 +1574,38 @@ class Handler(BaseHTTPRequestHandler):
             "bot": None,
         }
 
+        # Bot path mirrors /claim — invoice ID is enough; bot fetches Discord ID + plan from Shoppex API.
+        if invoice_id or discord_id:
+            result["bot"] = bot_fulfillment.notify_bot_shoppex_fulfillment(
+                discord_id or "",
+                plan_id or "",
+                invoice_id=invoice_id,
+            )
+            if not discord_id and result["bot"].get("ok"):
+                bot_payload = result["bot"].get("payload") or {}
+                discord_id = str(
+                    bot_payload.get("discordId") or bot_payload.get("discord_id") or "",
+                ).strip() or discord_id
+                result["discord_id"] = discord_id or result["discord_id"]
+
         if discord_id:
             result["role"] = discord_roles.grant_access_role(discord_id)
 
-        if not discord_id:
+        if not discord_id and not result.get("bot", {}).get("ok"):
             print(
                 "Shoppex fulfillment: no Discord user ID found",
                 json.dumps({"invoice_id": invoice_id, "plan_id": plan_id}),
                 flush=True,
             )
-            return result
 
-        if not plan_id:
+        if not plan_id and discord_id:
             print(
-                "Shoppex fulfillment: role attempted, plan unknown",
+                "Shoppex fulfillment: plan unknown, bot/role attempted",
                 json.dumps({"discord_id": discord_id, "invoice_id": invoice_id}),
                 flush=True,
             )
 
-        if invoice_id and plan_id:
+        if invoice_id and plan_id and discord_id:
             with connect() as conn:
                 site_store.grant_shoppex_access(
                     conn,
@@ -1602,13 +1616,6 @@ class Handler(BaseHTTPRequestHandler):
                     amount_cents=shoppex.extract_amount_cents(enriched),
                 )
             db_changed()
-
-        if discord_id and (plan_id or invoice_id):
-            result["bot"] = bot_fulfillment.notify_bot_shoppex_fulfillment(
-                discord_id,
-                plan_id or "",
-                invoice_id=invoice_id,
-            )
 
         print(
             "Shoppex fulfillment:",
@@ -1626,6 +1633,29 @@ class Handler(BaseHTTPRequestHandler):
             flush=True,
         )
         return result
+
+    def schedule_shoppex_fulfillment_retry(self, payload: dict, attempt: int = 1) -> None:
+        delays = (30, 90, 180)
+        if attempt > len(delays):
+            return
+        if not shoppex.extract_invoice_id(payload) and not shoppex.extract_subscription_id(payload):
+            return
+
+        delay = delays[attempt - 1]
+
+        def retry() -> None:
+            try:
+                result = self.fulfill_shoppex_purchase(payload)
+                if shoppex.fulfillment_complete(result):
+                    return
+                self.schedule_shoppex_fulfillment_retry(payload, attempt + 1)
+            except Exception as error:
+                print(f"Shoppex fulfillment retry {attempt} failed: {error}", flush=True)
+
+        timer = threading.Timer(delay, retry)
+        timer.daemon = True
+        timer.start()
+        print(f"Shoppex fulfillment: scheduled retry #{attempt} in {delay}s", flush=True)
 
     def handle_shoppex_event_webhook(self) -> None:
         raw = self.read_raw_body()
@@ -1666,7 +1696,9 @@ class Handler(BaseHTTPRequestHandler):
 
         result = shoppex.handle_event(payload)
         if result["action"] == "fulfill":
-            self.fulfill_shoppex_purchase(payload)
+            fulfillment = self.fulfill_shoppex_purchase(payload)
+            if not shoppex.fulfillment_complete(fulfillment):
+                self.schedule_shoppex_fulfillment_retry(payload)
         elif result["action"] == "revoke":
             enriched = shoppex.enrich_shoppex_payload(payload)
             invoice_id = shoppex.extract_invoice_id(enriched)
@@ -1693,6 +1725,18 @@ class Handler(BaseHTTPRequestHandler):
             delivery_id=delivery_id,
             timestamp_header=timestamp,
         ):
+            print(
+                "Shoppex dynamic webhook rejected: invalid signature",
+                json.dumps(
+                    {
+                        "has_delivery_id": bool(delivery_id),
+                        "has_timestamp": bool(timestamp),
+                        "has_signature": bool(signature),
+                        "body_bytes": len(raw),
+                    },
+                ),
+                flush=True,
+            )
             self.send_json(HTTPStatus.UNAUTHORIZED, {"detail": "Invalid Shoppex signature"})
             return
         try:
@@ -1704,8 +1748,9 @@ class Handler(BaseHTTPRequestHandler):
         plan_id = shoppex.extract_plan_id(payload)
         plan = pricing.plan_by_id(plan_id) if plan_id else None
         fulfillment = self.fulfill_shoppex_purchase(payload)
-        if not fulfillment.get("discord_id"):
-            print("Shoppex dynamic webhook: missing Discord user ID in payload", flush=True)
+        if not fulfillment.get("discord_id") and not fulfillment.get("bot", {}).get("ok"):
+            print("Shoppex dynamic webhook: fulfillment incomplete", json.dumps(fulfillment), flush=True)
+            self.schedule_shoppex_fulfillment_retry(payload)
         self.send_json(HTTPStatus.OK, shoppex.dynamic_fulfillment_response(plan))
 
     def handle_post(self) -> None:

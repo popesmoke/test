@@ -571,12 +571,30 @@ def enrich_payload_from_invoice_api(payload: dict) -> dict:
 
 
 def enrich_shoppex_payload(payload: dict) -> dict:
-    enriched = payload
-    if _is_subscription_event(payload) or extract_subscription_id(payload):
+    enriched = dict(payload)
+    if _is_subscription_event(enriched) or extract_subscription_id(enriched):
         enriched = enrich_payload_from_subscription_api(enriched)
-    if not extract_discord_id(enriched) or not extract_plan_id(enriched):
+
+    invoice_id = extract_invoice_id(enriched)
+    if invoice_id:
+        data = dict(enriched.get("data") or {})
+        data.setdefault("uniqid", invoice_id)
+        enriched = enrich_payload_from_invoice_api({**enriched, "data": data})
+    elif not extract_discord_id(enriched):
         enriched = enrich_payload_from_invoice_api(enriched)
+
+    if not extract_discord_id(enriched) and (
+        _is_subscription_event(enriched) or extract_subscription_id(enriched)
+    ):
+        enriched = enrich_payload_from_subscription_api(enriched)
+
     return enriched
+
+
+def fulfillment_complete(result: dict) -> bool:
+    role_ok = bool(result.get("role") and result["role"].get("ok"))
+    bot_ok = bool(result.get("bot") and result["bot"].get("ok"))
+    return role_ok or bot_ok
 
 
 def extract_amount_cents(payload: dict) -> int:
@@ -645,7 +663,13 @@ def resolve_plan_id(payload: dict) -> str | None:
 
 def handle_event(payload: dict) -> dict:
     event_type = str(payload.get("event") or payload.get("type") or "").strip().lower()
-    if event_type in {"order:paid", "order:paid:product", "subscription:created", "subscription:renewed"}:
+    if event_type in {
+        "order:paid",
+        "order:paid:product",
+        "subscription:created",
+        "subscription:renewed",
+        "product:dynamic",
+    }:
         return {"action": "fulfill", "payload": payload}
     if event_type in {"subscription:cancelled", "order:cancelled", "order:disputed"}:
         return {"action": "revoke", "payload": payload}

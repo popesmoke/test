@@ -94,7 +94,7 @@ def notify_bot_shoppex_fulfillment(
 
     if not url or not secret:
         return {"ok": False, "reason": "not_configured"}
-    if not normalized_id.isdigit():
+    if not normalized_id.isdigit() and not invoice_id:
         return {"ok": False, "reason": "invalid_payload"}
     if not normalized_plan and not invoice_id:
         return {"ok": False, "reason": "missing_plan_or_invoice"}
