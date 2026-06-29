@@ -3100,6 +3100,24 @@ ARTIFACT_SCAN_MAX_TIMEOUT_SEC = 5.0
 DISK_EXECUTABLE_FALLBACK_TIMEOUT_SEC = 4.0
 PIPELINE_DRAIN_MAX_SECONDS = 7.0
 AUTHENTICODE_MAX_PATHS = 64
+SRUM_DB_MAX_BYTES = 12_000_000
+TEMP_DIR_SCAN_MAX_FILES = 60
+BROWSER_CACHE_SCAN_MAX_FILES = 50
+TRACE_CLEANER_NAME_TOKENS = (
+    "ccleaner",
+    "bleachbit",
+    "privazer",
+    "wisediskcleaner",
+    "glaryutilities",
+    "privacyeraser",
+    "wise care",
+    "revo uninstaller",
+    "secure erase",
+    "privaZer",
+    "cleanmgr",
+    "sdelete",
+    "cipher /w",
+)
 
 # Global scan deadline (monotonic). Set once per build_report().
 _scan_deadline_monotonic: float | None = None
@@ -7325,6 +7343,7 @@ def command_history_keyword_hits() -> dict:
         "cipher /w",
         "deletejournal",
         "vssadmin",
+        *TRACE_CLEANER_NAME_TOKENS,
     ]
     cleanup_patterns = [
         re.compile(re.escape(keyword), re.IGNORECASE)
@@ -8423,6 +8442,34 @@ def bypass_resilience_signals(
                 detail=f"PowerShell history contains a suspicious maintenance command: {line[:220]}",
                 category="cover_up",
                 weight=20,
+            )
+            break
+
+    trace_cleaner_blob = "\n".join(
+        [
+            str(hit.get("line") or "")
+            for hit in (command_history.get("hits") or [])[:60]
+        ]
+        + [
+            str(item.get("normalized_path") or "")
+            for item in bam_items[:200]
+        ]
+        + [
+            str(row.get("name") or "")
+            for row in (prefetch.get("items") or [])[:120]
+        ]
+    ).lower()
+    for token in TRACE_CLEANER_NAME_TOKENS:
+        if token.lower() in trace_cleaner_blob:
+            add(
+                severity="high",
+                title="Evidence of trace cleaner execution",
+                detail=(
+                    f"A known privacy/trace cleaner ({token}) appears in shell history, BAM, or Prefetch — "
+                    "may indicate deliberate artifact wiping."
+                ),
+                category="cover_up",
+                weight=22,
             )
             break
 
@@ -13459,6 +13506,225 @@ def scan_amcache_executor_hits() -> list[dict[str, object]]:
     return hits[:120]
 
 
+def srum_metadata() -> dict[str, object]:
+    """SRUM database availability — bounded metadata only."""
+    if platform.system() != "Windows":
+        return {"available": False, "reason": "SRUM is a Windows artifact"}
+    db_path = Path(os.getenv("SystemRoot", "C:\\Windows")) / "System32" / "sru" / "SRUDB.dat"
+    if not _path_is_file_safe(db_path):
+        return {
+            "available": False,
+            "path": str(db_path),
+            "reason": "SRUDB.dat not accessible (missing or access denied — run as Administrator for full SRUM parse)",
+        }
+    stat = _path_stat_safe(db_path)
+    modified = (
+        datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()
+        if stat is not None
+        else None
+    )
+    return {
+        "available": True,
+        "path": str(db_path),
+        "size_bytes": stat.st_size if stat is not None else 0,
+        "modified_utc": modified,
+        "note": "System Resource Usage Monitor database records application/network activity.",
+    }
+
+
+def scan_srum_executor_hits() -> list[dict[str, object]]:
+    """Binary string match in SRUDB.dat for executor paths/names."""
+    if platform.system() != "Windows":
+        return []
+    path = Path(os.getenv("SystemRoot", "C:\\Windows")) / "System32" / "sru" / "SRUDB.dat"
+    if not _path_is_file_safe(path):
+        return []
+    try:
+        data = path.read_bytes()[:SRUM_DB_MAX_BYTES]
+        stat = _path_stat_safe(path)
+        modified = (
+            datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()
+            if stat is not None
+            else None
+        )
+    except OSError:
+        return []
+    hits: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for label in scan_binary_blob_for_executor_names(data):
+        _append_executor_artifact_hit(
+            hits,
+            seen,
+            path=str(path),
+            labels=[label],
+            occurred_at=modified,
+            artifact_source="srum_database",
+            file_exists=True,
+            note="SRUM database contains a checked executor name (binary string match).",
+        )
+    for extracted in extract_dos_paths_from_binary(data, limit=30):
+        path_labels = executor_labels_for_artifact_text(extracted)
+        if not path_labels:
+            continue
+        _append_executor_artifact_hit(
+            hits,
+            seen,
+            path=extracted,
+            labels=path_labels,
+            occurred_at=modified,
+            artifact_source="srum_database_path",
+            file_exists=path_exists_on_disk(extracted),
+            note="SRUM database embeds a full path to a checked executor — survives file deletion.",
+        )
+    return hits[:80]
+
+
+def _temp_directory_roots() -> list[Path]:
+    roots: list[Path] = []
+    seen: set[str] = set()
+    for env_name in ("TEMP", "TMP", "LOCALAPPDATA"):
+        value = os.getenv(env_name)
+        if not value:
+            continue
+        candidate = Path(value)
+        if env_name == "LOCALAPPDATA":
+            candidate = candidate / "Temp"
+        key = str(candidate).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        if candidate.is_dir():
+            roots.append(candidate)
+    if platform.system() == "Windows":
+        win_temp = Path(os.getenv("SystemRoot", "C:\\Windows")) / "Temp"
+        key = str(win_temp).lower()
+        if key not in seen and win_temp.is_dir():
+            roots.append(win_temp)
+    return roots[:4]
+
+
+def scan_temp_directory_executor_hits() -> list[dict[str, object]]:
+    """Recent executables in TEMP directories."""
+    if platform.system() != "Windows":
+        return []
+    hits: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for root in _temp_directory_roots():
+        if scan_collect_phase_exhausted():
+            break
+        try:
+            files = sorted(
+                (p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in {".exe", ".dll", ".bat", ".ps1", ".cmd"}),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )[:TEMP_DIR_SCAN_MAX_FILES]
+        except OSError:
+            continue
+        for path in files:
+            if scan_collect_phase_exhausted():
+                break
+            labels = executor_labels_for_artifact_text(str(path))
+            if not labels:
+                try:
+                    labels = scan_binary_blob_for_executor_names(path.read_bytes()[:500_000])
+                except OSError:
+                    continue
+            if not labels:
+                continue
+            try:
+                modified = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
+            except OSError:
+                modified = None
+            _append_executor_artifact_hit(
+                hits,
+                seen,
+                path=str(path),
+                labels=labels,
+                occurred_at=modified,
+                artifact_source="temp_directory",
+                file_exists=True,
+                note="Executor-related file found in a temp directory.",
+            )
+            if len(hits) >= 60:
+                return hits
+    return hits
+
+
+def _chromium_cache_directory_paths() -> list[tuple[str, str, Path]]:
+    local = os.getenv("LOCALAPPDATA", "")
+    if not local:
+        return []
+    paths: list[tuple[str, str, Path]] = []
+    for browser, rel in (
+        ("Chrome", "Google/Chrome/User Data"),
+        ("Edge", "Microsoft/Edge/User Data"),
+        ("Brave", "BraveSoftware/Brave-Browser/User Data"),
+        ("Opera", "Opera Software/Opera Stable"),
+        ("Vivaldi", "Vivaldi/User Data"),
+    ):
+        base = Path(local) / rel.replace("/", os.sep)
+        if not base.is_dir():
+            continue
+        try:
+            profile_dirs = [p for p in base.iterdir() if p.is_dir()][:4]
+        except OSError:
+            continue
+        for profile_dir in profile_dirs:
+            cache_dir = profile_dir / "Cache" / "Cache_Data"
+            if not cache_dir.is_dir():
+                cache_dir = profile_dir / "Cache"
+            if cache_dir.is_dir():
+                paths.append((browser, profile_dir.name, cache_dir))
+    return paths[:8]
+
+
+def scan_browser_cache_executor_hits() -> list[dict[str, object]]:
+    """Executor name/path matches in browser cache data files."""
+    if platform.system() != "Windows":
+        return []
+    hits: list[dict[str, object]] = []
+    seen: set[str] = set()
+    scanned = 0
+    for browser, profile, cache_dir in _chromium_cache_directory_paths():
+        if scan_collect_phase_exhausted():
+            break
+        try:
+            files = sorted(
+                (p for p in cache_dir.iterdir() if p.is_file()),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )[:20]
+        except OSError:
+            continue
+        for path in files:
+            if scan_collect_phase_exhausted() or scanned >= BROWSER_CACHE_SCAN_MAX_FILES:
+                return hits
+            scanned += 1
+            try:
+                data = path.read_bytes()[:800_000]
+                modified = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
+            except OSError:
+                continue
+            labels = scan_binary_blob_for_executor_names(data)
+            if not labels:
+                continue
+            for extracted in extract_dos_paths_from_binary(data, limit=3) or [str(path)]:
+                _append_executor_artifact_hit(
+                    hits,
+                    seen,
+                    path=extracted if extracted.startswith(("http", "file:")) or re.match(r"^[A-Za-z]:\\", extracted) else str(path),
+                    labels=labels,
+                    occurred_at=modified,
+                    artifact_source="browser_cache",
+                    file_exists=path_exists_on_disk(extracted) if re.match(r"^[A-Za-z]:\\", extracted or "") else None,
+                    note=f"Browser cache ({browser}/{profile}) contains a checked executor name or path.",
+                    extra={"browser": browser, "profile": profile, "cache_file": str(path)},
+                )
+            if len(hits) >= 40:
+                return hits
+    return hits
+
+
 def scan_entire_prefetch_executor_hits() -> list[dict[str, object]]:
     """Scan every Prefetch .pf file on disk — not just the newest 120."""
     if platform.system() != "Windows":
@@ -13676,6 +13942,7 @@ $paths=@(
  'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\TypedPaths',
  'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\RecentDocs',
  'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\RunMRU',
+ 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\ComDlg32\OpenSaveMRU',
  'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\ComDlg32\OpenSavePidlMRU',
  'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\ComDlg32\LastVisitedPidlMRU'
 )
@@ -14135,10 +14402,12 @@ def build_cross_artifact_executor_correlation(
     prefetch_health: dict | None,
     executor_artifact_evidence: dict | None,
     forensic_bundle: dict | None,
+    srum: dict | None = None,
+    prefetch: dict | None = None,
 ) -> dict[str, object]:
     """
-    Cross-validate executor evidence across independent Windows artifacts (BAM, Prefetch, Amcache, USN).
-    Survives single-source tampering when multiple forensic layers disagree.
+    Cross-validate executor evidence across independent Windows artifacts
+    (BAM, Prefetch, Amcache, SRUM, USN) and flag inconsistencies.
     """
     if platform.system() != "Windows":
         return {"available": False, "reason": "Windows-only", "signals": []}
@@ -14252,6 +14521,115 @@ def build_cross_artifact_executor_correlation(
             }
         )
 
+    all_prefetch_stems = {
+        prefetch_extract_stem(str(row.get("name") or "")).lower()
+        for row in (prefetch or {}).get("items") or []
+        if row.get("name")
+    } | prefetch_stems
+    bam_stems = {
+        Path(str(item.get("normalized_path") or "")).stem.lower()
+        for item in bam.get("items") or []
+        if item.get("executor_name_hits") or item.get("cheat_filename_hints")
+    }
+    srum_stems = {
+        Path(str(hit.get("path") or "")).stem.lower()
+        for hit in artifact_hits
+        if str(hit.get("artifact_source") or "").startswith("srum")
+    }
+    srum_stems = {stem for stem in srum_stems if stem and len(stem) >= 4}
+    amcache_stems = {
+        Path(str(row.get("path") or row.get("full_path") or "")).stem.lower()
+        for row in (amcache or {}).get("items") or []
+        if row.get("path") or row.get("full_path")
+    }
+    usn_delete_stems = {
+        Path(path).stem.lower()
+        for path in usn_deletes
+        if path
+    }
+
+    for stem in sorted(all_prefetch_stems):
+        if len(stem) < 4 or stem not in bam_stems:
+            continue
+        if stem not in srum_stems and (srum or {}).get("available"):
+            signals.append(
+                {
+                    "type": "prefetch_bam_without_srum",
+                    "severity": "medium",
+                    "summary": "Prefetch and BAM agree on execution but SRUM has no matching application record.",
+                    "path": stem,
+                    "labels": [],
+                    "corroborating_sources": ["prefetch", "bam"],
+                }
+            )
+        if stem not in amcache_stems and (amcache or {}).get("available"):
+            signals.append(
+                {
+                    "type": "prefetch_bam_without_amcache",
+                    "severity": "low",
+                    "summary": "Prefetch and BAM agree but Amcache has no matching program inventory entry.",
+                    "path": stem,
+                    "labels": [],
+                    "corroborating_sources": ["prefetch", "bam"],
+                }
+            )
+
+    for stem in sorted(bam_stems):
+        if len(stem) < 4:
+            continue
+        if stem not in all_prefetch_stems:
+            signals.append(
+                {
+                    "type": "bam_without_prefetch",
+                    "severity": "medium",
+                    "summary": "BAM records execution but no matching Prefetch artifact was found (possible prefetch tampering or cleanup).",
+                    "path": stem,
+                    "labels": [],
+                    "corroborating_sources": ["bam"],
+                }
+            )
+        if stem in usn_delete_stems and stem not in all_prefetch_stems:
+            signals.append(
+                {
+                    "type": "bam_usn_delete_without_prefetch",
+                    "severity": "high",
+                    "summary": "BAM and USN deletion agree on a removed executable but Prefetch residue is missing.",
+                    "path": stem,
+                    "labels": [],
+                    "corroborating_sources": ["bam", "usn_journal"],
+                }
+            )
+
+    for stem in sorted(srum_stems):
+        if len(stem) < 4:
+            continue
+        if stem not in bam_stems and stem not in all_prefetch_stems:
+            signals.append(
+                {
+                    "type": "srum_without_execution_traces",
+                    "severity": "medium",
+                    "summary": "SRUM references a flagged program but BAM and Prefetch show no matching execution trace.",
+                    "path": stem,
+                    "labels": [],
+                    "corroborating_sources": ["srum"],
+                }
+            )
+
+    inconsistency_count = sum(
+        1
+        for row in signals
+        if str(row.get("type") or "").endswith(
+            (
+                "without_prefetch",
+                "without_srum",
+                "without_amcache",
+                "without_execution_traces",
+                "without_bam",
+            )
+        )
+        or "without_" in str(row.get("type") or "")
+    )
+
     deduped: list[dict[str, object]] = []
     seen_keys: set[str] = set()
     for row in signals:
@@ -14265,7 +14643,8 @@ def build_cross_artifact_executor_correlation(
         "available": True,
         "signal_count": len(deduped),
         "signals": deduped[:40],
-        "note": "Cross-artifact correlation validates executor evidence across BAM, Prefetch, Amcache, and USN.",
+        "inconsistency_count": inconsistency_count,
+        "note": "Cross-artifact correlation validates executor evidence across BAM, Prefetch, Amcache, SRUM, and USN.",
     }
 
 
@@ -14607,6 +14986,9 @@ def _submit_independent_artifact_scans(pool: ThreadPoolExecutor) -> dict[str, ob
         "shimcache": scan_shimcache_executor_hits,
         "scheduled_task": scan_scheduled_tasks_executor_hits,
         "prefetch_execution": scan_entire_prefetch_executor_hits,
+        "srum_database": scan_srum_executor_hits,
+        "temp_directory": scan_temp_directory_executor_hits,
+        "browser_cache": scan_browser_cache_executor_hits,
     }
     return {key: pool.submit(fn) for key, fn in jobs.items()}
 
@@ -14956,6 +15338,9 @@ def build_executor_artifact_evidence(
     ingest("live_process", list(prefetched.get("live_process") or []))
     ingest("roblox_autoexec", list(prefetched.get("roblox_autoexec") or []))
     ingest("browser_history_domain", list(prefetched.get("browser_history_domain") or []))
+    ingest("srum_database", list(prefetched.get("srum_database") or []))
+    ingest("temp_directory", list(prefetched.get("temp_directory") or []))
+    ingest("browser_cache", list(prefetched.get("browser_cache") or []))
 
     by_executor: dict[str, int] = {}
     for hit in hits:
@@ -15866,6 +16251,13 @@ class UnifiedCorrelationEngine:
                 "bam_basenames": len(bam_names),
                 "usn_rows": len(usn_records),
                 "flat_detection_count": len(detections_flat),
+                "inconsistency_checks": [
+                    "prefetch_vs_bam",
+                    "prefetch_vs_amcache",
+                    "prefetch_vs_srum",
+                    "bam_vs_usn_delete",
+                    "srum_vs_execution_traces",
+                ],
             },
         }
 
@@ -18607,6 +18999,172 @@ def _process_overview_sample() -> dict:
     }
 
 
+def build_forensic_detection_catalog(
+    *,
+    defender: dict,
+    prefetch: dict,
+    amcache: dict,
+    bam: dict,
+    srum: dict,
+    userassist: dict,
+    recent_items: dict,
+    browser_download_history: dict,
+    deletion: dict,
+    trash: dict,
+    windows_event_logs: dict,
+    filesystem_evidence_integrity: dict,
+    cross_artifact: dict,
+) -> dict[str, object]:
+    """Catalog of forensic detection sources collected during this scan."""
+    sources = [
+        {
+            "id": "defender_protection_history",
+            "label": "Windows Defender Protection History",
+            "available": bool(defender.get("available")),
+            "detail": "Defender operational events and threat detections",
+        },
+        {
+            "id": "defender_exclusions",
+            "label": "Windows Defender Exclusions",
+            "available": bool(defender.get("available")),
+            "detail": "ExclusionPath/Process/Extension from Get-MpPreference",
+        },
+        {
+            "id": "recent_items",
+            "label": "Recent Items",
+            "available": bool(recent_items.get("count", 0)),
+            "detail": "Recent shortcuts, Jump Lists, Downloads/Desktop/Documents",
+        },
+        {
+            "id": "prefetch",
+            "label": "Prefetch",
+            "available": bool(prefetch.get("available")),
+            "detail": "Windows Prefetch execution artifacts",
+        },
+        {
+            "id": "browser_history",
+            "label": "Browser History",
+            "available": True,
+            "detail": "Chromium/Firefox history keyword and domain scans",
+        },
+        {
+            "id": "downloads_folder",
+            "label": "Downloads Folder",
+            "available": True,
+            "detail": "User Downloads folder sweep and browser download tables",
+        },
+        {
+            "id": "recycle_bin",
+            "label": "Recycle Bin",
+            "available": bool(trash.get("available") or trash.get("items")),
+            "detail": "Recycle Bin $I/$R metadata and payload hashing",
+        },
+        {
+            "id": "amcache",
+            "label": "Amcache",
+            "available": bool(amcache.get("available")),
+            "detail": "Amcache.hve program inventory hive",
+        },
+        {
+            "id": "bam",
+            "label": "BAM",
+            "available": bool(bam.get("available")),
+            "detail": "Background Activity Moderator execution registry",
+        },
+        {
+            "id": "srum",
+            "label": "SRUM",
+            "available": bool(srum.get("available")),
+            "detail": "System Resource Usage Monitor database (SRUDB.dat)",
+        },
+        {
+            "id": "usn_journal",
+            "label": "USN Journal",
+            "available": bool(deletion.get("usn_delete_line_count", 0) or deletion.get("usn_delete_sample")),
+            "detail": "NTFS change journal delete/rename lifecycle sample",
+        },
+        {
+            "id": "userassist",
+            "label": "UserAssist",
+            "available": bool(userassist.get("available")),
+            "detail": "Explorer UserAssist last-run registry entries",
+        },
+        {
+            "id": "run_mru",
+            "label": "RunMRU",
+            "available": True,
+            "detail": "Explorer Run dialog MRU registry (registry_shell scan)",
+        },
+        {
+            "id": "opensave_mru",
+            "label": "OpenSaveMRU",
+            "available": True,
+            "detail": "Open/Save dialog MRU registry (OpenSaveMRU + PidlMRU)",
+        },
+        {
+            "id": "jump_lists",
+            "label": "Jump Lists",
+            "available": True,
+            "detail": "AutomaticDestinations/CustomDestinations and Recent .lnk parsing",
+        },
+        {
+            "id": "windows_event_logs",
+            "label": "Windows Event Logs",
+            "available": bool(windows_event_logs.get("available")),
+            "detail": "Application, System, Security, PowerShell, and Sysmon samples",
+        },
+        {
+            "id": "temp_directories",
+            "label": "Temp Directories",
+            "available": True,
+            "detail": "TEMP/TMP/AppData/Local/Temp and Windows\\Temp executable sweep",
+        },
+        {
+            "id": "browser_download_history",
+            "label": "Browser Download History",
+            "available": bool(browser_download_history.get("available")),
+            "detail": "Chromium downloads table and Firefox moz_downloads",
+        },
+        {
+            "id": "browser_cache",
+            "label": "Browser Cache",
+            "available": True,
+            "detail": "Chromium Cache_Data binary sweep for executor strings",
+        },
+        {
+            "id": "file_timestamps",
+            "label": "File Creation / Deletion Timestamps",
+            "available": bool(deletion.get("available")),
+            "detail": "USN journal, Security 4660/4663, Sysmon 23/26, Recycle Bin $I times",
+        },
+        {
+            "id": "log_clearing",
+            "label": "Evidence of Log Clearing",
+            "available": bool(filesystem_evidence_integrity.get("available")),
+            "detail": "Event log clears, USN journal deletion, PowerShell history tamper patterns",
+        },
+        {
+            "id": "trace_cleaner",
+            "label": "Evidence of Trace Cleaner Execution",
+            "available": True,
+            "detail": "CCleaner/BleachBit/PrivaZer and similar tokens in history or execution traces",
+        },
+        {
+            "id": "cross_artifact_inconsistency",
+            "label": "Cross-artifact inconsistency checks",
+            "available": bool(cross_artifact.get("available")),
+            "detail": "Prefetch, Amcache, BAM, SRUM, and USN Journal cross-validation",
+            "signal_count": cross_artifact.get("inconsistency_count", 0),
+        },
+    ]
+    return {
+        "available": True,
+        "source_count": len(sources),
+        "sources": sources,
+        "note": "All listed forensic detection sources are attempted each scan within the time budget.",
+    }
+
+
 def build_report() -> dict:
     import time as _time
 
@@ -18668,6 +19226,9 @@ def build_report() -> dict:
         fut_roblox = pool.submit(roblox_diagnostics)
         fut_discord = pool.submit(discord_local_accounts_scan)
         fut_amcache = pool.submit(amcache_metadata)
+        fut_srum = pool.submit(
+            lambda: _run_collector_with_timeout(srum_metadata, label="srum")
+        )
         fut_userassist = pool.submit(userassist_registry_entries)
         fut_defender = pool.submit(windows_defender_signals)
         fut_events = pool.submit(
@@ -18726,6 +19287,7 @@ def build_report() -> dict:
                 fut_trash,
                 fut_roblox,
                 fut_amcache,
+                fut_srum,
                 fut_userassist,
                 fut_defender,
                 fut_events,
@@ -18812,6 +19374,7 @@ def build_report() -> dict:
         hardware = fut_hardware.result()
         installed_apps = fut_apps.result()
         amcache = fut_amcache.result()
+        srum = fut_srum.result()
         defender = fut_defender.result()
         windows_event_logs = fut_events.result()
         windows_security_events = fut_security_events.result()
@@ -18888,6 +19451,8 @@ def build_report() -> dict:
             prefetch_health=prefetch_health,
             executor_artifact_evidence=executor_artifact_evidence,
             forensic_bundle=forensic_bundle,
+            srum=srum,
+            prefetch=prefetch,
         )
         roblox_runtime = (
             {"available": False, "reason": "Scan time budget exhausted", "skipped_fast_scan": True}
@@ -19036,6 +19601,22 @@ def build_report() -> dict:
             "runtime_reasons": evidence_verdict.get("runtime_reasons"),
         }
 
+    forensic_detection_catalog = build_forensic_detection_catalog(
+        defender=defender,
+        prefetch=prefetch,
+        amcache=amcache,
+        bam=bam_registry,
+        srum=srum,
+        userassist=userassist,
+        recent_items=recent_items,
+        browser_download_history=browser_download_history,
+        deletion=deletion_signals,
+        trash=trash,
+        windows_event_logs=windows_event_logs,
+        filesystem_evidence_integrity=filesystem_evidence_integrity,
+        cross_artifact=cross_artifact_executor,
+    )
+
     return {
         "scan_started_at": scan_started_at,
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -19074,12 +19655,26 @@ def build_report() -> dict:
                     "bam",
                     "prefetch",
                     "usn_journal",
+                    "amcache",
+                    "srum",
+                    "userassist",
+                    "run_mru",
+                    "opensave_mru",
+                    "jump_lists",
+                    "temp_directories",
+                    "browser_cache",
+                    "browser_downloads",
+                    "browser_history_domains",
+                    "defender_protection_history",
+                    "defender_exclusions",
+                    "windows_event_logs",
+                    "log_clearing_detection",
+                    "trace_cleaner_detection",
+                    "cross_artifact_inconsistency",
                     "sha256_blocklist",
                     "binary_probe",
                     "recycle_bin",
                     "persistence",
-                    "browser_downloads",
-                    "browser_history_domains",
                     "roblox_integrity",
                     "roblox_runtime_provenance",
                     "evidence_confidence_engine",
@@ -19094,6 +19689,7 @@ def build_report() -> dict:
         "process_overview": process_overview,
         "security_integrity_signals": {
             "amcache": amcache,
+            "srum": srum,
             "bam": bam_registry,
             "dam": dam_registry,
             "userassist": userassist,
@@ -19127,6 +19723,7 @@ def build_report() -> dict:
             "forensic_timeline": forensic_timeline,
             "scan_review": scan_review,
             "browser_download_history": browser_download_history,
+            "forensic_detection_catalog": forensic_detection_catalog,
             "binary_change_signals_in_scan": in_scan_changes,
         },
     }
