@@ -1582,7 +1582,16 @@ class Handler(BaseHTTPRequestHandler):
             "plan_id": plan_id,
             "invoice_id": invoice_id,
             "bot": None,
+            "role_fallback": None,
         }
+
+        data_block = enriched.get("data") if isinstance(enriched.get("data"), dict) else {}
+        custom_fields = (
+            data_block.get("custom_fields")
+            or data_block.get("customFields")
+            or enriched.get("custom_fields")
+            or enriched.get("customFields")
+        )
 
         # Shoppex webhook → bot adds the Access role. Pass enriched checkout data from the webhook.
         event_type = str(payload.get("event") or payload.get("type") or "").strip().lower()
@@ -1599,6 +1608,7 @@ class Handler(BaseHTTPRequestHandler):
                 plan_id or "",
                 invoice_id=invoice_id,
                 trust_paid=trust_paid,
+                custom_fields=custom_fields,
             )
             if result["bot"].get("ok"):
                 bot_payload = result["bot"].get("payload") or {}
@@ -1610,6 +1620,17 @@ class Handler(BaseHTTPRequestHandler):
                 ).strip() or plan_id
                 result["discord_id"] = discord_id or result["discord_id"]
                 result["plan_id"] = plan_id or result.get("plan_id")
+
+        role_granted = bool(result.get("bot") and result["bot"].get("ok"))
+        if discord_id and not role_granted and discord_roles.role_grant_configured():
+            result["role_fallback"] = discord_roles.grant_access_role(discord_id)
+            role_granted = bool(result["role_fallback"] and result["role_fallback"].get("ok"))
+            if role_granted:
+                print(
+                    "Shoppex fulfillment: access role granted via backend fallback",
+                    json.dumps({"discord_id": discord_id, "invoice_id": invoice_id}),
+                    flush=True,
+                )
 
         if not discord_id and not result.get("bot", {}).get("ok"):
             print(
@@ -1671,8 +1692,16 @@ class Handler(BaseHTTPRequestHandler):
                     "bot_ok": bool(result["bot"] and result["bot"].get("ok")),
                     "bot_reason": (result["bot"] or {}).get("reason"),
                     "bot_detail": bot_detail.get("reason") or bot_detail,
+                    "role_fallback_ok": bool(result.get("role_fallback", {}).get("ok")),
+                    "role_fallback_reason": (result.get("role_fallback") or {}).get("reason"),
                     "access_role_id": bot_payload.get("accessRoleId"),
-                    "role_granted_by": "bot" if result.get("bot", {}).get("ok") else None,
+                    "role_granted_by": (
+                        "bot"
+                        if result.get("bot", {}).get("ok")
+                        else "backend"
+                        if result.get("role_fallback", {}).get("ok")
+                        else None
+                    ),
                 },
             ),
             flush=True,
@@ -1680,7 +1709,7 @@ class Handler(BaseHTTPRequestHandler):
         return result
 
     def schedule_shoppex_fulfillment_retry(self, payload: dict, attempt: int = 1) -> None:
-        delays = (30, 90, 180)
+        delays = (15, 45, 120, 300, 600)
         if attempt > len(delays):
             return
         if not shoppex.extract_invoice_id(payload) and not shoppex.extract_subscription_id(payload):
