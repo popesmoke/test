@@ -112,23 +112,67 @@ https://virello-secure.onrender.com/health
 
 In UptimeRobot, create an HTTP(s) monitor with a 5-minute interval and set the keyword monitor to `ok` so failed database connectivity returns HTTP 503 and triggers an alert.
 
-### Web Dashboard
+### Web Dashboard (Cloudflare Pages)
 
 ```powershell
 cd web-dashboard
 npm install
-npm run dev
+npm run build
 ```
 
-Open `http://localhost:3000`.
+Open `http://localhost:3000` during development (`npm run dev`).
 
-For Netlify, deploy the `web-dashboard` folder with:
+Deploy with **Cloudflare Pages** (project already has `wrangler.jsonc`):
 
+- Root directory: `web-dashboard`
 - Build command: `npm run build`
-- Publish directory: `dist`
-- Environment variable: `VITE_API_URL=https://your-public-backend-url`
+- Build output directory: `dist`
 
-The dashboard is static. The backend must be hosted separately on a service that can run a Python web server, such as a VPS, Render, Railway, Fly.io, or another server host.
+Set these **Cloudflare Pages** environment variables:
+
+```text
+VITE_API_URL=https://virello-secure.onrender.com
+VITE_DISCORD_INVITE_URL=https://discord.gg/wPZXKaPyWY
+VITE_SHOPPEX_STORE_URL=https://your-store.shoppex.store
+```
+
+The dashboard is static on Cloudflare. The Python backend runs separately on **Render**.
+
+### Shoppex payments (Render + Cloudflare)
+
+**Render** (backend) handles webhooks and access grants. **Cloudflare Pages** shows the store links on `/purchase`.
+
+On **Render**, add to your web service env:
+
+```text
+SHOPPEX_STORE_URL=https://your-store.shoppex.store
+SHOPPEX_API_KEY=your Shoppex dev API key
+SHOPPEX_GATEWAYS=BITCOIN,LITECOIN,USDT,SOLANA,PAYPAL
+SHOPPEX_WEBHOOK_SECRET=from Shoppex dashboard
+SHOPPEX_DYNAMIC_WEBHOOK_URL=https://virello-secure.onrender.com/webhooks/shoppex/dynamic
+DISCORD_GUILD_ID=your guild id
+DISCORD_ACCESS_ROLE_ID=your access role id
+```
+
+In **Shoppex → Settings → Webhooks**, add:
+
+```text
+https://virello-secure.onrender.com/webhooks/shoppex
+```
+
+Subscribe to: `order:paid`, `subscription:created`, `subscription:cancelled`.
+
+Sync product listings from your machine:
+
+```powershell
+python scripts/sync_shoppex_listings.py --dry-run
+python scripts/sync_shoppex_listings.py
+```
+
+Payment split:
+
+- **Shoppex store**: Bitcoin, Litecoin, USDT, Solana, PayPal Friends & Family
+- **Discord ticket**: Ethereum, Greek Paysafe, Discord payment
 
 ### Desktop Client
 

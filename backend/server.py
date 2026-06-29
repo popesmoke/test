@@ -22,6 +22,7 @@ import backup
 import discord_sync
 import pricing
 import rate_limit
+import shoppex
 import site_store
 import stripe_checkout
 
@@ -224,6 +225,7 @@ def init_db() -> None:
             """
         )
         site_store.init_site_tables(conn, db_execute, id_column)
+        site_store.ensure_order_columns(conn, db_execute)
 
 
 def make_token(email: str) -> str:
@@ -1516,12 +1518,91 @@ class Handler(BaseHTTPRequestHandler):
                 db_changed()
         self.send_json(HTTPStatus.OK, {"received": True})
 
+    def handle_shoppex_event_webhook(self) -> None:
+        raw = self.read_raw_body()
+        if not shoppex.SHOPPEX_WEBHOOK_SECRET:
+            self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"detail": "Shoppex webhook not configured"})
+            return
+        signature = self.headers.get("X-Shoppex-Signature-V2") or self.headers.get("X-Shoppex-Signature", "")
+        if not shoppex.verify_event_webhook(raw, signature):
+            self.send_json(HTTPStatus.UNAUTHORIZED, {"detail": "Invalid Shoppex signature"})
+            return
+        try:
+            payload = shoppex.parse_json(raw)
+        except json.JSONDecodeError:
+            self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Invalid payload"})
+            return
+
+        result = shoppex.handle_event(payload)
+        if result["action"] == "fulfill":
+            discord_id = shoppex.extract_discord_id(payload)
+            plan_id = shoppex.extract_plan_id(payload)
+            invoice_id = shoppex.extract_invoice_id(payload)
+            if discord_id and plan_id and invoice_id:
+                with connect() as conn:
+                    site_store.grant_shoppex_access(
+                        conn,
+                        db_execute,
+                        shoppex_invoice_id=invoice_id,
+                        discord_id=discord_id,
+                        plan_id=plan_id,
+                        amount_cents=shoppex.extract_amount_cents(payload),
+                    )
+                db_changed()
+        elif result["action"] == "revoke":
+            invoice_id = shoppex.extract_invoice_id(payload)
+            if invoice_id:
+                with connect() as conn:
+                    site_store.revoke_shoppex_access(conn, db_execute, invoice_id)
+                db_changed()
+        self.send_json(HTTPStatus.OK, {"received": True})
+
+    def handle_shoppex_dynamic_webhook(self) -> None:
+        raw = self.read_raw_body()
+        if not shoppex._dynamic_webhook_secrets():
+            self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"detail": "Shoppex dynamic webhook not configured"})
+            return
+        signature = self.headers.get("X-Shoppex-Signature-V2") or self.headers.get("X-Shoppex-Signature", "")
+        if not shoppex.verify_dynamic_webhook(raw, signature):
+            self.send_json(HTTPStatus.UNAUTHORIZED, {"detail": "Invalid Shoppex signature"})
+            return
+        try:
+            payload = shoppex.parse_json(raw)
+        except json.JSONDecodeError:
+            self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Invalid payload"})
+            return
+
+        plan_id = shoppex.extract_plan_id(payload)
+        plan = pricing.plan_by_id(plan_id) if plan_id else None
+        discord_id = shoppex.extract_discord_id(payload)
+        invoice_id = shoppex.extract_invoice_id(payload)
+        if discord_id and plan_id and invoice_id:
+            with connect() as conn:
+                site_store.grant_shoppex_access(
+                    conn,
+                    db_execute,
+                    shoppex_invoice_id=invoice_id,
+                    discord_id=discord_id,
+                    plan_id=plan_id,
+                    amount_cents=shoppex.extract_amount_cents(payload),
+                )
+            db_changed()
+        self.send_json(HTTPStatus.OK, shoppex.dynamic_fulfillment_response(plan))
+
     def handle_post(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
 
         if path == "/webhooks/stripe":
             self.handle_stripe_webhook()
+            return
+
+        if path == "/webhooks/shoppex":
+            self.handle_shoppex_event_webhook()
+            return
+
+        if path == "/webhooks/shoppex/dynamic":
+            self.handle_shoppex_dynamic_webhook()
             return
 
         try:

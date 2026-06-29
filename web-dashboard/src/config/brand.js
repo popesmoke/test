@@ -3,6 +3,7 @@ export const BRAND_LOGO = "/assets/virello-scanner-logo.png";
 export const BRAND_NAME = "Virello";
 export const BRAND_FULL = "Virello Secure";
 export const DISCORD_INVITE_URL = import.meta.env.VITE_DISCORD_INVITE_URL || "https://discord.gg/wPZXKaPyWY";
+export const SHOPPEX_STORE_URL = import.meta.env.VITE_SHOPPEX_STORE_URL || "";
 export const SCANNER_DOWNLOAD_URL = import.meta.env.VITE_SCANNER_DOWNLOAD_URL || "";
 export const DEMO_VIDEO_URL = import.meta.env.VITE_DEMO_VIDEO_URL || "";
 

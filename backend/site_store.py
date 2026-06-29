@@ -59,11 +59,13 @@ def init_site_tables(conn, db_execute, id_column: str) -> None:
         CREATE TABLE IF NOT EXISTS orders (
             id {id_column},
             stripe_session_id TEXT UNIQUE,
+            shoppex_invoice_id TEXT UNIQUE,
             discord_id TEXT NOT NULL,
             plan_id TEXT NOT NULL,
             amount_cents INTEGER NOT NULL,
             currency TEXT NOT NULL DEFAULT 'usd',
             status TEXT NOT NULL,
+            payment_source TEXT NOT NULL DEFAULT 'stripe',
             created_at TEXT NOT NULL,
             fulfilled_at TEXT
         )
@@ -227,14 +229,46 @@ def delete_alert(conn, db_execute, alert_id: int) -> bool:
     return cursor.rowcount > 0
 
 
-def record_order(conn, db_execute, *, stripe_session_id: str, discord_id: str, plan_id: str, amount_cents: int, status: str) -> None:
+def ensure_order_columns(conn, db_execute) -> None:
+    row = db_execute(conn, "PRAGMA table_info(orders)").fetchall()
+    columns = {str(item["name"]) for item in row}
+    if "shoppex_invoice_id" not in columns:
+        db_execute(conn, "ALTER TABLE orders ADD COLUMN shoppex_invoice_id TEXT")
+    if "payment_source" not in columns:
+        db_execute(conn, "ALTER TABLE orders ADD COLUMN payment_source TEXT NOT NULL DEFAULT 'stripe'")
+
+
+def record_order(
+    conn,
+    db_execute,
+    *,
+    discord_id: str,
+    plan_id: str,
+    amount_cents: int,
+    status: str,
+    stripe_session_id: str | None = None,
+    shoppex_invoice_id: str | None = None,
+    payment_source: str = "stripe",
+) -> None:
     db_execute(
         conn,
         """
-        INSERT INTO orders (stripe_session_id, discord_id, plan_id, amount_cents, currency, status, created_at)
-        VALUES (?, ?, ?, ?, 'usd', ?, ?)
+        INSERT INTO orders (
+            stripe_session_id, shoppex_invoice_id, discord_id, plan_id, amount_cents,
+            currency, status, payment_source, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, 'usd', ?, ?, ?)
         """,
-        (stripe_session_id, discord_id, plan_id, amount_cents, status, utc_now_iso()),
+        (
+            stripe_session_id,
+            shoppex_invoice_id,
+            discord_id,
+            plan_id,
+            amount_cents,
+            status,
+            payment_source,
+            utc_now_iso(),
+        ),
     )
 
 
@@ -242,12 +276,82 @@ def fulfill_order(conn, db_execute, stripe_session_id: str) -> dict | None:
     row = db_execute(conn, "SELECT * FROM orders WHERE stripe_session_id = ?", (stripe_session_id,)).fetchone()
     if row is None:
         return None
-    now = utc_now_iso()
+    return _mark_order_paid(conn, db_execute, row)
+
+
+def fulfill_shoppex_order(conn, db_execute, shoppex_invoice_id: str) -> dict | None:
+    row = db_execute(conn, "SELECT * FROM orders WHERE shoppex_invoice_id = ?", (shoppex_invoice_id,)).fetchone()
+    if row is None:
+        return None
+    return _mark_order_paid(conn, db_execute, row)
+
+
+def grant_shoppex_access(
+    conn,
+    db_execute,
+    *,
+    shoppex_invoice_id: str,
+    discord_id: str,
+    plan_id: str,
+    amount_cents: int,
+) -> dict:
+    existing = db_execute(
+        conn,
+        "SELECT * FROM orders WHERE shoppex_invoice_id = ?",
+        (shoppex_invoice_id,),
+    ).fetchone()
+    if existing is not None:
+        fulfilled = fulfill_shoppex_order(conn, db_execute, shoppex_invoice_id)
+        return fulfilled or dict(existing)
+
+    record_order(
+        conn,
+        db_execute,
+        shoppex_invoice_id=shoppex_invoice_id,
+        discord_id=discord_id,
+        plan_id=plan_id,
+        amount_cents=amount_cents,
+        status="pending",
+        payment_source="shoppex",
+    )
+    fulfilled = fulfill_shoppex_order(conn, db_execute, shoppex_invoice_id)
+    if fulfilled is None:
+        raise RuntimeError("Failed to fulfill Shoppex order")
+    return fulfilled
+
+
+def revoke_shoppex_access(conn, db_execute, shoppex_invoice_id: str) -> dict | None:
+    row = db_execute(conn, "SELECT * FROM orders WHERE shoppex_invoice_id = ?", (shoppex_invoice_id,)).fetchone()
+    if row is None:
+        return None
     db_execute(
         conn,
-        "UPDATE orders SET status = 'paid', fulfilled_at = ? WHERE stripe_session_id = ?",
-        (now, stripe_session_id),
+        "UPDATE orders SET status = 'revoked', fulfilled_at = ? WHERE shoppex_invoice_id = ?",
+        (utc_now_iso(), shoppex_invoice_id),
     )
+    db_execute(
+        conn,
+        "UPDATE discord_users SET access_override = 0 WHERE discord_id = ?",
+        (row["discord_id"],),
+    )
+    return dict(row)
+
+
+def _mark_order_paid(conn, db_execute, row) -> dict:
+    now = utc_now_iso()
+    keys = set(row.keys())
+    if "stripe_session_id" in keys and row["stripe_session_id"]:
+        db_execute(
+            conn,
+            "UPDATE orders SET status = 'paid', fulfilled_at = ? WHERE stripe_session_id = ?",
+            (now, row["stripe_session_id"]),
+        )
+    elif "shoppex_invoice_id" in keys and row["shoppex_invoice_id"]:
+        db_execute(
+            conn,
+            "UPDATE orders SET status = 'paid', fulfilled_at = ? WHERE shoppex_invoice_id = ?",
+            (now, row["shoppex_invoice_id"]),
+        )
     db_execute(
         conn,
         "UPDATE discord_users SET access_override = 1 WHERE discord_id = ?",

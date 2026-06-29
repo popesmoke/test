@@ -1,4 +1,4 @@
-"""Public pricing catalog — synced with web dashboard and Discord bot."""
+"""Public pricing catalog — synced with web dashboard, Shoppex store, and Discord bot."""
 
 from __future__ import annotations
 
@@ -15,6 +15,11 @@ PERSONAL_PLANS = [
         "slots": 1,
         "featured": False,
         "stripe": True,
+        "shoppex": True,
+        "shoppex_slug": "virello-monthly-personal",
+        "shoppex_type": "SUBSCRIPTION",
+        "shoppex_recurring_interval": "MONTH",
+        "shoppex_recurring_interval_count": 1,
         "features": [
             "1 reviewer seat",
             "Unlimited PIN generation",
@@ -35,6 +40,10 @@ PERSONAL_PLANS = [
         "slots": 1,
         "featured": True,
         "stripe": True,
+        "shoppex": True,
+        "shoppex_slug": "virello-6month-personal",
+        "shoppex_type": "SERVICE",
+        "shoppex_license_period": "180d",
         "features": [
             "1 reviewer seat",
             "Save ~26% vs monthly",
@@ -55,6 +64,10 @@ PERSONAL_PLANS = [
         "slots": 1,
         "featured": False,
         "stripe": True,
+        "shoppex": True,
+        "shoppex_slug": "virello-yearly-personal",
+        "shoppex_type": "SERVICE",
+        "shoppex_license_period": "365d",
         "features": [
             "1 reviewer seat",
             "Lowest personal price per month",
@@ -78,6 +91,11 @@ ENTERPRISE_PLANS = [
         "slots": 2,
         "featured": False,
         "stripe": True,
+        "shoppex": True,
+        "shoppex_slug": "virello-duo-team",
+        "shoppex_type": "SUBSCRIPTION",
+        "shoppex_recurring_interval": "MONTH",
+        "shoppex_recurring_interval_count": 1,
         "features": [
             "2 reviewer seats",
             "Shared team workflow",
@@ -98,6 +116,10 @@ ENTERPRISE_PLANS = [
         "slots": 10,
         "featured": True,
         "stripe": True,
+        "shoppex": True,
+        "shoppex_slug": "virello-enterprise-10",
+        "shoppex_type": "SERVICE",
+        "shoppex_license_period": "180d",
         "features": [
             "10 reviewer seats",
             "Enterprise seat management",
@@ -118,6 +140,10 @@ ENTERPRISE_PLANS = [
         "slots": 20,
         "featured": False,
         "stripe": True,
+        "shoppex": True,
+        "shoppex_slug": "virello-enterprise-20",
+        "shoppex_type": "SERVICE",
+        "shoppex_license_period": "180d",
         "features": [
             "20 reviewer seats",
             "Full enterprise management",
@@ -128,11 +154,18 @@ ENTERPRISE_PLANS = [
     },
 ]
 
-ALT_PAYMENT_METHODS = [
-    {"id": "paypal", "label": "PayPal"},
-    {"id": "greek_paysafe", "label": "Greek Paysafe"},
+SHOPPEX_PAYMENTS = [
+    {"id": "bitcoin", "label": "Bitcoin"},
     {"id": "litecoin", "label": "Litecoin"},
+    {"id": "usdt", "label": "USDT"},
+    {"id": "solana", "label": "Solana"},
+    {"id": "paypal_ff", "label": "PayPal Friends & Family"},
+]
+
+DISCORD_TICKET_PAYMENTS = [
     {"id": "ethereum", "label": "Ethereum"},
+    {"id": "greek_paysafe", "label": "Greek Paysafe"},
+    {"id": "discord", "label": "Discord payment"},
 ]
 
 
@@ -147,12 +180,50 @@ def plan_by_id(plan_id: str) -> dict | None:
     return None
 
 
+def plan_by_shoppex_slug(slug: str) -> dict | None:
+    normalized = str(slug or "").strip().lower()
+    if not normalized:
+        return None
+    for plan in all_plans():
+        if str(plan.get("shoppex_slug") or "").lower() == normalized:
+            return plan
+    return None
+
+
+def plan_by_shoppex_product_id(product_id: str) -> dict | None:
+    normalized = str(product_id or "").strip()
+    if not normalized:
+        return None
+    for plan in all_plans():
+        configured = shoppex_product_id(plan["id"])
+        if configured and configured == normalized:
+            return plan
+    return None
+
+
 def pricing_payload() -> dict:
+    store_url = shoppex_store_url()
     return {
         "personal": PERSONAL_PLANS,
         "enterprise": ENTERPRISE_PLANS,
-        "alt_payments": ALT_PAYMENT_METHODS,
+        "shoppex_payments": SHOPPEX_PAYMENTS,
+        "discord_ticket_payments": DISCORD_TICKET_PAYMENTS,
+        "alt_payments": [*SHOPPEX_PAYMENTS, *DISCORD_TICKET_PAYMENTS],
         "stripe_enabled": bool(_stripe_secret()),
+        "shoppex_enabled": bool(store_url),
+        "shoppex_store_url": store_url,
+        "shoppex_plans": [
+            {
+                "plan_id": plan["id"],
+                "title": plan["title"],
+                "price": plan["price"],
+                "period": plan["period"],
+                "slug": plan.get("shoppex_slug"),
+                "url": shoppex_product_url(plan),
+            }
+            for plan in all_plans()
+            if plan.get("shoppex")
+        ],
     }
 
 
@@ -160,6 +231,28 @@ def _stripe_secret() -> str:
     import os
 
     return os.getenv("STRIPE_SECRET_KEY", "").strip()
+
+
+def shoppex_store_url() -> str:
+    import os
+
+    return os.getenv("SHOPPEX_STORE_URL", "").strip().rstrip("/")
+
+
+def shoppex_product_url(plan: dict) -> str:
+    store_url = shoppex_store_url()
+    slug = str(plan.get("shoppex_slug") or "").strip()
+    if not store_url or not slug:
+        return ""
+    return f"{store_url}/product/{slug}"
+
+
+def shoppex_product_id(plan_id: str) -> str | None:
+    import os
+
+    key = f"SHOPPEX_PRODUCT_{plan_id.upper()}"
+    value = os.getenv(key, "").strip()
+    return value or None
 
 
 def stripe_price_id(plan_id: str) -> str | None:

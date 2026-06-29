@@ -3976,6 +3976,42 @@ kbd {
   margin-top: 14px;
 }
 
+.pricing-card__actions {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.pricing-card__actions .pricing-card__buy {
+  margin-top: 0;
+}
+
+.pricing-payment-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.pricing-payment-group h4 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: #f3f4f6;
+}
+
+.pricing-payment-list {
+  margin: 0;
+  padding-left: 18px;
+  color: #d1d5db;
+  display: grid;
+  gap: 4px;
+}
+
+.pricing-cta__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
 .pricing-grid--enterprise {
   margin-bottom: 8px;
 }
