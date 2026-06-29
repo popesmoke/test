@@ -39,7 +39,7 @@ def main() -> int:
     print()
     print("After sync:")
     print("1. In Shoppex, enable Bitcoin, Litecoin, USDT, Solana, and PayPal F&F on these products.")
-    print("2. In Shoppex → Settings → Webhooks, add your Render backend URL:")
+    print("2. In Shoppex -> Settings -> Webhooks, add your Render backend URL:")
     print("   POST https://virello-secure.onrender.com/webhooks/shoppex")
     print("   Events: order:paid, subscription:created, subscription:cancelled")
     print("3. On Render, set SHOPPEX_WEBHOOK_SECRET from that endpoint.")
