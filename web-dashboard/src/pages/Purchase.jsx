@@ -211,7 +211,7 @@ export function PurchasePage() {
         <h3>Payment options</h3>
         <p>
           {shoppexStoreUrl
-            ? `Buy directly on our store with ${shoppexPaymentLabel || "crypto or PayPal"}. Enter your Discord ID at checkout so your reviewer role is granted automatically.`
+            ? `Buy directly on our store with ${shoppexPaymentLabel || "crypto or PayPal"}. At checkout, click **Connect Discord** — do not type your ID manually.`
             : "Store checkout is being finalized. Join Discord for manual payment options in the meantime."}
         </p>
 

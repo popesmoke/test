@@ -116,6 +116,8 @@ def extract_discord_id(payload: dict) -> str | None:
     candidates = [
         payload.get("discord_id"),
         payload.get("discordId"),
+        payload.get("discord_user_id"),
+        payload.get("discordUserId"),
         payload.get("customer_discord_id"),
         payload.get("customerDiscordId"),
     ]
@@ -125,10 +127,21 @@ def extract_discord_id(payload: dict) -> str | None:
             [
                 data.get("discord_id"),
                 data.get("discordId"),
+                data.get("discord_user_id"),
+                data.get("discordUserId"),
                 data.get("customer_discord_id"),
                 data.get("customerDiscordId"),
             ],
         )
+        discord = data.get("discord")
+        if isinstance(discord, dict):
+            candidates.extend(
+                [
+                    discord.get("id"),
+                    discord.get("user_id"),
+                    discord.get("userId"),
+                ],
+            )
         customer = data.get("customer")
         if isinstance(customer, dict):
             candidates.extend(

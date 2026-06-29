@@ -85,7 +85,8 @@ def _product_description(plan: dict) -> str:
     return (
         f"{plan['blurb']}\n\n"
         f"Includes:\n{features}\n\n"
-        "After payment, your Discord reviewer role and Virello console access are granted automatically."
+        "At checkout, click **Connect Discord** and authorize with the account you want licensed. "
+        "Do not type your ID manually — Shoppex links your Discord automatically and grants your reviewer role after payment."
     )
 
 
@@ -100,28 +101,17 @@ def build_product_payload(plan: dict) -> dict:
         "description": _product_description(plan),
         "slug": plan.get("shoppex_slug"),
         "gateways": SHOPPEX_GATEWAYS,
-        "delivery_instructions": {
-            "enabled": True,
-            "required": True,
-            "label": "Discord user ID",
-            "placeholder": "Your 17–20 digit Discord ID",
-            "help_text": "Required so we can grant your reviewer role automatically after payment.",
-            "max_length": 32,
-        },
-        "custom_fields": [
-            {
-                "name": "Discord ID",
-                "type": "text",
-                "required": True,
-                "placeholder": "123456789012345678",
-                "regex": r"^\d{17,20}$",
-            },
-        ],
         "discord_integration": bool(DISCORD_GUILD_ID and DISCORD_ACCESS_ROLE_ID),
         "discord_set_role": True,
         "discord_server_id": DISCORD_GUILD_ID or None,
         "discord_role_id": DISCORD_ACCESS_ROLE_ID or None,
         "discord_remove_role": True,
+        "discord_optional": False,
+        "delivery_instructions": {
+            "enabled": False,
+            "required": False,
+        },
+        "custom_fields": [],
         "sort_priority": 100 - plan.get("months", 1),
         "unlisted": False,
         "private": False,
