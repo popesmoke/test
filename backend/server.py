@@ -20,7 +20,10 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 import backup
 import discord_sync
+import pricing
 import rate_limit
+import site_store
+import stripe_checkout
 
 DB_PATH = Path(__file__).resolve().parent / "diagnostics.db"
 DATABASE_URL = os.getenv("DATABASE_URL", "")
@@ -74,6 +77,9 @@ BREVO_FROM_EMAIL = os.getenv("BREVO_FROM_EMAIL", "")
 BRAND_NAME = "Virello Scanner"
 BREVO_FROM_NAME = os.getenv("BREVO_FROM_NAME", BRAND_NAME)
 SHARING_FINGERPRINT_LIMIT = int(os.getenv("SHARING_FINGERPRINT_LIMIT", "3"))
+DEMO_VIDEO_URL = os.getenv("DEMO_VIDEO_URL", "")
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
 
 
 def utc_now() -> datetime:
@@ -217,6 +223,7 @@ def init_db() -> None:
             )
             """
         )
+        site_store.init_site_tables(conn, db_execute, id_column)
 
 
 def make_token(email: str) -> str:
@@ -1065,6 +1072,40 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(HTTPStatus.OK, {"status": "deleted"})
             return
 
+        if path.startswith("/admin/changelog/"):
+            if not self.require_super_admin():
+                return
+            try:
+                entry_id = int(path.split("/")[-1])
+            except ValueError:
+                self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Invalid changelog id"})
+                return
+            with connect() as conn:
+                deleted = site_store.delete_changelog(conn, db_execute, entry_id)
+            if not deleted:
+                self.send_json(HTTPStatus.NOT_FOUND, {"detail": "Not found"})
+                return
+            db_changed()
+            self.send_json(HTTPStatus.OK, {"status": "deleted"})
+            return
+
+        if path.startswith("/admin/alerts/"):
+            if not self.require_super_admin():
+                return
+            try:
+                alert_id = int(path.split("/")[-1])
+            except ValueError:
+                self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Invalid alert id"})
+                return
+            with connect() as conn:
+                deleted = site_store.delete_alert(conn, db_execute, alert_id)
+            if not deleted:
+                self.send_json(HTTPStatus.NOT_FOUND, {"detail": "Not found"})
+                return
+            db_changed()
+            self.send_json(HTTPStatus.OK, {"status": "deleted"})
+            return
+
         if not path.startswith("/sessions/"):
             self.send_json(HTTPStatus.NOT_FOUND, {"detail": "Not found"})
             return
@@ -1150,6 +1191,53 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/health":
             status_code, payload = backup.get_health_status()
             self.send_json(HTTPStatus(status_code), payload)
+            return
+
+        if path == "/site/config":
+            demo_fallback = os.getenv("DEMO_VIDEO_URL", "")
+            with connect() as conn:
+                payload = site_store.site_config(conn, db_execute, demo_fallback)
+            self.send_json(HTTPStatus.OK, payload)
+            return
+
+        if path == "/site/pricing":
+            self.send_json(HTTPStatus.OK, pricing.pricing_payload())
+            return
+
+        if path == "/site/changelog":
+            with connect() as conn:
+                entries = site_store.list_changelog(conn, db_execute, published_only=True)
+            self.send_json(HTTPStatus.OK, entries)
+            return
+
+        if path == "/site/alerts":
+            with connect() as conn:
+                alerts = site_store.list_alerts(conn, db_execute, active_only=True)
+            self.send_json(HTTPStatus.OK, alerts)
+            return
+
+        if path == "/admin/changelog":
+            if not self.require_super_admin():
+                return
+            with connect() as conn:
+                entries = site_store.list_changelog(conn, db_execute, published_only=False)
+            self.send_json(HTTPStatus.OK, entries)
+            return
+
+        if path == "/admin/alerts":
+            if not self.require_super_admin():
+                return
+            with connect() as conn:
+                alerts = site_store.list_alerts(conn, db_execute, active_only=False)
+            self.send_json(HTTPStatus.OK, alerts)
+            return
+
+        if path == "/admin/site-settings":
+            if not self.require_super_admin():
+                return
+            with connect() as conn:
+                demo_url = site_store.get_setting(conn, db_execute, "demo_video_url", "")
+            self.send_json(HTTPStatus.OK, {"demo_video_url": demo_url})
             return
 
         if path == "/auth/me":
@@ -1403,10 +1491,38 @@ class Handler(BaseHTTPRequestHandler):
 
         self.send_json(HTTPStatus.NOT_FOUND, {"detail": "Not found"})
 
+    def read_raw_body(self) -> bytes:
+        length = int(self.headers.get("Content-Length", "0"))
+        if length == 0:
+            return b""
+        return self.rfile.read(length)
+
+    def handle_stripe_webhook(self) -> None:
+        raw = self.read_raw_body()
+        if not stripe_checkout.STRIPE_WEBHOOK_SECRET:
+            self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"detail": "Webhook not configured"})
+            return
+        try:
+            event = json.loads(raw.decode("utf-8"))
+        except json.JSONDecodeError:
+            self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Invalid payload"})
+            return
+        if event.get("type") == "checkout.session.completed":
+            session = event.get("data", {}).get("object", {})
+            session_id = session.get("id")
+            if session_id:
+                with connect() as conn:
+                    site_store.fulfill_order(conn, db_execute, session_id)
+                db_changed()
+        self.send_json(HTTPStatus.OK, {"received": True})
+
     def handle_post(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
-        query = parse_qs(parsed.query)
+
+        if path == "/webhooks/stripe":
+            self.handle_stripe_webhook()
+            return
 
         try:
             payload = self.read_json()
@@ -1415,6 +1531,85 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         parts = [part for part in path.split("/") if part]
+
+        if path == "/checkout/create-session":
+            subject = self.require_auth_subject()
+            if not subject:
+                return
+            discord_id = discord_id_from_subject(subject)
+            if not discord_id:
+                self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Discord login required for checkout"})
+                return
+            plan_id = str(payload.get("plan_id") or "").strip()
+            plan = pricing.plan_by_id(plan_id)
+            if plan is None:
+                self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Unknown plan"})
+                return
+            if not stripe_checkout.stripe_configured():
+                self.send_json(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    {"detail": "stripe_unavailable", "message": "Card checkout is not configured. Use Discord for payment."},
+                )
+                return
+            price_id = pricing.stripe_price_id(plan_id)
+            if not price_id:
+                self.send_json(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    {"detail": "stripe_price_missing", "message": "This plan is not linked to Stripe yet. Use Discord."},
+                )
+                return
+            try:
+                session = stripe_checkout.create_checkout_session(
+                    price_id=price_id,
+                    plan_id=plan_id,
+                    discord_id=discord_id,
+                )
+            except Exception as error:
+                self.send_json(HTTPStatus.BAD_GATEWAY, {"detail": str(error)})
+                return
+            with connect() as conn:
+                site_store.record_order(
+                    conn,
+                    db_execute,
+                    stripe_session_id=session["id"],
+                    discord_id=discord_id,
+                    plan_id=plan_id,
+                    amount_cents=plan["price_cents"],
+                    status="pending",
+                )
+            db_changed()
+            self.send_json(HTTPStatus.OK, {"url": session.get("url")})
+            return
+
+        if path == "/admin/changelog":
+            if not self.require_super_admin():
+                return
+            subject = self.require_auth_subject()
+            with connect() as conn:
+                entry = site_store.create_changelog(conn, db_execute, payload, subject or "admin")
+            db_changed()
+            self.send_json(HTTPStatus.CREATED, entry)
+            return
+
+        if path == "/admin/alerts":
+            if not self.require_super_admin():
+                return
+            subject = self.require_auth_subject()
+            with connect() as conn:
+                alert = site_store.create_alert(conn, db_execute, payload, subject or "admin")
+            db_changed()
+            self.send_json(HTTPStatus.CREATED, alert)
+            return
+
+        if path == "/admin/site-settings":
+            if not self.require_super_admin():
+                return
+            demo_video_url = str(payload.get("demo_video_url") or "").strip()
+            with connect() as conn:
+                site_store.set_setting(conn, db_execute, "demo_video_url", demo_video_url)
+            db_changed()
+            self.send_json(HTTPStatus.OK, {"demo_video_url": demo_video_url})
+            return
 
         if len(parts) == 4 and parts[0] == "admin" and parts[1] == "sessions" and parts[3] == "review":
             if not self.require_super_admin():

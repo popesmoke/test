@@ -7,6 +7,7 @@ import {
   FOOTER_LINKS,
   NAV_LINKS,
 } from "../config/brand.js";
+import { SiteAlertBanner } from "./SiteAlertBanner.jsx";
 import { IconDiscord } from "./VirelloIcons.jsx";
 
 export function SiteLayout({ children, variant = "default" }) {
@@ -53,6 +54,8 @@ export function SiteLayout({ children, variant = "default" }) {
           </div>
         </div>
       </header>
+
+      <SiteAlertBanner />
 
       <main className="site-main">{content}</main>
 

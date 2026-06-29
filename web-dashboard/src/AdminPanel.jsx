@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { AdminSitePanel } from "./components/AdminSitePanel.jsx";
 import { MaterialIcon } from "./components/MaterialIcon.jsx";
 import { ConfirmModal } from "./components/ConfirmModal.jsx";
 import { Pagination } from "./components/Pagination.jsx";
@@ -224,6 +225,7 @@ export function AdminPanel({ apiUrl, token, authHeaders }) {
           { id: "sessions", label: "Sessions" },
           { id: "users", label: "Users" },
           { id: "storage", label: "Storage" },
+          { id: "site", label: "Site" },
         ].map((row) => (
           <button
             key={row.id}
@@ -446,6 +448,8 @@ export function AdminPanel({ apiUrl, token, authHeaders }) {
           </p>
         </div>
       ) : null}
+
+      {tab === "site" ? <AdminSitePanel apiUrl={apiUrl} headers={headers} /> : null}
 
       {selectedSession ? (
         <div className="admin-drawer card-like">

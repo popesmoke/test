@@ -1,10 +1,19 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { DISCORD_INVITE_URL, DEMO_VIDEO_URL } from "../config/brand.js";
+import { DEMO_VIDEO_URL, DISCORD_INVITE_URL } from "../config/brand.js";
 import { MaterialIcon } from "../components/MaterialIcon.jsx";
 import { IconDiscord } from "../components/VirelloIcons.jsx";
+import { fetchSiteConfig } from "../lib/siteApi.js";
 
 export function LandingPage() {
+  const [demoUrl, setDemoUrl] = useState(DEMO_VIDEO_URL);
+
+  useEffect(() => {
+    void fetchSiteConfig().then((config) => {
+      if (config.demo_video_url) setDemoUrl(config.demo_video_url);
+    });
+  }, []);
+
   return (
     <div className="landing">
       <section className="hero hero--asymmetric">
@@ -54,18 +63,18 @@ export function LandingPage() {
         </aside>
       </section>
 
-      <section className="demo-section">
+      <section className="demo-section" id="demo">
         <div className="demo-section__copy">
-          <p className="demo-section__eyebrow">See it in action</p>
-          <h2>How a Virello scan works</h2>
+          <p className="demo-section__eyebrow">Live demo</p>
+          <h2>See Virello in action</h2>
           <p>
-            Watch a full walkthrough — from PIN entry to the finished report in the review console.
+            Full walkthrough from PIN entry to the finished report in the review console. Replace this with your video from the admin panel when ready.
           </p>
         </div>
         <div className="demo-video">
-          {DEMO_VIDEO_URL ? (
+          {demoUrl ? (
             <video className="demo-video__player" controls playsInline poster="/assets/demo-poster.png">
-              <source src={DEMO_VIDEO_URL} type="video/mp4" />
+              <source src={demoUrl} type="video/mp4" />
               Your browser does not support embedded video.
             </video>
           ) : (
@@ -73,7 +82,7 @@ export function LandingPage() {
               <MaterialIcon name="play_circle" size={56} />
               <p className="demo-video__title">Demo video coming soon</p>
               <p className="demo-video__hint muted">
-                A full walkthrough will appear here once it is ready.
+                Your walkthrough will appear here. Set the URL in Admin → Site once uploaded.
               </p>
             </div>
           )}

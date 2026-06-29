@@ -10,6 +10,7 @@ export const NAV_LINKS = [
   { to: "/", label: "Home" },
   { to: "/download", label: "Download" },
   { to: "/purchase", label: "Pricing" },
+  { to: "/changelog", label: "Changelog" },
   { to: "/faq", label: "FAQ" },
   { to: "/about", label: "About" },
   { to: "/workspace", label: "Console" },
@@ -20,6 +21,7 @@ export const FOOTER_LINKS = [
   { to: "/tos", label: "Terms" },
   { to: "/faq", label: "FAQ" },
   { to: "/purchase", label: "Pricing" },
+  { to: "/changelog", label: "Changelog" },
   { to: "/about", label: "About" },
   { to: "/download", label: "Download" },
 ];
