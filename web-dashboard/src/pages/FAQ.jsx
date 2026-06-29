@@ -26,7 +26,7 @@ const FAQ_ITEMS = [
   },
   {
     q: "How do I get access?",
-    a: "Buy on our Shoppex store with Bitcoin, Litecoin, USDT, Solana, or PayPal Friends & Family. At checkout, click Connect Discord and authorize — your reviewer role is granted automatically after payment. For Ethereum, Greek Paysafe, or Discord payment, join the server and open a purchase ticket.",
+    a: "Buy on our Shoppex store with Bitcoin, Litecoin, USDT, Solana, or PayPal Friends & Family. Join the Virello Discord server first, then enter your Discord user ID at checkout — your role is granted after payment. For Ethereum, Greek Paysafe, or Discord payment, open a purchase ticket.",
   },
   {
     q: "Who can see my scan results?",

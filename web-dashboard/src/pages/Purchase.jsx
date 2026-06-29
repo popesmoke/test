@@ -211,7 +211,7 @@ export function PurchasePage() {
         <h3>Payment options</h3>
         <p>
           {shoppexStoreUrl
-            ? `Buy directly on our store with ${shoppexPaymentLabel || "crypto or PayPal"}. At checkout, click **Connect Discord** — do not type your ID manually.`
+            ? `Buy on our store with ${shoppexPaymentLabel || "crypto or PayPal"}. Enter your Discord user ID at checkout (17–20 digits) and join the Virello Discord server first.`
             : "Store checkout is being finalized. Join Discord for manual payment options in the meantime."}
         </p>
 

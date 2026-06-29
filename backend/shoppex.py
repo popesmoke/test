@@ -152,7 +152,7 @@ def extract_discord_id(payload: dict) -> str | None:
             )
         custom_fields = data.get("custom_fields") or data.get("customFields")
         if isinstance(custom_fields, dict):
-            for key in ("discord_id", "discordId", "Discord ID", "discord id"):
+            for key in ("discord_id", "discordId", "Discord ID", "discord id", "Discord user ID", "discord user id"):
                 if custom_fields.get(key):
                     candidates.append(custom_fields.get(key))
         elif isinstance(custom_fields, list):

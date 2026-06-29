@@ -19,6 +19,7 @@ from urllib import request as urlrequest
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 import backup
+import discord_roles
 import discord_sync
 import pricing
 import rate_limit
@@ -1548,6 +1549,7 @@ class Handler(BaseHTTPRequestHandler):
                         plan_id=plan_id,
                         amount_cents=shoppex.extract_amount_cents(payload),
                     )
+                discord_roles.grant_access_role(discord_id)
                 db_changed()
         elif result["action"] == "revoke":
             invoice_id = shoppex.extract_invoice_id(payload)
@@ -1586,6 +1588,7 @@ class Handler(BaseHTTPRequestHandler):
                     plan_id=plan_id,
                     amount_cents=shoppex.extract_amount_cents(payload),
                 )
+            discord_roles.grant_access_role(discord_id)
             db_changed()
         self.send_json(HTTPStatus.OK, shoppex.dynamic_fulfillment_response(plan))
 
