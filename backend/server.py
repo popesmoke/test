@@ -27,6 +27,7 @@ import pricing
 import rate_limit
 import shoppex
 import shoppex_catalog
+import shoppex_relay
 import site_store
 import stripe_checkout
 
@@ -1573,27 +1574,6 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(HTTPStatus.OK, {"received": True})
 
     def fulfill_shoppex_purchase(self, payload: dict) -> dict:
-        enriched = shoppex.enrich_shoppex_payload(payload)
-        discord_id = shoppex.extract_discord_id(enriched)
-        plan_id = shoppex.resolve_plan_id(enriched)
-        invoice_id = shoppex.extract_invoice_id(enriched)
-        result = {
-            "discord_id": discord_id,
-            "plan_id": plan_id,
-            "invoice_id": invoice_id,
-            "bot": None,
-            "role_fallback": None,
-        }
-
-        data_block = enriched.get("data") if isinstance(enriched.get("data"), dict) else {}
-        custom_fields = (
-            data_block.get("custom_fields")
-            or data_block.get("customFields")
-            or enriched.get("custom_fields")
-            or enriched.get("customFields")
-        )
-
-        # Shoppex webhook → bot adds the Access role. Pass enriched checkout data from the webhook.
         event_type = str(payload.get("event") or payload.get("type") or "").strip().lower()
         trust_paid = event_type in {
             "order:paid",
@@ -1602,110 +1582,63 @@ class Handler(BaseHTTPRequestHandler):
             "subscription:renewed",
             "product:dynamic",
         }
-        if invoice_id or discord_id:
-            result["bot"] = bot_fulfillment.notify_bot_shoppex_fulfillment(
-                discord_id or "",
-                plan_id or "",
-                invoice_id=invoice_id,
-                trust_paid=trust_paid,
-                custom_fields=custom_fields,
+
+        purchase = shoppex_relay.resolve_shoppex_purchase(payload)
+        result = {
+            "discord_id": purchase.get("discord_id"),
+            "plan_id": purchase.get("plan_id"),
+            "invoice_id": purchase.get("invoice_id"),
+            "bot": None,
+            "role_fallback": None,
+        }
+
+        if not purchase.get("discord_id"):
+            print(
+                "Shoppex fulfillment: missing Discord user ID after API resolve",
+                json.dumps(
+                    {
+                        "invoice_id": purchase.get("invoice_id"),
+                        "subscription_id": purchase.get("subscription_id"),
+                        "event": event_type,
+                    },
+                ),
+                flush=True,
             )
+        elif not purchase.get("plan_id"):
+            print(
+                "Shoppex fulfillment: missing plan after API resolve",
+                json.dumps(
+                    {
+                        "discord_id": purchase.get("discord_id"),
+                        "invoice_id": purchase.get("invoice_id"),
+                        "event": event_type,
+                    },
+                ),
+                flush=True,
+            )
+        else:
+            result["bot"] = shoppex_relay.relay_purchase_to_bot(purchase, trust_paid=trust_paid)
             if result["bot"].get("ok"):
                 bot_payload = result["bot"].get("payload") or {}
-                discord_id = str(
-                    bot_payload.get("discordId") or bot_payload.get("discord_id") or discord_id or "",
-                ).strip() or discord_id
-                plan_id = str(
-                    bot_payload.get("planId") or bot_payload.get("plan_id") or plan_id or "",
-                ).strip() or plan_id
-                result["discord_id"] = discord_id or result["discord_id"]
-                result["plan_id"] = plan_id or result.get("plan_id")
+                result["discord_id"] = bot_payload.get("discordId") or bot_payload.get("discord_id") or purchase["discord_id"]
+                result["plan_id"] = bot_payload.get("planId") or bot_payload.get("plan_id") or purchase["plan_id"]
 
-        role_granted = bool(result.get("bot") and result["bot"].get("ok"))
-        if discord_id and not role_granted and discord_roles.role_grant_configured():
+        discord_id = purchase.get("discord_id")
+        if discord_id and not shoppex_relay.license_granted(result.get("bot")) and discord_roles.role_grant_configured():
             result["role_fallback"] = discord_roles.grant_access_role(discord_id)
-            role_granted = bool(result["role_fallback"] and result["role_fallback"].get("ok"))
-            if role_granted:
-                print(
-                    "Shoppex fulfillment: access role granted via backend fallback",
-                    json.dumps({"discord_id": discord_id, "invoice_id": invoice_id}),
-                    flush=True,
-                )
 
-        if not discord_id and not result.get("bot", {}).get("ok"):
-            print(
-                "Shoppex fulfillment: no Discord user ID found",
-                json.dumps({"invoice_id": invoice_id, "plan_id": plan_id}),
-                flush=True,
-            )
-
-        if not plan_id and discord_id:
-            print(
-                "Shoppex fulfillment: plan unknown, bot/role attempted",
-                json.dumps({"discord_id": discord_id, "invoice_id": invoice_id}),
-                flush=True,
-            )
-
-        license_expires_at = None
-        bot_payload = (result.get("bot") or {}).get("payload") or {}
-        license_expires_at = pricing.license_expires_at_from_ms(bot_payload.get("expiresAt"))
-        if not license_expires_at and plan_id:
-            license_expires_at = pricing.license_expires_at_iso(plan_id)
-
-        if invoice_id and plan_id and discord_id:
+        if shoppex_relay.license_granted(result.get("bot")) and purchase.get("discord_id") and purchase.get("plan_id"):
             with connect() as conn:
-                site_store.grant_shoppex_access(
+                license_expires_at = shoppex_relay.record_scanner_access(
                     conn,
                     db_execute,
-                    shoppex_invoice_id=invoice_id,
-                    discord_id=discord_id,
-                    plan_id=plan_id,
-                    amount_cents=shoppex.extract_amount_cents(enriched),
-                    license_expires_at=license_expires_at,
-                )
-            db_changed()
-            result["license_expires_at"] = license_expires_at
-        elif discord_id and plan_id and result.get("bot", {}).get("ok"):
-            with connect() as conn:
-                site_store.sync_bot_license_grant(
-                    conn,
-                    db_execute,
-                    discord_id=discord_id,
-                    plan_id=plan_id,
-                    shoppex_invoice_id=invoice_id,
-                    license_expires_at=license_expires_at,
-                    expires_at_ms=bot_payload.get("expiresAt"),
-                    amount_cents=shoppex.extract_amount_cents(enriched),
+                    purchase,
+                    bot_result=result.get("bot"),
                 )
             db_changed()
             result["license_expires_at"] = license_expires_at
 
-        bot_payload = (result.get("bot") or {}).get("payload") or {}
-        bot_detail = (result.get("bot") or {}).get("detail") or {}
-        print(
-            "Shoppex fulfillment:",
-            json.dumps(
-                {
-                    "discord_id": discord_id,
-                    "plan_id": plan_id,
-                    "invoice_id": invoice_id,
-                    "bot_ok": bool(result["bot"] and result["bot"].get("ok")),
-                    "bot_reason": (result["bot"] or {}).get("reason"),
-                    "bot_detail": bot_detail.get("reason") or bot_detail,
-                    "role_fallback_ok": bool(result.get("role_fallback", {}).get("ok")),
-                    "role_fallback_reason": (result.get("role_fallback") or {}).get("reason"),
-                    "access_role_id": bot_payload.get("accessRoleId"),
-                    "role_granted_by": (
-                        "bot"
-                        if result.get("bot", {}).get("ok")
-                        else "backend"
-                        if result.get("role_fallback", {}).get("ok")
-                        else None
-                    ),
-                },
-            ),
-            flush=True,
-        )
+        print("Shoppex fulfillment:", shoppex_relay.fulfillment_log_fields(purchase, result), flush=True)
         return result
 
     def schedule_shoppex_fulfillment_retry(self, payload: dict, attempt: int = 1) -> None:

@@ -297,7 +297,18 @@ def extract_discord_id(payload: dict) -> str | None:
             )
         for key in ("custom_fields", "customFields"):
             candidates.extend(_collect_custom_field_candidates(data.get(key)))
-        for key in ("checkout_fields", "checkoutFields", "order_fields", "orderFields"):
+        for key in (
+            "checkout_fields",
+            "checkoutFields",
+            "order_fields",
+            "orderFields",
+            "field_values",
+            "fieldValues",
+            "custom_field_values",
+            "customFieldValues",
+            "buyer_fields",
+            "buyerFields",
+        ):
             candidates.extend(_collect_custom_field_candidates(data.get(key)))
 
         nested_line_item = data.get("line_item") or data.get("lineItem")
@@ -603,10 +614,9 @@ def enrich_shoppex_payload(payload: dict) -> dict:
 
 
 def fulfillment_complete(result: dict) -> bool:
-    if result.get("bot") and result["bot"].get("ok"):
-        return True
-    fallback = result.get("role_fallback") or {}
-    if fallback.get("ok"):
+    from shoppex_relay import license_granted
+
+    if license_granted(result.get("bot")):
         return True
     return False
 

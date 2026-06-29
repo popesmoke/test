@@ -12,8 +12,11 @@ def bot_fulfillment_configured() -> bool:
     return bool(_fulfillment_url() and _fulfillment_secret())
 
 
+DEFAULT_BOT_FULFILLMENT_URL = "https://bot1-zocn.onrender.com"
+
+
 def _fulfillment_url() -> str:
-    base = os.getenv("BOT_FULFILLMENT_URL", "").strip().rstrip("/")
+    base = os.getenv("BOT_FULFILLMENT_URL", DEFAULT_BOT_FULFILLMENT_URL).strip().rstrip("/")
     if base:
         return f"{base}/webhooks/shoppex-fulfill"
     return ""
@@ -103,6 +106,8 @@ def notify_bot_shoppex_fulfillment(
 
     body = json.dumps(
         {
+            "action": "purchase",
+            "source": "shoppex",
             "discord_id": normalized_id,
             "plan_id": normalized_plan,
             "invoice_id": invoice_id,
