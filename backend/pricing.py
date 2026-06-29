@@ -236,7 +236,7 @@ def _stripe_secret() -> str:
 def shoppex_store_url() -> str:
     import os
 
-    return os.getenv("SHOPPEX_STORE_URL", "").strip().rstrip("/")
+    return os.getenv("SHOPPEX_STORE_URL", "https://officialvirello.myshoppex.io").strip().rstrip("/")
 
 
 def shoppex_product_url(plan: dict) -> str:
