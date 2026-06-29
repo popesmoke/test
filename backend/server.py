@@ -1193,7 +1193,38 @@ class Handler(BaseHTTPRequestHandler):
         query = parse_qs(parsed.query)
 
         if path == "/health":
+            try:
+                with connect() as conn:
+                    db_execute(conn, "SELECT 1").fetchone()
+                db_ok = True
+            except Exception:
+                db_ok = False
+
+            if discord_sync.storage_mode() == "discord":
+                sync_status = discord_sync.get_status()
+                payload = {
+                    "status": "ok" if db_ok and sync_status.get("configured") else "degraded",
+                    "service": "virello-scanner-backend",
+                    "timestamp": to_iso(utc_now()),
+                    "database": {
+                        "connected": db_ok,
+                        "engine": "discord-txt",
+                        "has_data": db_ok,
+                    },
+                    "storage": sync_status,
+                    "shoppex": {
+                        "webhook_configured": bool(shoppex.SHOPPEX_WEBHOOK_SECRET),
+                        "bot_fulfillment_configured": bot_fulfillment.bot_fulfillment_configured(),
+                    },
+                }
+                self.send_json(HTTPStatus.OK if payload["status"] == "ok" else HTTPStatus.SERVICE_UNAVAILABLE, payload)
+                return
+
             status_code, payload = backup.get_health_status()
+            payload["shoppex"] = {
+                "webhook_configured": bool(shoppex.SHOPPEX_WEBHOOK_SECRET),
+                "bot_fulfillment_configured": bot_fulfillment.bot_fulfillment_configured(),
+            }
             self.send_json(HTTPStatus(status_code), payload)
             return
 
@@ -1205,7 +1236,11 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/site/pricing":
-            self.send_json(HTTPStatus.OK, pricing.pricing_payload())
+            payload = pricing.pricing_payload()
+            payload["shoppex_claim_hint"] = (
+                "After paying, run /claim <order_id> in the Virello Discord server if access is not granted automatically."
+            )
+            self.send_json(HTTPStatus.OK, payload)
             return
 
         if path == "/site/changelog":
