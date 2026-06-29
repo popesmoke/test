@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import calendar
+from datetime import datetime, timezone
+
 PERSONAL_PLANS = [
     {
         "id": "monthly",
@@ -286,3 +289,35 @@ def stripe_price_id(plan_id: str) -> str | None:
     key = f"STRIPE_PRICE_{plan_id.upper()}"
     value = os.getenv(key, "").strip()
     return value or None
+
+
+def add_months(dt: datetime, months: int) -> datetime:
+    month_index = dt.month - 1 + months
+    year = dt.year + month_index // 12
+    month = month_index % 12 + 1
+    last_day = calendar.monthrange(year, month)[1]
+    day = min(dt.day, last_day)
+    return dt.replace(year=year, month=month, day=day, tzinfo=dt.tzinfo)
+
+
+def license_expires_at_iso(plan_id: str, *, base: datetime | None = None) -> str | None:
+    plan = plan_by_id(plan_id)
+    if not plan:
+        return None
+    start = base or datetime.now(timezone.utc)
+    expires = add_months(start, int(plan.get("months") or 1))
+    return expires.isoformat().replace("+00:00", "Z")
+
+
+def license_expires_at_from_ms(expires_at_ms: int | float | None) -> str | None:
+    if expires_at_ms is None:
+        return None
+    try:
+        value = float(expires_at_ms)
+    except (TypeError, ValueError):
+        return None
+    if value <= 0:
+        return None
+    seconds = value / 1000 if value > 1_000_000_000_000 else value
+    expires = datetime.fromtimestamp(seconds, tz=timezone.utc)
+    return expires.isoformat().replace("+00:00", "Z")

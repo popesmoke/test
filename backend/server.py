@@ -192,6 +192,8 @@ def init_db() -> None:
         ensure_column(conn, "discord_users", "fingerprint_seen_json", "TEXT NOT NULL DEFAULT '[]'")
         ensure_column(conn, "discord_users", "sharing_locked", "INTEGER NOT NULL DEFAULT 0")
         ensure_column(conn, "discord_users", "sharing_reason", "TEXT")
+        ensure_column(conn, "discord_users", "license_plan_id", "TEXT")
+        ensure_column(conn, "discord_users", "license_expires_at", "TEXT")
         db_execute(
             conn,
             f"""
@@ -740,6 +742,8 @@ def get_discord_profile(discord_id: str) -> dict | None:
     keys = row.keys()
     admin_banned = bool(row["admin_banned"]) if "admin_banned" in keys else False
     access_override = row["access_override"] if "access_override" in keys else None
+    license_expires_at = row["license_expires_at"] if "license_expires_at" in keys else None
+    license_plan_id = row["license_plan_id"] if "license_plan_id" in keys else None
     has_role_access = DISCORD_ACCESS_ROLE_ID in roles
     sharing_locked = bool(row["sharing_locked"]) if "sharing_locked" in keys else False
     sharing_reason = row["sharing_reason"] if "sharing_reason" in keys else None
@@ -749,6 +753,11 @@ def get_discord_profile(discord_id: str) -> dict | None:
         has_access = True
     else:
         has_access = has_role_access
+    if has_access and license_expires_at and not site_store.license_is_active(license_expires_at):
+        has_access = False
+        with connect() as conn:
+            site_store.ensure_discord_user_access(conn, db_execute, discord_id=discord_id, grant_access=False)
+        db_changed()
     if admin_banned:
         has_access = False
     if sharing_locked and not is_super_admin_discord_id(discord_id):
@@ -767,6 +776,8 @@ def get_discord_profile(discord_id: str) -> dict | None:
         "admin_banned": admin_banned,
         "admin_notes": row["admin_notes"] if "admin_notes" in keys else None,
         "access_override": access_override,
+        "license_plan_id": license_plan_id,
+        "license_expires_at": license_expires_at,
         "sharing_locked": sharing_locked,
         "sharing_reason": sharing_reason,
         "is_super_admin": is_super_admin_discord_id(discord_id),
@@ -1594,7 +1605,11 @@ class Handler(BaseHTTPRequestHandler):
                 discord_id = str(
                     bot_payload.get("discordId") or bot_payload.get("discord_id") or discord_id or "",
                 ).strip() or discord_id
+                plan_id = str(
+                    bot_payload.get("planId") or bot_payload.get("plan_id") or plan_id or "",
+                ).strip() or plan_id
                 result["discord_id"] = discord_id or result["discord_id"]
+                result["plan_id"] = plan_id or result.get("plan_id")
 
         if not discord_id and not result.get("bot", {}).get("ok"):
             print(
@@ -1610,6 +1625,12 @@ class Handler(BaseHTTPRequestHandler):
                 flush=True,
             )
 
+        license_expires_at = None
+        bot_payload = (result.get("bot") or {}).get("payload") or {}
+        license_expires_at = pricing.license_expires_at_from_ms(bot_payload.get("expiresAt"))
+        if not license_expires_at and plan_id:
+            license_expires_at = pricing.license_expires_at_iso(plan_id)
+
         if invoice_id and plan_id and discord_id:
             with connect() as conn:
                 site_store.grant_shoppex_access(
@@ -1619,8 +1640,24 @@ class Handler(BaseHTTPRequestHandler):
                     discord_id=discord_id,
                     plan_id=plan_id,
                     amount_cents=shoppex.extract_amount_cents(enriched),
+                    license_expires_at=license_expires_at,
                 )
             db_changed()
+            result["license_expires_at"] = license_expires_at
+        elif discord_id and plan_id and result.get("bot", {}).get("ok"):
+            with connect() as conn:
+                site_store.sync_bot_license_grant(
+                    conn,
+                    db_execute,
+                    discord_id=discord_id,
+                    plan_id=plan_id,
+                    shoppex_invoice_id=invoice_id,
+                    license_expires_at=license_expires_at,
+                    expires_at_ms=bot_payload.get("expiresAt"),
+                    amount_cents=shoppex.extract_amount_cents(enriched),
+                )
+            db_changed()
+            result["license_expires_at"] = license_expires_at
 
         bot_payload = (result.get("bot") or {}).get("payload") or {}
         bot_detail = (result.get("bot") or {}).get("detail") or {}
@@ -1761,6 +1798,78 @@ class Handler(BaseHTTPRequestHandler):
             self.schedule_shoppex_fulfillment_retry(payload)
         self.send_json(HTTPStatus.OK, shoppex.dynamic_fulfillment_response(plan))
 
+    def handle_bot_license_webhook(self) -> None:
+        raw = self.read_raw_body()
+        secret = (
+            os.getenv("BOT_FULFILLMENT_SECRET", "").strip()
+            or os.getenv("SHOPPEX_FULFILLMENT_SECRET", "").strip()
+        )
+        if not secret:
+            self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"detail": "Bot license webhook not configured"})
+            return
+        header = self.headers.get("X-Virello-Fulfillment-Secret", "")
+        if not header or header != secret:
+            self.send_json(HTTPStatus.UNAUTHORIZED, {"detail": "Invalid fulfillment secret"})
+            return
+        try:
+            payload = json.loads(raw.decode("utf-8") or "{}")
+        except json.JSONDecodeError:
+            self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Invalid payload"})
+            return
+
+        action = str(payload.get("action") or "grant").strip().lower()
+        discord_id = str(payload.get("discord_id") or payload.get("discordId") or "").strip()
+        if not discord_id.isdigit():
+            self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "discord_id required"})
+            return
+
+        if action == "revoke":
+            with connect() as conn:
+                invoice_id = str(payload.get("invoice_id") or payload.get("invoiceId") or "").strip()
+                if invoice_id:
+                    site_store.revoke_shoppex_access(conn, db_execute, invoice_id)
+                else:
+                    site_store.revoke_discord_license(conn, db_execute, discord_id)
+            db_changed()
+            self.send_json(HTTPStatus.OK, {"ok": True, "action": "revoke", "discord_id": discord_id})
+            return
+
+        plan_id = str(payload.get("plan_id") or payload.get("planId") or "").strip()
+        if not plan_id:
+            self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "plan_id required"})
+            return
+
+        invoice_id = str(payload.get("invoice_id") or payload.get("invoiceId") or "").strip() or None
+        license_expires_at = pricing.license_expires_at_from_ms(
+            payload.get("expires_at_ms") or payload.get("expiresAt"),
+        )
+        if not license_expires_at:
+            license_expires_at = str(payload.get("license_expires_at") or payload.get("licenseExpiresAt") or "").strip() or None
+        amount_cents = int(payload.get("amount_cents") or 0)
+
+        with connect() as conn:
+            row = site_store.sync_bot_license_grant(
+                conn,
+                db_execute,
+                discord_id=discord_id,
+                plan_id=plan_id,
+                shoppex_invoice_id=invoice_id,
+                license_expires_at=license_expires_at,
+                expires_at_ms=payload.get("expires_at_ms") or payload.get("expiresAt"),
+                amount_cents=amount_cents,
+            )
+        db_changed()
+        self.send_json(
+            HTTPStatus.OK,
+            {
+                "ok": True,
+                "action": "grant",
+                "discord_id": discord_id,
+                "plan_id": plan_id,
+                "license_expires_at": row.get("license_expires_at") if isinstance(row, dict) else license_expires_at,
+            },
+        )
+
     def handle_post(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
@@ -1775,6 +1884,10 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/webhooks/shoppex/dynamic":
             self.handle_shoppex_dynamic_webhook()
+            return
+
+        if path == "/webhooks/bot-license":
+            self.handle_bot_license_webhook()
             return
 
         try:

@@ -601,7 +601,11 @@ def enrich_shoppex_payload(payload: dict) -> dict:
 
 
 def fulfillment_complete(result: dict) -> bool:
-    return bool(result.get("bot") and result["bot"].get("ok"))
+    if result.get("bot") and result["bot"].get("ok"):
+        return True
+    if result.get("license_expires_at") and result.get("discord_id") and result.get("plan_id"):
+        return True
+    return False
 
 
 def extract_amount_cents(payload: dict) -> int:

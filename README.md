@@ -152,7 +152,18 @@ SHOPPEX_WEBHOOK_SECRET=from Shoppex dashboard
 SHOPPEX_DYNAMIC_WEBHOOK_URL=https://virello-secure.onrender.com/webhooks/shoppex/dynamic
 DISCORD_GUILD_ID=your guild id
 DISCORD_ACCESS_ROLE_ID=your access role id
+BOT_FULFILLMENT_URL=https://your-bot.onrender.com
+BOT_FULFILLMENT_SECRET=shared secret with virellobot
 ```
+
+On **virellobot** (Render), set the same `BOT_FULFILLMENT_SECRET` and `VIRELLO_API_URL=https://virello-secure.onrender.com`.
+
+Flow after payment:
+
+1. Shoppex webhook hits the backend.
+2. Backend notifies the bot (`/webhooks/shoppex-fulfill`) to grant the Access role + license with expiry.
+3. Backend records the order and sets dashboard access instantly (even before the buyer logs in).
+4. Bot syncs license state back to the backend (`/webhooks/bot-license`) for `/claim` and renewals.
 
 In **Shoppex → Settings → Webhooks**, add:
 

@@ -2,14 +2,29 @@
 
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
 
-from pricing import pricing_payload
+from pricing import license_expires_at_from_ms, license_expires_at_iso, pricing_payload
 
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _parse_expires_at(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def license_is_active(license_expires_at: str | None) -> bool:
+    expires = _parse_expires_at(license_expires_at)
+    if expires is None:
+        return True
+    return expires >= datetime.now(timezone.utc)
 
 
 def init_site_tables(conn, db_execute, id_column: str) -> None:
@@ -67,7 +82,8 @@ def init_site_tables(conn, db_execute, id_column: str) -> None:
             status TEXT NOT NULL,
             payment_source TEXT NOT NULL DEFAULT 'stripe',
             created_at TEXT NOT NULL,
-            fulfilled_at TEXT
+            fulfilled_at TEXT,
+            license_expires_at TEXT
         )
         """,
     )
@@ -236,6 +252,66 @@ def ensure_order_columns(conn, db_execute) -> None:
         db_execute(conn, "ALTER TABLE orders ADD COLUMN shoppex_invoice_id TEXT")
     if "payment_source" not in columns:
         db_execute(conn, "ALTER TABLE orders ADD COLUMN payment_source TEXT NOT NULL DEFAULT 'stripe'")
+    if "license_expires_at" not in columns:
+        db_execute(conn, "ALTER TABLE orders ADD COLUMN license_expires_at TEXT")
+
+
+def ensure_discord_user_access(
+    conn,
+    db_execute,
+    *,
+    discord_id: str,
+    plan_id: str | None = None,
+    license_expires_at: str | None = None,
+    grant_access: bool = True,
+) -> None:
+    normalized_id = str(discord_id or "").strip()
+    if not normalized_id.isdigit():
+        return
+
+    now = utc_now_iso()
+    existing = db_execute(
+        conn,
+        "SELECT discord_id FROM discord_users WHERE discord_id = ?",
+        (normalized_id,),
+    ).fetchone()
+    access_value = 1 if grant_access else 0
+
+    if existing is None:
+        db_execute(
+            conn,
+            """
+            INSERT INTO discord_users (
+                discord_id, username, avatar, roles_json, last_login_at,
+                access_override, license_plan_id, license_expires_at
+            )
+            VALUES (?, ?, NULL, '[]', ?, ?, ?, ?)
+            """,
+            (
+                normalized_id,
+                f"buyer-{normalized_id[-4:]}",
+                now,
+                access_value,
+                plan_id,
+                license_expires_at,
+            ),
+        )
+        return
+
+    updates = ["access_override = ?"]
+    params: list[object] = [access_value]
+    if plan_id:
+        updates.append("license_plan_id = ?")
+        params.append(plan_id)
+    if license_expires_at:
+        updates.append("license_expires_at = ?")
+        params.append(license_expires_at)
+    params.append(normalized_id)
+    db_execute(
+        conn,
+        f"UPDATE discord_users SET {', '.join(updates)} WHERE discord_id = ?",
+        tuple(params),
+    )
 
 
 def record_order(
@@ -249,15 +325,16 @@ def record_order(
     stripe_session_id: str | None = None,
     shoppex_invoice_id: str | None = None,
     payment_source: str = "stripe",
+    license_expires_at: str | None = None,
 ) -> None:
     db_execute(
         conn,
         """
         INSERT INTO orders (
             stripe_session_id, shoppex_invoice_id, discord_id, plan_id, amount_cents,
-            currency, status, payment_source, created_at
+            currency, status, payment_source, created_at, license_expires_at
         )
-        VALUES (?, ?, ?, ?, ?, 'usd', ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, 'usd', ?, ?, ?, ?)
         """,
         (
             stripe_session_id,
@@ -268,6 +345,7 @@ def record_order(
             status,
             payment_source,
             utc_now_iso(),
+            license_expires_at,
         ),
     )
 
@@ -294,15 +372,34 @@ def grant_shoppex_access(
     discord_id: str,
     plan_id: str,
     amount_cents: int,
+    license_expires_at: str | None = None,
 ) -> dict:
+    if not license_expires_at:
+        license_expires_at = license_expires_at_iso(plan_id)
+
     existing = db_execute(
         conn,
         "SELECT * FROM orders WHERE shoppex_invoice_id = ?",
         (shoppex_invoice_id,),
     ).fetchone()
     if existing is not None:
+        if license_expires_at:
+            db_execute(
+                conn,
+                "UPDATE orders SET license_expires_at = ? WHERE shoppex_invoice_id = ?",
+                (license_expires_at, shoppex_invoice_id),
+            )
         fulfilled = fulfill_shoppex_order(conn, db_execute, shoppex_invoice_id)
-        return fulfilled or dict(existing)
+        row = fulfilled or dict(existing)
+        ensure_discord_user_access(
+            conn,
+            db_execute,
+            discord_id=discord_id,
+            plan_id=plan_id,
+            license_expires_at=license_expires_at,
+            grant_access=True,
+        )
+        return row
 
     record_order(
         conn,
@@ -313,11 +410,60 @@ def grant_shoppex_access(
         amount_cents=amount_cents,
         status="pending",
         payment_source="shoppex",
+        license_expires_at=license_expires_at,
     )
     fulfilled = fulfill_shoppex_order(conn, db_execute, shoppex_invoice_id)
     if fulfilled is None:
         raise RuntimeError("Failed to fulfill Shoppex order")
+    ensure_discord_user_access(
+        conn,
+        db_execute,
+        discord_id=discord_id,
+        plan_id=plan_id,
+        license_expires_at=license_expires_at,
+        grant_access=True,
+    )
     return fulfilled
+
+
+def sync_bot_license_grant(
+    conn,
+    db_execute,
+    *,
+    discord_id: str,
+    plan_id: str,
+    shoppex_invoice_id: str | None = None,
+    license_expires_at: str | None = None,
+    expires_at_ms: int | float | None = None,
+    amount_cents: int = 0,
+) -> dict:
+    resolved_expires = license_expires_at or license_expires_at_from_ms(expires_at_ms) or license_expires_at_iso(plan_id)
+    if shoppex_invoice_id:
+        return grant_shoppex_access(
+            conn,
+            db_execute,
+            shoppex_invoice_id=shoppex_invoice_id,
+            discord_id=discord_id,
+            plan_id=plan_id,
+            amount_cents=amount_cents,
+            license_expires_at=resolved_expires,
+        )
+
+    ensure_discord_user_access(
+        conn,
+        db_execute,
+        discord_id=discord_id,
+        plan_id=plan_id,
+        license_expires_at=resolved_expires,
+        grant_access=True,
+    )
+    return {
+        "discord_id": discord_id,
+        "plan_id": plan_id,
+        "license_expires_at": resolved_expires,
+        "status": "paid",
+        "payment_source": "shoppex",
+    }
 
 
 def revoke_shoppex_access(conn, db_execute, shoppex_invoice_id: str) -> dict | None:
@@ -329,17 +475,23 @@ def revoke_shoppex_access(conn, db_execute, shoppex_invoice_id: str) -> dict | N
         "UPDATE orders SET status = 'revoked', fulfilled_at = ? WHERE shoppex_invoice_id = ?",
         (utc_now_iso(), shoppex_invoice_id),
     )
-    db_execute(
+    ensure_discord_user_access(
         conn,
-        "UPDATE discord_users SET access_override = 0 WHERE discord_id = ?",
-        (row["discord_id"],),
+        db_execute,
+        discord_id=row["discord_id"],
+        grant_access=False,
     )
     return dict(row)
+
+
+def revoke_discord_license(conn, db_execute, discord_id: str) -> None:
+    ensure_discord_user_access(conn, db_execute, discord_id=discord_id, grant_access=False)
 
 
 def _mark_order_paid(conn, db_execute, row) -> dict:
     now = utc_now_iso()
     keys = set(row.keys())
+    license_expires_at = row["license_expires_at"] if "license_expires_at" in keys else None
     if "stripe_session_id" in keys and row["stripe_session_id"]:
         db_execute(
             conn,
@@ -352,9 +504,12 @@ def _mark_order_paid(conn, db_execute, row) -> dict:
             "UPDATE orders SET status = 'paid', fulfilled_at = ? WHERE shoppex_invoice_id = ?",
             (now, row["shoppex_invoice_id"]),
         )
-    db_execute(
+    ensure_discord_user_access(
         conn,
-        "UPDATE discord_users SET access_override = 1 WHERE discord_id = ?",
-        (row["discord_id"],),
+        db_execute,
+        discord_id=row["discord_id"],
+        plan_id=row["plan_id"],
+        license_expires_at=license_expires_at,
+        grant_access=True,
     )
     return dict(row)
