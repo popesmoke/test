@@ -71,7 +71,75 @@ def verify_signature_v2(
     return hmac.compare_digest(expected, provided_hash)
 
 
-def verify_event_webhook(raw_body: bytes, signature_header: str) -> bool:
+def verify_delivery_signature_v2(
+    *,
+    raw_body: bytes,
+    signature_header: str,
+    delivery_id: str,
+    timestamp_header: str,
+    secret: str,
+    tolerance_seconds: int = SHOPPEX_SIGNATURE_TOLERANCE_SECONDS,
+) -> bool:
+    if not secret:
+        return False
+
+    delivery_id = str(delivery_id or "").strip()
+    timestamp_header = str(timestamp_header or "").strip()
+    header = str(signature_header or "").strip()
+    if not delivery_id or not timestamp_header or not header:
+        return False
+
+    segments = [part.strip() for part in header.split(",")]
+    if "v1" not in segments:
+        return False
+
+    parts: dict[str, str] = {}
+    for part in segments:
+        if "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        parts[key.strip().lower()] = value.strip()
+
+    timestamp = parts.get("t")
+    provided_hash = parts.get("h")
+    if timestamp != timestamp_header or not provided_hash:
+        return False
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", provided_hash):
+        return False
+
+    try:
+        timestamp_int = int(timestamp)
+    except ValueError:
+        return False
+    if abs(int(time.time()) - timestamp_int) > tolerance_seconds:
+        return False
+
+    signed_payload = f"{delivery_id}.{timestamp}.".encode("utf-8") + raw_body
+    expected = hmac.new(secret.encode("utf-8"), signed_payload, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, provided_hash)
+
+
+def verify_event_webhook(
+    raw_body: bytes,
+    signature_header: str,
+    *,
+    delivery_id: str = "",
+    timestamp_header: str = "",
+) -> bool:
+    if not SHOPPEX_WEBHOOK_SECRET:
+        return False
+
+    delivery_id = str(delivery_id or "").strip()
+    timestamp_header = str(timestamp_header or "").strip()
+    if delivery_id and timestamp_header:
+        return verify_delivery_signature_v2(
+            raw_body=raw_body,
+            signature_header=signature_header,
+            delivery_id=delivery_id,
+            timestamp_header=timestamp_header,
+            secret=SHOPPEX_WEBHOOK_SECRET,
+        )
+
     return verify_signature_v2(
         raw_body=raw_body,
         signature_header=signature_header,
@@ -93,30 +161,14 @@ def verify_dynamic_webhook(
     delivery_id = str(delivery_id or "").strip()
     timestamp_header = str(timestamp_header or "").strip()
     if delivery_id and timestamp_header:
-        try:
-            timestamp_int = int(timestamp_header)
-        except ValueError:
-            return False
-        if abs(int(time.time()) - timestamp_int) > SHOPPEX_SIGNATURE_TOLERANCE_SECONDS:
-            return False
-
-        header = str(signature_header or "").strip()
-        provided_hash = None
-        for part in header.split(","):
-            key, _, value = part.partition("=")
-            if key.strip().lower() == "h":
-                provided_hash = value.strip()
-                break
-        if not provided_hash:
-            match = re.search(r"h=([a-fA-F0-9]+)", header)
-            provided_hash = match.group(1) if match else None
-        if not provided_hash:
-            return False
-
-        signed_payload = f"{delivery_id}.{timestamp_header}.{raw_body.decode('utf-8')}".encode("utf-8")
         for secret in secrets:
-            expected = hmac.new(secret.encode("utf-8"), signed_payload, hashlib.sha256).hexdigest()
-            if hmac.compare_digest(expected, provided_hash):
+            if verify_delivery_signature_v2(
+                raw_body=raw_body,
+                signature_header=signature_header,
+                delivery_id=delivery_id,
+                timestamp_header=timestamp_header,
+                secret=secret,
+            ):
                 return True
         return False
 
@@ -285,6 +337,11 @@ def extract_plan_id(payload: dict) -> str | None:
             product_candidates.append(str(value))
 
     for container in (data, payload):
+        for key in ("product_title", "productTitle", "title"):
+            value = container.get(key)
+            if value:
+                product_candidates.append(str(value))
+
         line_item = container.get("line_item") or container.get("lineItem")
         if isinstance(line_item, dict):
             for key in ("product_id", "productId", "product_slug", "productSlug", "product_title", "productTitle"):
@@ -301,6 +358,9 @@ def extract_plan_id(payload: dict) -> str | None:
 
     for candidate in product_candidates:
         plan = pricing.plan_by_shoppex_product_id(candidate)
+        if plan:
+            return plan["id"]
+        plan = pricing.plan_by_shoppex_title(candidate)
         if plan:
             return plan["id"]
         slug = candidate.rsplit("/", 1)[-1].strip().lower()
@@ -349,7 +409,7 @@ def extract_invoice_id(payload: dict) -> str | None:
 
 
 def enrich_payload_from_invoice_api(payload: dict) -> dict:
-    if extract_discord_id(payload):
+    if extract_discord_id(payload) and extract_plan_id(payload):
         return payload
 
     invoice_id = extract_invoice_id(payload)
@@ -360,21 +420,31 @@ def enrich_payload_from_invoice_api(payload: dict) -> dict:
         import shoppex_catalog
 
         invoice = shoppex_catalog.fetch_invoice(invoice_id)
-        if not invoice:
+        order = shoppex_catalog.fetch_order(invoice_id) if not invoice else None
+        source = invoice or order
+        if not source:
             return payload
 
         merged = dict(payload)
         data = dict(merged.get("data") or {})
-        if invoice.get("custom_fields"):
-            data["custom_fields"] = invoice.get("custom_fields")
-        if invoice.get("items"):
-            data["items"] = invoice.get("items")
-        if invoice.get("product_id") and not data.get("product_id"):
-            data["product_id"] = invoice.get("product_id")
-        if invoice.get("product_title") and not data.get("product_title"):
-            data["product_title"] = invoice.get("product_title")
+        if source.get("custom_fields"):
+            data["custom_fields"] = source.get("custom_fields")
+        items = source.get("items") or []
+        if items:
+            data["items"] = items
+            first = items[0] if isinstance(items[0], dict) else {}
+            if first.get("product_id") and not data.get("product_id"):
+                data["product_id"] = first.get("product_id")
+            if first.get("product_title") and not data.get("product_title"):
+                data["product_title"] = first.get("product_title")
+            if first.get("custom_fields"):
+                data.setdefault("custom_fields", first.get("custom_fields"))
+        if source.get("product_id") and not data.get("product_id"):
+            data["product_id"] = source.get("product_id")
+        if source.get("product_title") and not data.get("product_title"):
+            data["product_title"] = source.get("product_title")
         merged["data"] = data
-        merged["invoice"] = invoice
+        merged["invoice"] = source
         return merged
     except Exception:
         return payload

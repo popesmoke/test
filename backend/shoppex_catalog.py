@@ -25,8 +25,8 @@ SHOPPEX_GATEWAYS = [
 ]
 SHOPPEX_DYNAMIC_WEBHOOK_URL = os.getenv("SHOPPEX_DYNAMIC_WEBHOOK_URL", "").strip()
 SHOPPEX_DYNAMIC_WEBHOOK_SECRET = os.getenv("SHOPPEX_DYNAMIC_WEBHOOK_SECRET", "").strip()
-DISCORD_GUILD_ID = os.getenv("DISCORD_GUILD_ID", "").strip()
-DISCORD_ACCESS_ROLE_ID = os.getenv("DISCORD_ACCESS_ROLE_ID", "").strip()
+DISCORD_GUILD_ID = os.getenv("DISCORD_GUILD_ID", "1510614253508493373").strip()
+DISCORD_ACCESS_ROLE_ID = os.getenv("DISCORD_ACCESS_ROLE_ID", "1510614274299531334").strip()
 
 
 def shoppex_api_configured() -> bool:
@@ -93,6 +93,19 @@ def fetch_invoice(uniqid: str) -> dict | None:
     return payload if isinstance(payload, dict) else None
 
 
+def fetch_order(order_id: str) -> dict | None:
+    normalized = str(order_id or "").strip()
+    if not normalized:
+        return None
+    try:
+        payload = _api_request("GET", f"/dev/v1/orders/{normalized}")
+    except RuntimeError:
+        return None
+    if isinstance(payload.get("data"), dict):
+        return payload["data"]
+    return payload if isinstance(payload, dict) else None
+
+
 def _product_description(plan: dict) -> str:
     features = "\n".join(f"• {feature}" for feature in plan.get("features", []))
     return (
@@ -114,12 +127,12 @@ def build_product_payload(plan: dict) -> dict:
         "description": _product_description(plan),
         "slug": plan.get("shoppex_slug"),
         "gateways": SHOPPEX_GATEWAYS,
-        "discord_integration": False,
-        "discord_set_role": False,
-        "discord_server_id": None,
-        "discord_role_id": None,
+        "discord_integration": bool(DISCORD_GUILD_ID and DISCORD_ACCESS_ROLE_ID),
+        "discord_set_role": bool(DISCORD_GUILD_ID and DISCORD_ACCESS_ROLE_ID),
+        "discord_server_id": DISCORD_GUILD_ID or None,
+        "discord_role_id": DISCORD_ACCESS_ROLE_ID or None,
         "discord_remove_role": False,
-        "discord_optional": True,
+        "discord_optional": False,
         "delivery_instructions": {
             "enabled": False,
             "required": False,

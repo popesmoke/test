@@ -190,6 +190,16 @@ def plan_by_shoppex_slug(slug: str) -> dict | None:
     return None
 
 
+def plan_by_shoppex_title(title: str) -> dict | None:
+    normalized = str(title or "").strip().lower()
+    if not normalized:
+        return None
+    for plan in all_plans():
+        if str(plan.get("title") or "").strip().lower() == normalized:
+            return plan
+    return None
+
+
 def plan_by_shoppex_product_id(product_id: str) -> dict | None:
     normalized = str(product_id or "").strip()
     if not normalized:

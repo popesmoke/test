@@ -26,6 +26,61 @@ def _fulfillment_secret() -> str:
     )
 
 
+def notify_bot_shoppex_revoke(
+    discord_id: str,
+    *,
+    invoice_id: str | None = None,
+    reason: str = "Shoppex subscription ended",
+) -> dict:
+    url = _fulfillment_url()
+    secret = _fulfillment_secret()
+    normalized_id = str(discord_id or "").strip()
+
+    if not url or not secret:
+        return {"ok": False, "reason": "not_configured"}
+    if not normalized_id.isdigit():
+        return {"ok": False, "reason": "invalid_payload"}
+
+    body = json.dumps(
+        {
+            "action": "revoke",
+            "discord_id": normalized_id,
+            "invoice_id": invoice_id,
+            "reason": reason,
+        },
+    ).encode("utf-8")
+
+    request = urllib.request.Request(
+        url,
+        data=body,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "X-Virello-Fulfillment-Secret": secret,
+            "User-Agent": "VirelloScannerBackend/1.0",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            raw = response.read().decode("utf-8")
+            payload = json.loads(raw) if raw else {}
+            return {"ok": True, "status": response.status, "payload": payload}
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace")
+        try:
+            parsed = json.loads(detail)
+        except json.JSONDecodeError:
+            parsed = {"detail": detail[:500]}
+        return {
+            "ok": False,
+            "reason": f"http_{error.code}",
+            "detail": parsed,
+        }
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
+        return {"ok": False, "reason": "request_failed", "detail": str(error)}
+
+
 def notify_bot_shoppex_fulfillment(
     discord_id: str,
     plan_id: str,

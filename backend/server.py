@@ -1534,6 +1534,17 @@ class Handler(BaseHTTPRequestHandler):
         }
 
         if not (discord_id and plan_id and invoice_id):
+            print(
+                "Shoppex fulfillment skipped — missing fields:",
+                json.dumps(
+                    {
+                        "discord_id": discord_id,
+                        "plan_id": plan_id,
+                        "invoice_id": invoice_id,
+                    },
+                ),
+                flush=True,
+            )
             return result
 
         with connect() as conn:
@@ -1553,6 +1564,21 @@ class Handler(BaseHTTPRequestHandler):
             plan_id,
             invoice_id=invoice_id,
         )
+        print(
+            "Shoppex fulfillment:",
+            json.dumps(
+                {
+                    "discord_id": discord_id,
+                    "plan_id": plan_id,
+                    "invoice_id": invoice_id,
+                    "role_ok": bool(result["role"].get("ok")),
+                    "role_reason": result["role"].get("reason"),
+                    "bot_ok": bool(result["bot"].get("ok")),
+                    "bot_reason": result["bot"].get("reason"),
+                },
+            ),
+            flush=True,
+        )
         return result
 
     def handle_shoppex_event_webhook(self) -> None:
@@ -1561,7 +1587,14 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"detail": "Shoppex webhook not configured"})
             return
         signature = self.headers.get("X-Shoppex-Signature-V2") or self.headers.get("X-Shoppex-Signature", "")
-        if not shoppex.verify_event_webhook(raw, signature):
+        delivery_id = self.headers.get("X-Shoppex-Delivery") or self.headers.get("X-Shoppex-Delivery-Id", "")
+        timestamp = self.headers.get("X-Shoppex-Timestamp", "")
+        if not shoppex.verify_event_webhook(
+            raw,
+            signature,
+            delivery_id=delivery_id,
+            timestamp_header=timestamp,
+        ):
             self.send_json(HTTPStatus.UNAUTHORIZED, {"detail": "Invalid Shoppex signature"})
             return
         try:
@@ -1575,10 +1608,13 @@ class Handler(BaseHTTPRequestHandler):
             self.fulfill_shoppex_purchase(payload)
         elif result["action"] == "revoke":
             invoice_id = shoppex.extract_invoice_id(payload)
+            discord_id = shoppex.extract_discord_id(shoppex.enrich_payload_from_invoice_api(payload))
             if invoice_id:
                 with connect() as conn:
                     site_store.revoke_shoppex_access(conn, db_execute, invoice_id)
                 db_changed()
+            if discord_id:
+                bot_fulfillment.notify_bot_shoppex_revoke(discord_id, invoice_id=invoice_id)
         self.send_json(HTTPStatus.OK, {"received": True})
 
     def handle_shoppex_dynamic_webhook(self) -> None:
@@ -1587,7 +1623,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"detail": "Shoppex dynamic webhook not configured"})
             return
         signature = self.headers.get("X-Shoppex-Signature-V2") or self.headers.get("X-Shoppex-Signature", "")
-        delivery_id = self.headers.get("X-Shoppex-Delivery-Id") or self.headers.get("X-Shoppex-Delivery", "")
+        delivery_id = self.headers.get("X-Shoppex-Delivery") or self.headers.get("X-Shoppex-Delivery-Id", "")
         timestamp = self.headers.get("X-Shoppex-Timestamp", "")
         if not shoppex.verify_dynamic_webhook(
             raw,
