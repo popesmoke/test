@@ -1570,26 +1570,22 @@ class Handler(BaseHTTPRequestHandler):
             "discord_id": discord_id,
             "plan_id": plan_id,
             "invoice_id": invoice_id,
-            "role": None,
             "bot": None,
         }
 
-        # Bot grants Access role using the checkout Discord ID from the Shoppex invoice.
+        # Shoppex webhook → notify bot only. Discord roles must be added by the bot, not the backend.
         if invoice_id or discord_id:
             result["bot"] = bot_fulfillment.notify_bot_shoppex_fulfillment(
                 "",
                 plan_id or "",
                 invoice_id=invoice_id,
             )
-            if not discord_id and result["bot"].get("ok"):
+            if result["bot"].get("ok"):
                 bot_payload = result["bot"].get("payload") or {}
                 discord_id = str(
-                    bot_payload.get("discordId") or bot_payload.get("discord_id") or "",
+                    bot_payload.get("discordId") or bot_payload.get("discord_id") or discord_id or "",
                 ).strip() or discord_id
                 result["discord_id"] = discord_id or result["discord_id"]
-
-        if discord_id:
-            result["role"] = discord_roles.grant_access_role(discord_id)
 
         if not discord_id and not result.get("bot", {}).get("ok"):
             print(
@@ -1617,6 +1613,7 @@ class Handler(BaseHTTPRequestHandler):
                 )
             db_changed()
 
+        bot_payload = (result.get("bot") or {}).get("payload") or {}
         print(
             "Shoppex fulfillment:",
             json.dumps(
@@ -1624,10 +1621,10 @@ class Handler(BaseHTTPRequestHandler):
                     "discord_id": discord_id,
                     "plan_id": plan_id,
                     "invoice_id": invoice_id,
-                    "role_ok": bool(result["role"] and result["role"].get("ok")),
-                    "role_reason": (result["role"] or {}).get("reason"),
                     "bot_ok": bool(result["bot"] and result["bot"].get("ok")),
                     "bot_reason": (result["bot"] or {}).get("reason"),
+                    "access_role_id": bot_payload.get("accessRoleId"),
+                    "role_granted_by": "bot" if result.get("bot", {}).get("ok") else None,
                 },
             ),
             flush=True,

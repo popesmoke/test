@@ -140,12 +140,9 @@ def build_product_payload(plan: dict) -> dict:
         "description": _product_description(plan),
         "slug": plan.get("shoppex_slug"),
         "gateways": SHOPPEX_GATEWAYS,
-        "discord_integration": bool(DISCORD_GUILD_ID and DISCORD_ACCESS_ROLE_ID),
-        "discord_set_role": bool(DISCORD_GUILD_ID and DISCORD_ACCESS_ROLE_ID),
-        "discord_server_id": DISCORD_GUILD_ID or None,
-        "discord_role_id": DISCORD_ACCESS_ROLE_ID or None,
-        "discord_remove_role": False,
-        "discord_optional": False,
+        # Role grants are handled by virellobot after payment — Shoppex cannot add Discord roles.
+        "discord_integration": False,
+        "discord_set_role": False,
         "delivery_instructions": {
             "enabled": False,
             "required": False,
