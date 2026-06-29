@@ -409,7 +409,7 @@ def extract_invoice_id(payload: dict) -> str | None:
 
 
 def enrich_payload_from_invoice_api(payload: dict) -> dict:
-    if extract_discord_id(payload) and extract_plan_id(payload):
+    if extract_discord_id(payload):
         return payload
 
     invoice_id = extract_invoice_id(payload)
@@ -471,6 +471,47 @@ def extract_amount_cents(payload: dict) -> int:
         if plan:
             return int(plan["price_cents"])
     return 0
+
+
+def resolve_plan_id(payload: dict) -> str | None:
+    plan_id = extract_plan_id(payload)
+    if plan_id:
+        return plan_id
+
+    amount_cents = extract_amount_cents(payload)
+    if amount_cents:
+        plan = pricing.plan_by_price_cents(amount_cents)
+        if plan:
+            return plan["id"]
+
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        data = payload
+
+    product_refs: list[str] = []
+    for key in ("product_id", "productId", "product_title", "productTitle", "slug"):
+        value = data.get(key) or payload.get(key)
+        if value:
+            product_refs.append(str(value))
+
+    product = data.get("product") or payload.get("product")
+    if isinstance(product, dict):
+        for key in ("id", "uniqid", "slug", "title"):
+            value = product.get(key)
+            if value:
+                product_refs.append(str(value))
+
+    try:
+        import shoppex_catalog
+
+        for product_ref in product_refs:
+            plan = shoppex_catalog.find_plan_for_product(product_ref)
+            if plan:
+                return plan["id"]
+    except Exception:
+        pass
+
+    return None
 
 
 def handle_event(payload: dict) -> dict:

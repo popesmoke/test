@@ -1523,7 +1523,7 @@ class Handler(BaseHTTPRequestHandler):
     def fulfill_shoppex_purchase(self, payload: dict) -> dict:
         enriched = shoppex.enrich_payload_from_invoice_api(payload)
         discord_id = shoppex.extract_discord_id(enriched)
-        plan_id = shoppex.extract_plan_id(enriched)
+        plan_id = shoppex.resolve_plan_id(enriched)
         invoice_id = shoppex.extract_invoice_id(enriched)
         result = {
             "discord_id": discord_id,
@@ -1533,37 +1533,43 @@ class Handler(BaseHTTPRequestHandler):
             "bot": None,
         }
 
-        if not (discord_id and plan_id and invoice_id):
+        if discord_id:
+            result["role"] = discord_roles.grant_access_role(discord_id)
+
+        if not discord_id:
             print(
-                "Shoppex fulfillment skipped — missing fields:",
-                json.dumps(
-                    {
-                        "discord_id": discord_id,
-                        "plan_id": plan_id,
-                        "invoice_id": invoice_id,
-                    },
-                ),
+                "Shoppex fulfillment: no Discord user ID found",
+                json.dumps({"invoice_id": invoice_id, "plan_id": plan_id}),
                 flush=True,
             )
             return result
 
-        with connect() as conn:
-            site_store.grant_shoppex_access(
-                conn,
-                db_execute,
-                shoppex_invoice_id=invoice_id,
-                discord_id=discord_id,
-                plan_id=plan_id,
-                amount_cents=shoppex.extract_amount_cents(enriched),
+        if not plan_id:
+            print(
+                "Shoppex fulfillment: role attempted, plan unknown",
+                json.dumps({"discord_id": discord_id, "invoice_id": invoice_id}),
+                flush=True,
             )
-        db_changed()
 
-        result["role"] = discord_roles.grant_access_role(discord_id)
-        result["bot"] = bot_fulfillment.notify_bot_shoppex_fulfillment(
-            discord_id,
-            plan_id,
-            invoice_id=invoice_id,
-        )
+        if invoice_id and plan_id:
+            with connect() as conn:
+                site_store.grant_shoppex_access(
+                    conn,
+                    db_execute,
+                    shoppex_invoice_id=invoice_id,
+                    discord_id=discord_id,
+                    plan_id=plan_id,
+                    amount_cents=shoppex.extract_amount_cents(enriched),
+                )
+            db_changed()
+
+        if plan_id:
+            result["bot"] = bot_fulfillment.notify_bot_shoppex_fulfillment(
+                discord_id,
+                plan_id,
+                invoice_id=invoice_id,
+            )
+
         print(
             "Shoppex fulfillment:",
             json.dumps(
@@ -1571,10 +1577,10 @@ class Handler(BaseHTTPRequestHandler):
                     "discord_id": discord_id,
                     "plan_id": plan_id,
                     "invoice_id": invoice_id,
-                    "role_ok": bool(result["role"].get("ok")),
-                    "role_reason": result["role"].get("reason"),
-                    "bot_ok": bool(result["bot"].get("ok")),
-                    "bot_reason": result["bot"].get("reason"),
+                    "role_ok": bool(result["role"] and result["role"].get("ok")),
+                    "role_reason": (result["role"] or {}).get("reason"),
+                    "bot_ok": bool(result["bot"] and result["bot"].get("ok")),
+                    "bot_reason": (result["bot"] or {}).get("reason"),
                 },
             ),
             flush=True,
@@ -1602,6 +1608,9 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Invalid payload"})
             return
+
+        event_type = str(payload.get("event") or payload.get("type") or "").strip()
+        print(f"Shoppex webhook received: {event_type}", flush=True)
 
         result = shoppex.handle_event(payload)
         if result["action"] == "fulfill":
@@ -1747,6 +1756,20 @@ class Handler(BaseHTTPRequestHandler):
                 site_store.set_setting(conn, db_execute, "demo_video_url", demo_video_url)
             db_changed()
             self.send_json(HTTPStatus.OK, {"demo_video_url": demo_video_url})
+            return
+
+        if path == "/admin/shoppex/fulfill":
+            if not self.require_super_admin():
+                return
+            discord_id = str(payload.get("discord_id") or "").strip()
+            invoice_id = str(payload.get("invoice_id") or payload.get("invoice_uniqid") or "").strip()
+            synthetic: dict = {"event": "order:paid", "data": {}}
+            if invoice_id:
+                synthetic["data"]["uniqid"] = invoice_id
+            if discord_id:
+                synthetic["data"]["custom_fields"] = {"discord_user_id": discord_id}
+            result = self.fulfill_shoppex_purchase(synthetic)
+            self.send_json(HTTPStatus.OK, result)
             return
 
         if len(parts) == 4 and parts[0] == "admin" and parts[1] == "sessions" and parts[3] == "review":

@@ -172,6 +172,43 @@ def build_product_payload(plan: dict) -> dict:
     return payload
 
 
+def find_plan_for_product(product_ref: str) -> dict | None:
+    normalized = str(product_ref or "").strip()
+    if not normalized:
+        return None
+
+    plan = pricing.plan_by_shoppex_product_id(normalized)
+    if plan:
+        return plan
+
+    slug = normalized.rsplit("/", 1)[-1].strip().lower()
+    plan = pricing.plan_by_shoppex_slug(slug)
+    if plan:
+        return plan
+
+    plan = pricing.plan_by_shoppex_title(normalized)
+    if plan:
+        return plan
+
+    if not shoppex_api_configured():
+        return None
+
+    for product in list_products():
+        product_id = str(product.get("id") or product.get("uniqid") or "").strip()
+        product_slug = str(product.get("slug") or "").strip().lower()
+        product_title = str(product.get("title") or "").strip()
+        if normalized in {product_id, product_slug, product_title}:
+            if product_slug:
+                plan = pricing.plan_by_shoppex_slug(product_slug)
+                if plan:
+                    return plan
+            if product_title:
+                plan = pricing.plan_by_shoppex_title(product_title)
+                if plan:
+                    return plan
+    return None
+
+
 def find_product_id_by_slug(slug: str) -> str | None:
     normalized = str(slug or "").strip().lower()
     if not normalized:

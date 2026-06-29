@@ -195,8 +195,23 @@ def plan_by_shoppex_title(title: str) -> dict | None:
     if not normalized:
         return None
     for plan in all_plans():
-        if str(plan.get("title") or "").strip().lower() == normalized:
+        plan_title = str(plan.get("title") or "").strip().lower()
+        if plan_title == normalized:
             return plan
+        if plan_title and plan_title in normalized:
+            return plan
+        slug = str(plan.get("shoppex_slug") or "").replace("-", " ")
+        if slug and slug in normalized:
+            return plan
+    return None
+
+
+def plan_by_price_cents(amount_cents: int) -> dict | None:
+    if amount_cents <= 0:
+        return None
+    matches = [plan for plan in all_plans() if int(plan.get("price_cents") or 0) == amount_cents]
+    if len(matches) == 1:
+        return matches[0]
     return None
 
 
