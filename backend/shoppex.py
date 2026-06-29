@@ -187,8 +187,11 @@ def _collect_custom_field_candidates(custom_fields) -> list:
     if isinstance(custom_fields, dict):
         for key, value in custom_fields.items():
             key_text = str(key).strip().lower()
-            if "discord" in key_text:
+            if "discord" in key_text or "user id" in key_text or "userid" in key_text:
                 candidates.append(value)
+            normalized = _normalize_discord_id(value)
+            if normalized:
+                candidates.append(normalized)
         for key in (
             "discord_id",
             "discordId",
@@ -205,9 +208,15 @@ def _collect_custom_field_candidates(custom_fields) -> list:
         for field in custom_fields:
             if not isinstance(field, dict):
                 continue
-            name = str(field.get("name") or field.get("key") or "").strip().lower()
-            if "discord" in name:
-                candidates.append(field.get("value"))
+            name = str(field.get("name") or field.get("key") or field.get("label") or "").strip().lower()
+            value = field.get("value") if field.get("value") is not None else field.get("text")
+            if value is None:
+                value = field.get("answer")
+            if "discord" in name or "user id" in name or "userid" in name:
+                candidates.append(value)
+            normalized = _normalize_discord_id(value)
+            if normalized:
+                candidates.append(normalized)
     return candidates
 
 
@@ -592,9 +601,11 @@ def enrich_shoppex_payload(payload: dict) -> dict:
 
 
 def fulfillment_complete(result: dict) -> bool:
-    role_ok = bool(result.get("role") and result["role"].get("ok"))
     bot_ok = bool(result.get("bot") and result["bot"].get("ok"))
-    return role_ok or bot_ok
+    if bot_ok:
+        return True
+    role_ok = bool(result.get("role") and result["role"].get("ok"))
+    return role_ok
 
 
 def extract_amount_cents(payload: dict) -> int:

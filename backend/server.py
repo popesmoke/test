@@ -1574,10 +1574,10 @@ class Handler(BaseHTTPRequestHandler):
             "bot": None,
         }
 
-        # Bot path mirrors /claim — invoice ID is enough; bot fetches Discord ID + plan from Shoppex API.
+        # Bot grants Access role using the checkout Discord ID from the Shoppex invoice.
         if invoice_id or discord_id:
             result["bot"] = bot_fulfillment.notify_bot_shoppex_fulfillment(
-                discord_id or "",
+                "",
                 plan_id or "",
                 invoice_id=invoice_id,
             )
