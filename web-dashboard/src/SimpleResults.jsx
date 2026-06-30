@@ -1,23 +1,20 @@
-﻿import React, { lazy, Suspense, useEffect, useMemo, useState } from "react";
+﻿import React, { useEffect, useMemo, useState } from "react";
 import { MaterialIcon } from "./components/MaterialIcon.jsx";
 import { SeverityBadge, severityRank } from "./components/SeverityBadge.jsx";
 import { defenderSummary } from "./defenderSignals.js";
 import { scanReviewFromReport } from "./reportDigest.js";
-import { formatDisplayLocation, groupFlaggedPrograms, privacyPath, publicFindingDetail, publicFindingTitle } from "./resultPrivacy.js";
-import { CollapseCard } from "./components/CollapseCard.jsx";
-import { BypassPanel } from "./components/BypassPanel.jsx";
-import { ForensicTimelinePanel } from "./components/ForensicTimelinePanel.jsx";
-import { Pagination } from "./components/Pagination.jsx";
-import { buildBypassReport } from "./bypassDetection.js";
-import { usePagination } from "./hooks/usePagination.js";
-import { genericReasonLabel, genericReasonDetail, plainDisplayText } from "./reviewerCopy.js";
+import { formatDisplayLocation, privacyPath, publicFindingLabels } from "./resultPrivacy.js";
+import {
+  collectRobloxAccountsFromReport,
+  collectDiscordAccountsFromReport,
+} from "./accountExtract.js";
+import { genericFindingTitle, genericReasonLabel, genericReasonDetail } from "./reviewerCopy.js";
 
-const AccountsTab = lazy(() => import("./AccountsTab.jsx").then((module) => ({ default: module.AccountsTab })));
+const API_URL = import.meta.env.VITE_API_URL || "https://virello-secure.onrender.com";
 
 const TABS = [
   { id: "summary", label: "Summary", icon: "description" },
   { id: "findings", label: "Findings", icon: "shield_alert" },
-  { id: "bypass", label: "Bypass attempts", icon: "gpp_maybe" },
   { id: "activity", label: "Activity", icon: "history" },
   { id: "accounts", label: "Accounts", icon: "users" },
 ];
@@ -25,7 +22,7 @@ const TABS = [
 const VERDICT_META = {
   clean: { label: "Looks clear", tone: "clean", blurb: "Nothing major stood out on this scan." },
   watch: { label: "Review recommended", tone: "watch", blurb: "Some warning signs need a closer look." },
-  bad: { label: "High concern", tone: "bad", blurb: "Multiple warning signs. Review carefully." },
+  bad: { label: "High concern", tone: "bad", blurb: "Multiple warning signs — review carefully." },
 };
 
 function simpleVerdict(score, bypassRisk) {
@@ -36,7 +33,18 @@ function simpleVerdict(score, bypassRisk) {
 }
 
 function buildProblems(report, summary) {
+  const sec = report.security_integrity_signals ?? {};
+  const bypass = sec.bypass_resilience ?? {};
   const problems = [];
+
+  for (const row of bypass.findings ?? []) {
+    problems.push({
+      id: `bypass-${row.title}`,
+      severity: row.severity || "medium",
+      title: genericFindingTitle(row.title),
+      detail: genericReasonDetail(row.title, row.detail),
+    });
+  }
 
   for (const reason of summary.reasons ?? []) {
     if (!reason.points) continue;
@@ -70,96 +78,17 @@ function PanelHeader({ icon, title, text }) {
   );
 }
 
-function WarningRow({ problem }) {
+function FindingRow({ problem, defaultOpen = false }) {
+  const [open, setOpen] = useState(defaultOpen);
   return (
-    <article className={`ws-static-finding ws-finding--${problem.severity}`}>
-      <div className="ws-static-finding__head">
+    <article className={`ws-finding ws-finding--${problem.severity}`}>
+      <button type="button" className="ws-finding__toggle" onClick={() => setOpen((v) => !v)}>
         <SeverityBadge severity={problem.severity} />
         <strong>{problem.title}</strong>
-      </div>
-      <p className="ws-static-finding__detail">{problem.detail}</p>
+        <MaterialIcon name="chevron_right" size={16} className={open ? "open" : ""} />
+      </button>
+      {open ? <p className="ws-finding__detail">{problem.detail}</p> : null}
     </article>
-  );
-}
-
-function ProgramGroup({ group, formatGmtPlus3 }) {
-  const latest = group.items.reduce((best, row) => {
-    if (!row.last_seen) return best;
-    if (!best || row.last_seen > best) return row.last_seen;
-    return best;
-  }, null);
-  const removedCount = group.items.filter((row) => row.file_exists === false).length;
-  const subtitle = [
-    `${group.items.length} trace${group.items.length === 1 ? "" : "s"}`,
-    removedCount ? `${removedCount} removed from disk` : null,
-    latest ? `last seen ${formatGmtPlus3(latest)}` : null,
-  ]
-    .filter(Boolean)
-    .join(", ");
-
-  return (
-    <CollapseCard
-      icon="file_code"
-      title={group.title}
-      subtitle={subtitle}
-      severity="high"
-      badge={<span className="ws-collapse-pill">{group.items.length}</span>}
-    >
-      <ul className="ws-collapse-list">
-        {group.items.map((row, index) => (
-          <li key={`${row.name}-${row.last_seen}-${index}`} className="ws-collapse-list__item">
-            <p className="ws-collapse-list__lead">{publicFindingDetail(row)}</p>
-            <div className="ws-collapse-list__meta">
-              <span>{row.file_exists === false ? "Removed from disk" : "Trace on disk"}</span>
-              <time>{row.last_seen ? formatGmtPlus3(row.last_seen) : "Time unknown"}</time>
-            </div>
-            <LocationHint row={row} path={row.path} />
-          </li>
-        ))}
-      </ul>
-    </CollapseCard>
-  );
-}
-
-function LinkedTraceCard({ chain, formatGmtPlus3 }) {
-  const steps = chain.steps ?? [];
-  const title = chain.labels?.length ? chain.labels.join(", ") : "Related activity";
-  const latest = steps.reduce((best, step) => {
-    if (!step.occurred_at) return best;
-    if (!best || step.occurred_at > best) return step.occurred_at;
-    return best;
-  }, null);
-  const subtitle = [
-    `${steps.length} linked step${steps.length === 1 ? "" : "s"}`,
-    latest ? `latest ${formatGmtPlus3(latest)}` : null,
-  ]
-    .filter(Boolean)
-    .join(", ");
-
-  return (
-    <CollapseCard
-      icon="git_branch"
-      title={title}
-      subtitle={subtitle}
-      severity={chain.confidence === "high" ? "high" : "medium"}
-      badge={<SeverityBadge severity={chain.confidence === "high" ? "high" : "medium"} compact showIcon={false} />}
-    >
-      {chain.summary ? <p className="ws-collapse-list__lead">{chain.summary}</p> : null}
-      <ol className="ws-collapse-steps">
-        {steps.map((step, index) => (
-          <li key={`${step.source}-${step.path}-${index}`}>
-            <div className="ws-collapse-steps__head">
-              <span className="ws-collapse-steps__action">
-                {CHAIN_ACTION_LABELS[step.action] || step.action}
-              </span>
-              <time>{step.occurred_at ? formatGmtPlus3(step.occurred_at) : "Time unknown"}</time>
-            </div>
-            <p>{step.detail}</p>
-            <LocationHint row={step} path={step.path} />
-          </li>
-        ))}
-      </ol>
-    </CollapseCard>
   );
 }
 
@@ -214,8 +143,8 @@ function SummaryTab({ verdict, problems, review, report, formatGmtPlus3 }) {
         <section className="ws-panel">
           <PanelHeader icon="priority_high" title="Top concerns" text="Most important items first." />
           <div className="ws-panel__body">
-            {problems.slice(0, 5).map((problem) => (
-              <WarningRow key={problem.id} problem={problem} />
+            {problems.slice(0, 5).map((problem, index) => (
+              <FindingRow key={problem.id} problem={problem} defaultOpen={index === 0} />
             ))}
           </div>
         </section>
@@ -251,15 +180,11 @@ const CHAIN_ACTION_LABELS = {
 function FindingsTab({ problems, review, formatGmtPlus3 }) {
   const chains = review.evidence_chains?.chains ?? [];
   const programs = (review.executable_inventory?.items ?? []).filter((row) => row.suspicious);
-  const programGroups = useMemo(() => groupFlaggedPrograms(programs), [programs]);
   const sortedChains = [...chains].sort((a, b) => {
     const aHigh = a.confidence === "high" ? 0 : 1;
     const bHigh = b.confidence === "high" ? 0 : 1;
     return aHigh - bHigh;
   });
-  const problemsPage = usePagination(problems, 6);
-  const chainsPage = usePagination(sortedChains, 5);
-  const programsPage = usePagination(programGroups, 5);
 
   return (
     <>
@@ -267,12 +192,7 @@ function FindingsTab({ problems, review, formatGmtPlus3 }) {
         <PanelHeader icon="list_checks" title="Warning signs" text="Sorted by importance." />
         <div className="ws-panel__body">
           {problems.length ? (
-            <>
-              {problemsPage.slice.map((problem) => (
-                <WarningRow key={problem.id} problem={problem} />
-              ))}
-              <Pagination {...problemsPage} onPageChange={problemsPage.goTo} />
-            </>
+            problems.map((problem) => <FindingRow key={problem.id} problem={problem} />)
           ) : (
             <p className="muted">No warning signs on this scan.</p>
           )}
@@ -281,32 +201,61 @@ function FindingsTab({ problems, review, formatGmtPlus3 }) {
 
       {sortedChains.length ? (
         <section className="ws-panel">
-          <PanelHeader
-            icon="git_branch"
-            title="Linked traces"
-            text="Related activity grouped together. Tap a card to expand the timeline."
-          />
-          <div className="ws-panel__body ws-collapse-stack">
-            {chainsPage.slice.map((chain, index) => (
-              <LinkedTraceCard key={`${chain.stem}-${index}`} chain={chain} formatGmtPlus3={formatGmtPlus3} />
-            ))}
-            <Pagination {...chainsPage} onPageChange={chainsPage.goTo} />
+          <PanelHeader icon="git_branch" title="Linked traces" text="Related activity grouped together." />
+          <div className="ws-panel__body">
+            <ul className="simple-chain-list">
+              {sortedChains.map((chain) => (
+                <li key={chain.stem} className={`simple-chain-card simple-chain-card--${chain.confidence || "medium"}`}>
+                  <div className="simple-chain-head">
+                    <strong>{chain.labels?.length ? chain.labels.join(", ") : "Related activity"}</strong>
+                    <SeverityBadge
+                      severity={chain.confidence === "high" ? "high" : "medium"}
+                      compact
+                    />
+                  </div>
+                  <p>{chain.summary}</p>
+                  <ol className="simple-chain-steps">
+                    {(chain.steps ?? []).map((step, index) => (
+                      <li key={`${step.source}-${step.path}-${index}`}>
+                        <div className="simple-chain-step-meta">
+                          <span className="simple-chain-step-action">
+                            {CHAIN_ACTION_LABELS[step.action] || step.action}
+                          </span>
+                          <time>{step.occurred_at ? formatGmtPlus3(step.occurred_at) : "Time unknown"}</time>
+                        </div>
+                        <p>{step.detail}</p>
+                        <LocationHint row={step} path={step.path} />
+                      </li>
+                    ))}
+                  </ol>
+                </li>
+              ))}
+            </ul>
           </div>
         </section>
       ) : null}
 
-      {programGroups.length ? (
+      {programs.length ? (
         <section className="ws-panel">
-          <PanelHeader
-            icon="file_code"
-            title="Flagged programs"
-            text="Grouped by what matched. Tap a card to see each trace."
-          />
-          <div className="ws-panel__body ws-collapse-stack">
-            {programsPage.slice.map((group) => (
-              <ProgramGroup key={group.title} group={group} formatGmtPlus3={formatGmtPlus3} />
-            ))}
-            <Pagination {...programsPage} onPageChange={programsPage.goTo} />
+          <PanelHeader icon="file_code" title="Flagged programs" text="Files that matched review rules." />
+          <div className="ws-panel__body">
+            <ul className="simple-program-list">
+              {programs.slice(0, 30).map((row, index) => (
+                <li key={`${row.path}-${index}`} className="simple-program--warn">
+                  <div>
+                    <strong>{row.name || row.file_name || "File"}</strong>
+                    {row.labels?.length ? (
+                      <span className="simple-tag">{publicFindingLabels(row.labels).join(", ")}</span>
+                    ) : null}
+                    <p className="muted">
+                      {row.file_exists === false ? "Removed from disk · " : ""}
+                      Last seen {row.last_seen ? formatGmtPlus3(row.last_seen) : "unknown"}
+                    </p>
+                  </div>
+                  <LocationHint row={row} path={row.path} />
+                </li>
+              ))}
+            </ul>
           </div>
         </section>
       ) : null}
@@ -319,15 +268,6 @@ const ACTIVITY_VIEWS = [
   { id: "downloads", label: "Downloads" },
   { id: "programs", label: "Programs run" },
 ];
-
-function ActivityCard({ time, warn, children }) {
-  return (
-    <li className={`ws-activity-card${warn ? " ws-activity-card--warn" : ""}`}>
-      <time className="ws-activity-card__time">{time}</time>
-      <div className="ws-activity-card__body">{children}</div>
-    </li>
-  );
-}
 
 function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 }) {
   const [view, setView] = useState("timeline");
@@ -364,16 +304,6 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
     return bMs - aMs;
   });
 
-  const timelinePage = usePagination(events, 8);
-  const downloadsPage = usePagination(downloads, 8);
-  const programsPage = usePagination(executions, 8);
-
-  useEffect(() => {
-    timelinePage.reset();
-    downloadsPage.reset();
-    programsPage.reset();
-  }, [view]);
-
   return (
     <section className="ws-panel">
       <PanelHeader icon="history" title="Activity" text="Recent events on this PC." />
@@ -393,20 +323,17 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
 
         {view === "timeline" ? (
           events.length ? (
-            <>
-              <ul className="ws-activity-list">
-                {timelinePage.slice.map((event, index) => (
-                  <ActivityCard
-                    key={`${event.path}-${event.occurred_at}-${index}`}
-                    time={event.occurred_at ? formatGmtPlus3(event.occurred_at) : "Time unknown"}
-                  >
-                    <p className="ws-activity-card__title">{plainDisplayText(event.summary || "Activity recorded")}</p>
+            <ul className="ws-timeline">
+              {events.slice(0, 40).map((event, index) => (
+                <li key={`${event.path}-${event.occurred_at}-${index}`}>
+                  <time>{event.occurred_at ? formatGmtPlus3(event.occurred_at) : "—"}</time>
+                  <div>
+                    <p>{event.summary || "Activity recorded"}</p>
                     <LocationHint row={event} path={event.path} />
-                  </ActivityCard>
-                ))}
-              </ul>
-              <Pagination {...timelinePage} onPageChange={timelinePage.goTo} />
-            </>
+                  </div>
+                </li>
+              ))}
+            </ul>
           ) : (
             <p className="muted">No timeline events on this scan.</p>
           )
@@ -414,27 +341,23 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
 
         {view === "downloads" ? (
           downloads.length ? (
-            <>
-              <ul className="ws-activity-list">
-                {downloadsPage.slice.map((row, index) => (
-                  <ActivityCard
-                    key={`${row.target_path}-${row.started_at}-${index}`}
-                    warn={row.suspicious}
-                    time={row.started_at ? formatGmtPlus3(row.started_at) : "Time unknown"}
-                  >
-                    <p className="ws-activity-card__title">
-                      <strong>{row.file_name || "Download"}</strong>
-                      <span className="ws-activity-card__via"> via {row.browser || "browser"}</span>
-                    </p>
-                    {row.matched_labels?.length ? (
-                      <p className="ws-activity-card__meta muted">{publicFindingTitle(row.matched_labels, row)}</p>
-                    ) : null}
-                    <LocationHint row={row} path={row.target_path} />
-                  </ActivityCard>
-                ))}
-              </ul>
-              <Pagination {...downloadsPage} onPageChange={downloadsPage.goTo} />
-            </>
+            <ul className="simple-timeline">
+              {downloads.slice(0, 40).map((row, index) => (
+                <li
+                  key={`${row.target_path}-${row.started_at}-${index}`}
+                  className={row.suspicious ? "simple-timeline--warn" : ""}
+                >
+                  <time>{row.started_at ? formatGmtPlus3(row.started_at) : "—"}</time>
+                  <p>
+                    <strong>{row.file_name || "Download"}</strong> via {row.browser || "browser"}
+                  </p>
+                  {row.matched_labels?.length ? (
+                    <p className="muted">{publicFindingLabels(row.matched_labels).join(", ")}</p>
+                  ) : null}
+                  <LocationHint row={row} path={row.target_path} />
+                </li>
+              ))}
+            </ul>
           ) : (
             <p className="muted">No download history found.</p>
           )
@@ -442,32 +365,161 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
 
         {view === "programs" ? (
           executions.length ? (
-            <>
-              <ul className="ws-activity-list">
-                {programsPage.slice.map((row, index) => (
-                  <ActivityCard
-                    key={`${row.path}-${row.occurred_at}-${index}`}
-                    warn={row.suspicious}
-                    time={row.occurred_at ? formatGmtPlus3(row.occurred_at) : "Time unknown"}
-                  >
-                    <p className="ws-activity-card__title">
-                      <strong>{row.name || row.file_name || "Program"}</strong>
-                    </p>
-                    {row.summary ? (
-                      <p className="ws-activity-card__meta muted">{plainDisplayText(row.summary)}</p>
-                    ) : null}
-                    <LocationHint row={row} path={row.path} />
-                  </ActivityCard>
-                ))}
-              </ul>
-              <Pagination {...programsPage} onPageChange={programsPage.goTo} />
-            </>
+            <ul className="simple-timeline">
+              {executions.slice(0, 40).map((row, index) => (
+                <li
+                  key={`${row.path}-${row.occurred_at}-${index}`}
+                  className={row.suspicious ? "simple-timeline--warn" : ""}
+                >
+                  <time>{row.occurred_at ? formatGmtPlus3(row.occurred_at) : "—"}</time>
+                  <p>
+                    <strong>{row.name || row.file_name || "Program"}</strong> {row.summary}
+                  </p>
+                  <LocationHint row={row} path={row.path} />
+                </li>
+              ))}
+            </ul>
           ) : (
             <p className="muted">No program execution traces found.</p>
           )
         ) : null}
       </div>
     </section>
+  );
+}
+
+function robloxHeadshotUrl(account) {
+  return account.headshot_url || null;
+}
+
+function discordAvatarUrl(account) {
+  const userId = String(account.user_id || "");
+  if (!userId) return null;
+  const hash = account.avatar_hash;
+  if (hash) return `https://cdn.discordapp.com/avatars/${userId}/${hash}.png?size=128`;
+  const avatarIndex = (BigInt(userId) >> 22n) % 6n;
+  return `https://cdn.discordapp.com/embed/avatars/${avatarIndex}.png`;
+}
+
+function AccountsTab({ report, token }) {
+  const roblox = report.application_diagnostics?.roblox ?? {};
+  const discord = report.application_diagnostics?.discord ?? {};
+  const robloxAccounts = useMemo(() => collectRobloxAccountsFromReport(roblox), [roblox]);
+  const discordAccounts = useMemo(
+    () => collectDiscordAccountsFromReport(discord, report),
+    [discord, report],
+  );
+  const [profiles, setProfiles] = useState({});
+
+  useEffect(() => {
+    const userIds = robloxAccounts.map((a) => a.user_id).filter(Boolean);
+    if (!token || !userIds.length) {
+      setProfiles({});
+      return undefined;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await fetch(`${API_URL}/roblox/profiles`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ user_ids: userIds }),
+        });
+        if (!response.ok || cancelled) return;
+        const payload = await response.json();
+        const next = {};
+        for (const profile of payload.profiles ?? []) {
+          if (profile?.user_id) next[String(profile.user_id)] = profile;
+        }
+        if (!cancelled) setProfiles(next);
+      } catch {
+        if (!cancelled) setProfiles({});
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [robloxAccounts, token]);
+
+  return (
+    <>
+      <section className="ws-panel">
+        <PanelHeader
+          icon="sports_esports"
+          title="Roblox accounts"
+          text="Found in the game client, browser, or local storage."
+        />
+        <div className="ws-panel__body">
+          {robloxAccounts.length ? (
+            <div className="ws-account-grid">
+              {robloxAccounts.slice(0, 24).map((account) => {
+                const resolved = profiles[account.user_id] ?? {};
+                const displayName = account.username || resolved.username || `Account ${account.user_id}`;
+                const avatar = robloxHeadshotUrl({ ...account, headshot_url: resolved.headshot_url });
+                return (
+                  <a
+                    key={account.user_id}
+                    href={`https://www.roblox.com/users/${encodeURIComponent(account.user_id)}/profile`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="ws-account-card"
+                  >
+                    {avatar ? (
+                      <img src={avatar} alt="" className="ws-account-card__avatar" loading="lazy" />
+                    ) : (
+                      <span className="ws-account-card__avatar" aria-hidden />
+                    )}
+                    <span className="ws-account-card__body">
+                      <span className="ws-account-card__name">{displayName}</span>
+                      <span className="ws-account-card__link">View profile</span>
+                    </span>
+                  </a>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="muted">No Roblox accounts found on this device.</p>
+          )}
+        </div>
+      </section>
+
+      <section className="ws-panel">
+        <PanelHeader
+          icon="forum"
+          title="Discord accounts"
+          text="Found in the Discord app or browser login."
+        />
+        <div className="ws-panel__body">
+          {discordAccounts.length ? (
+            <div className="ws-account-grid">
+              {discordAccounts.slice(0, 24).map((account) => {
+                const userId = String(account.user_id || "");
+                const displayName = account.display_name || `User ${userId}`;
+                const avatar = account.avatar_url || discordAvatarUrl(account);
+                return (
+                  <div key={userId} className="ws-account-card ws-account-card--static">
+                    {avatar ? (
+                      <img src={avatar} alt="" className="ws-account-card__avatar" loading="lazy" />
+                    ) : (
+                      <span className="ws-account-card__avatar" aria-hidden />
+                    )}
+                    <span className="ws-account-card__body">
+                      <span className="ws-account-card__name">{displayName}</span>
+                      <span className="ws-account-card__link">Discord account</span>
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="muted">No Discord accounts found on this device.</p>
+          )}
+        </div>
+      </section>
+    </>
   );
 }
 
@@ -481,10 +533,6 @@ export function SimpleResults({ report, summary, activity, activityEventSummary,
     [summary.score, bypass.risk_score],
   );
   const problems = useMemo(() => buildProblems(report, summary), [report, summary]);
-  const bypassView = useMemo(
-    () => buildBypassReport(report.security_integrity_signals?.bypass_resilience ?? {}),
-    [report],
-  );
 
   return (
     <div className="ws-simple">
@@ -498,9 +546,6 @@ export function SimpleResults({ report, summary, activity, activityEventSummary,
           >
             <MaterialIcon name={icon} size={16} />
             {label}
-            {id === "bypass" && bypassView.findingCount ? (
-              <span className="ws-review-nav__badge">{bypassView.findingCount}</span>
-            ) : null}
           </button>
         ))}
       </nav>
@@ -518,12 +563,6 @@ export function SimpleResults({ report, summary, activity, activityEventSummary,
         {tab === "findings" ? (
           <FindingsTab problems={problems} review={review} formatGmtPlus3={formatGmtPlus3} />
         ) : null}
-        {tab === "bypass" ? (
-          <>
-            <BypassPanel report={report} />
-            <ForensicTimelinePanel report={report} formatGmtPlus3={formatGmtPlus3} />
-          </>
-        ) : null}
         {tab === "activity" ? (
           <ActivityTab
             review={review}
@@ -532,11 +571,7 @@ export function SimpleResults({ report, summary, activity, activityEventSummary,
             formatGmtPlus3={formatGmtPlus3}
           />
         ) : null}
-        {tab === "accounts" ? (
-          <Suspense fallback={<p className="muted">Loading accounts…</p>}>
-            <AccountsTab report={report} token={token} />
-          </Suspense>
-        ) : null}
+        {tab === "accounts" ? <AccountsTab report={report} token={token} /> : null}
       </div>
     </div>
   );

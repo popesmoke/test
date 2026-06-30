@@ -23,7 +23,7 @@ import sqlite3
 import tempfile
 from collections import Counter, defaultdict
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
-from queue import Empty, PriorityQueue, Queue
+from queue import Empty, PriorityQueue
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Iterable
@@ -51,17 +51,11 @@ SCAN_STAGES = [
     "Uploading Report",
 ]
 
-# Progress bar: real milestones from build_report() plus staged UI animation.
-PROGRESS_TICK_MS = 180
-PROGRESS_HOLD_PERCENT = 90.0
-PROGRESS_SLOW_STEP = 0.22
-PROGRESS_FAST_STEP = 1.45
-PROGRESS_MED_STEP = 0.38
-PROGRESS_PAUSE_AT = 22.0
-PROGRESS_PAUSE_SEC = 0.55
-PROGRESS_FAST_END = 72.0
-ESTIMATED_SCAN_SECONDS = 300.0
-PRE_SCAN_STAGE_DELAY_SEC = 0.65
+# Progress bar: real milestones from build_report() plus a light animation between updates.
+PROGRESS_TICK_SEC = 0.22
+PROGRESS_STEP = 0.55
+PROGRESS_CAP_DURING_SCAN = 92.0
+PRE_SCAN_STAGE_DELAY_SEC = 0.08
 PRE_SCAN_STAGE_PROGRESS = {
     "Initializing Scan": 8.0,
     "System Environment Check": 14.0,
@@ -2819,18 +2813,18 @@ EXECUTOR_NAMES = [
 
 # Extra tokens commonly seen in paths, prefetch stems, or renamed folders.
 EXECUTOR_ALIASES: dict[str, list[str]] = {
-    "Volt": ["volt", "voltexecutor", "volt.exe", "volt1", "volt 1", "volt executor"],
-    "Potassium": ["potassium", "potass", "kpotassium", "potassiumware", "potassium.exe", "potassium 2", "game_overlay.dll"],
-    "Wave": ["waveexecutor", "wave.exe", "wave 1", "wave-1", "wave135", "wave executor"],
+    "Volt": ["volt", "voltexecutor", "volt.exe", "volt1", "volt 1"],
+    "Potassium": ["potassium", "potass", "kpotassium", "potassiumware", "potassium.exe", "potassium 2"],
+    "Wave": ["waveexecutor", "wave.exe", "wave 1", "wave-1", "wave135"],
     "Synapse Z": ["synapse", "synapsez", "synapse z", "synapse-z", "synapse z.exe"],
     "Seliware": ["seliware", "seliware.exe", "seliware 2"],
     "Madium": ["madium", "madium.exe", "madium 1"],
     "Cosmic": ["cosmic", "cosmicexecutor", "cosmicware", "cosmic 3"],
-    "Velocity": ["velocity", "velocityexecutor", "velocity 1", "velocity.exe", "velocity executor"],
+    "Velocity": ["velocity", "velocityexecutor", "velocity 1", "velocity.exe"],
     "SirHurt": ["sirhurt", "sir_hurt", "sirhurt.exe", "sirhurt v5"],
-    "Solara": ["solara", "solarav3", "solarav2", "solara 3", "app.solara/index.html", "solara.exe"],
+    "Solara": ["solara", "solarav3", "solarav2", "solara 3"],
     "Xeno": ["xenoexecutor", "xeno.exe", "xeno 1", "xeno135", "xeno.now"],
-    "Serotonin": ["serotonin", "serotonin.exe", "serotonin v2", "serotoninv2", "serotoninsetup.exe", "serotonin executor"],
+    "Serotonin": ["serotonin", "serotonin.exe", "serotonin v2", "serotoninv2"],
     "Severe": ["severe", "severe.exe", "severe v2", "severev2"],
     "RbxCli": ["rbxcli", "rbxcli.exe", "rbx cli", "rbxcli-beta"],
     "Lumen": ["lumen", "lumenexecutor", "lumen.exe", "lumen 1"],
@@ -3100,24 +3094,6 @@ ARTIFACT_SCAN_MAX_TIMEOUT_SEC = 5.0
 DISK_EXECUTABLE_FALLBACK_TIMEOUT_SEC = 4.0
 PIPELINE_DRAIN_MAX_SECONDS = 7.0
 AUTHENTICODE_MAX_PATHS = 64
-SRUM_DB_MAX_BYTES = 12_000_000
-TEMP_DIR_SCAN_MAX_FILES = 60
-BROWSER_CACHE_SCAN_MAX_FILES = 50
-TRACE_CLEANER_NAME_TOKENS = (
-    "ccleaner",
-    "bleachbit",
-    "privazer",
-    "wisediskcleaner",
-    "glaryutilities",
-    "privacyeraser",
-    "wise care",
-    "revo uninstaller",
-    "secure erase",
-    "privaZer",
-    "cleanmgr",
-    "sdelete",
-    "cipher /w",
-)
 
 # Global scan deadline (monotonic). Set once per build_report().
 _scan_deadline_monotonic: float | None = None
@@ -3622,12 +3598,6 @@ def _reset_roblox_logs_cache() -> None:
     global _roblox_logs_cache
     with _roblox_logs_cache_lock:
         _roblox_logs_cache = None
-
-
-def _reset_roblox_account_scan_state() -> None:
-    global _ROBLOX_SWITCHER_API_ATTEMPTS
-    _ROBLOX_SWITCHER_API_ATTEMPTS = 0
-    _ROBLOX_AUTH_COOKIE_CACHE.clear()
 
 
 def _reset_full_pc_recent_executables_cache() -> None:
@@ -4573,40 +4543,7 @@ def bam_path_is_benign_system(path: str) -> bool:
 
 
 def artifact_path_is_review_noise(path: str) -> bool:
-    if bam_path_is_benign_system(path):
-        return True
-    return inventory_path_is_noise(path)
-
-
-_INVENTORY_NOISE_BASENAME = re.compile(
-    r"(?:^UNCONFIRMED\b|\.crdownload$|__cf_chl_|^[?])",
-    re.IGNORECASE,
-)
-_INVENTORY_CHROME_TEMP_NAME = re.compile(
-    r"^[A-Za-z0-9]{2,10}[-_~][A-Za-z0-9_~\-]{8,}$",
-)
-
-
-def inventory_path_is_noise(path: str) -> bool:
-    base = _digest_basename(path) if path else ""
-    if not base or base.lower() in {"file", "download"}:
-        return True
-    if _INVENTORY_NOISE_BASENAME.search(base):
-        return True
-    if base.startswith("?") or "__cf_chl" in base.lower():
-        return True
-    if _INVENTORY_CHROME_TEMP_NAME.match(base) and not re.search(
-        r"\.(exe|dll|msi|bat|ps1|zip|rar|7z)\b",
-        base,
-        re.IGNORECASE,
-    ):
-        return True
-    return False
-
-
-def _meaningful_inventory_labels(labels: list[str] | None) -> list[str]:
-    ignored = {"download_url_extension"}
-    return [label for label in labels or [] if label and label not in ignored]
+    return bam_path_is_benign_system(path)
 
 
 def executor_labels_for_artifact_text(text: str) -> list[str]:
@@ -7343,7 +7280,6 @@ def command_history_keyword_hits() -> dict:
         "cipher /w",
         "deletejournal",
         "vssadmin",
-        *TRACE_CLEANER_NAME_TOKENS,
     ]
     cleanup_patterns = [
         re.compile(re.escape(keyword), re.IGNORECASE)
@@ -8187,38 +8123,6 @@ def _deletion_cleanup_summary_text(
     return f"{name} was deleted on {deleted_text}."
 
 
-_BYPASS_TECHNIQUE_BY_CATEGORY = {
-    "tamper": "user_mode_api",
-    "cover_up": "behavioral_evasion",
-    "defender": "anticheat_tamper",
-    "ghost_trace": "signature_evasion",
-    "persistence": "code_injection",
-    "correlation": "behavioral_evasion",
-}
-
-
-def _infer_bypass_technique(*, title: str, detail: str, category: str) -> str:
-    blob = f"{title} {detail} {category}".lower()
-    rules = (
-        ("anticheat_tamper", r"defender|real-time protection|exclusion|antivirus"),
-        ("user_mode_api", r"prefetch|bam|event log|sysmain|runtime logging|program-run records|amcache"),
-        ("lolbins", r"powershell history|wevtutil|cipher|vssadmin|fsutil"),
-        ("behavioral_evasion", r"cleanup|recycle|shell history|folder history|shadow-copy|deleted|removed"),
-        ("signature_evasion", r"prefetch proves|forensic traces after deletion|deleted executor|deleted cheat|ghost"),
-        ("code_injection", r"wmi|persistence|hidden auto-run"),
-        ("handle_hiding", r"wmi|subscription"),
-        ("process_hollowing", r"ran but files are gone|delete-after-run"),
-    )
-    for technique, pattern in rules:
-        if re.search(pattern, blob):
-            return technique
-    return _BYPASS_TECHNIQUE_BY_CATEGORY.get(category, "behavioral_evasion")
-
-
-def _bypass_action_summary(title: str, detail: str) -> str:
-    return f"{title.strip().rstrip('.')}: {detail.strip()}"
-
-
 def bypass_resilience_signals(
     *,
     prefetch: dict,
@@ -8442,34 +8346,6 @@ def bypass_resilience_signals(
                 detail=f"PowerShell history contains a suspicious maintenance command: {line[:220]}",
                 category="cover_up",
                 weight=20,
-            )
-            break
-
-    trace_cleaner_blob = "\n".join(
-        [
-            str(hit.get("line") or "")
-            for hit in (command_history.get("hits") or [])[:60]
-        ]
-        + [
-            str(item.get("normalized_path") or "")
-            for item in bam_items[:200]
-        ]
-        + [
-            str(row.get("name") or "")
-            for row in (prefetch.get("items") or [])[:120]
-        ]
-    ).lower()
-    for token in TRACE_CLEANER_NAME_TOKENS:
-        if token.lower() in trace_cleaner_blob:
-            add(
-                severity="high",
-                title="Evidence of trace cleaner execution",
-                detail=(
-                    f"A known privacy/trace cleaner ({token}) appears in shell history, BAM, or Prefetch — "
-                    "may indicate deliberate artifact wiping."
-                ),
-                category="cover_up",
-                weight=22,
             )
             break
 
@@ -8728,26 +8604,6 @@ def bypass_resilience_signals(
                 category="correlation",
                 weight=15,
             )
-
-    shell_hits = list(command_history.get("hits") or [])
-    cleanup_hits = [
-        hit
-        for hit in shell_hits
-        if re.search(
-            r"wevtutil\s+cl|Clear-EventLog|fsutil\s+usn|deletejournal|vssadmin\s+delete|Remove-Item.*Prefetch|"
-            r"Clear-RecycleBin|cipher\s+/w|Set-MpPreference.*Disable|DisableRealtimeMonitoring",
-            str(hit.get("line") or ""),
-            re.I,
-        )
-    ]
-    if cleanup_hits:
-        add(
-            severity="high",
-            title="Shell history shows anti-forensics commands",
-            detail=f"PowerShell history contains {len(cleanup_hits)} command(s) that clear logs, prefetch, or weaken defenses.",
-            category="cover_up",
-            weight=20,
-        )
 
     for hint in (prefetch_health or {}).get("tamper_hints") or []:
         if hint == "readonly_prefetch_files":
@@ -9101,11 +8957,6 @@ _ROBLOX_USER_ID_TEXT = re.compile(
     r'(?:"UserId"|userId)\s*:\s*"?(\d{6,})"?|\buserId\s*[=:]\s*(\d{6,})\b',
     re.IGNORECASE,
 )
-_ROBLOX_GUAC_USER_PATTERN = re.compile(r"GUAC:(\d{5,12})", re.IGNORECASE)
-_ROBLOX_AM_COOKIE_PATTERN = re.compile(r"AM\.ROBLOSECURITY\.(\d{5,12})", re.IGNORECASE)
-_ROBLOX_AUTH_COOKIE_CACHE: dict[str, dict | None] = {}
-_ROBLOX_SWITCHER_API_ATTEMPTS = 0
-_ROBLOX_SWITCHER_API_MAX_ATTEMPTS = 4
 _ROBLOX_APP_STORAGE_USER_ID = re.compile(r'"UserId"\s*:\s*"(\d{6,})"', re.IGNORECASE)
 _ROBLOX_APP_STORAGE_USERNAME = re.compile(r'"Username"\s*:\s*"([^"\\]{2,32})"', re.IGNORECASE)
 _ROBLOX_APP_STORAGE_DISPLAY_NAME = re.compile(r'"DisplayName"\s*:\s*"([^"\\]{1,32})"', re.IGNORECASE)
@@ -9234,37 +9085,7 @@ def _chromium_decrypt_cookie_value(
     return cleaned or None
 
 
-def _roblox_chromium_browser_roots() -> list[tuple[str, Path]]:
-    local = os.getenv("LOCALAPPDATA", "")
-    if not local:
-        return []
-    local_path = Path(local)
-    return [
-        ("Chrome", local_path / "Google" / "Chrome" / "User Data"),
-        ("Edge", local_path / "Microsoft" / "Edge" / "User Data"),
-        ("Brave", local_path / "BraveSoftware" / "Brave-Browser" / "User Data"),
-        ("Opera", local_path / "Opera Software" / "Opera Stable"),
-        ("Opera GX", local_path / "Opera Software" / "Opera GX Stable"),
-        ("Vivaldi", local_path / "Vivaldi" / "User Data"),
-        ("Chromium", local_path / "Chromium" / "User Data"),
-    ]
-
-
-def _roblox_firefox_profile_dirs() -> list[Path]:
-    firefox_root = Path(os.getenv("APPDATA", "")) / "Mozilla" / "Firefox" / "Profiles"
-    if not firefox_root.is_dir():
-        return []
-    try:
-        return sorted(
-            (entry for entry in firefox_root.iterdir() if entry.is_dir()),
-            key=lambda path: path.stat().st_mtime,
-            reverse=True,
-        )[:10]
-    except OSError:
-        return []
-
-
-def _chromium_has_roblox_auth_cookie(cookie_db: Path) -> bool:
+def _chromium_has_auth_cookie(cookie_db: Path) -> bool:
     conn = _sqlite_open_readonly(cookie_db)
     if not conn:
         return False
@@ -9274,10 +9095,7 @@ def _chromium_has_roblox_auth_cookie(cookie_db: Path) -> bool:
             """
             SELECT 1 FROM cookies
             WHERE host_key LIKE '%roblox%'
-              AND (
-                UPPER(name) = '.ROBLOSECURITY'
-                OR UPPER(name) LIKE 'AM.ROBLOSECURITY.%'
-              )
+              AND UPPER(name) = '.ROBLOSECURITY'
             LIMIT 1
             """
         )
@@ -9288,854 +9106,32 @@ def _chromium_has_roblox_auth_cookie(cookie_db: Path) -> bool:
         conn.close()
 
 
-def _chromium_has_auth_cookie(cookie_db: Path) -> bool:
-    return _chromium_has_roblox_auth_cookie(cookie_db)
-
-
 def _roblox_user_from_authenticated_cookie(roblosecurity: str) -> dict | None:
     token = str(roblosecurity or "").strip()
     if not token:
         return None
-    fingerprint = hashlib.sha256(token.encode("utf-8")).hexdigest()[:24]
-    if fingerprint in _ROBLOX_AUTH_COOKIE_CACHE:
-        return _ROBLOX_AUTH_COOKIE_CACHE[fingerprint]
     try:
         response = requests.get(
             "https://users.roblox.com/v1/users/authenticated",
             cookies={".ROBLOSECURITY": token},
-            timeout=3,
+            timeout=4,
         )
         if response.status_code != 200:
-            _ROBLOX_AUTH_COOKIE_CACHE[fingerprint] = None
             return None
         data = response.json()
         user_id = data.get("id")
         if not user_id:
-            _ROBLOX_AUTH_COOKIE_CACHE[fingerprint] = None
             return None
         username = str(data.get("name") or "").strip() or None
-        resolved = {"user_id": str(user_id), "username": username}
-        _ROBLOX_AUTH_COOKIE_CACHE[fingerprint] = resolved
-        return resolved
+        return {"user_id": str(user_id), "username": username}
     except (requests.RequestException, TypeError, ValueError):
-        _ROBLOX_AUTH_COOKIE_CACHE[fingerprint] = None
         return None
-
-
-def _public_account_records(accounts: list[dict]) -> list[dict]:
-    """Remove internal detection-source metadata before report upload."""
-    public: list[dict] = []
-    for account in accounts:
-        if not isinstance(account, dict):
-            continue
-        row = {key: value for key, value in account.items() if key not in {"sources", "on_switcher_list"}}
-        public.append(row)
-    return public
-
-
-def _roblox_parse_switcher_users_payload(data: object) -> list[dict[str, object]]:
-    accounts: list[dict[str, object]] = []
-    entries: list | None = None
-    if isinstance(data, list):
-        entries = data
-    elif isinstance(data, dict):
-        for key in (
-            "logged_in_users_metadata",
-            "loggedInUsers",
-            "logged_in_users",
-            "users",
-            "accounts",
-            "userData",
-            "user_data",
-        ):
-            candidate = data.get(key)
-            if isinstance(candidate, list):
-                entries = candidate
-                break
-    if not entries:
-        return accounts
-    seen: set[str] = set()
-    for entry in entries:
-        account = _roblox_account_entry_from_mapping(entry) if isinstance(entry, dict) else None
-        if not account:
-            continue
-        user_id = str(account["user_id"])
-        if user_id in seen:
-            continue
-        seen.add(user_id)
-        accounts.append({**account, "on_switcher_list": True})
-    return accounts
-
-
-def _roblox_coerce_user_id(value: object) -> str | None:
-    if value in (None, "", 0):
-        return None
-    candidate = str(value).strip()
-    if candidate.isdigit() and _roblox_valid_user_id(candidate):
-        return candidate
-    return None
-
-
-def _roblox_account_entry_from_mapping(entry: dict) -> dict[str, object] | None:
-    if not isinstance(entry, dict):
-        return None
-    nested_user = entry.get("user")
-    if isinstance(nested_user, dict):
-        merged = dict(nested_user)
-        merged.update(entry)
-        entry = merged
-    user_id = _roblox_coerce_user_id(
-        entry.get("userId")
-        or entry.get("user_id")
-        or entry.get("id")
-        or entry.get("Id")
-        or entry.get("UserId")
-    )
-    if not user_id:
-        return None
-    username = str(entry.get("name") or entry.get("username") or entry.get("Username") or "").strip() or None
-    display_name = str(entry.get("displayName") or entry.get("DisplayName") or "").strip() or None
-    return {
-        "user_id": user_id,
-        "username": username if username and _roblox_is_plausible_username(username) else None,
-        "display_name": display_name or username,
-        "authenticated": False,
-        "on_switcher_list": True,
-    }
-
-
-def _roblox_parse_json_maybe(value: object) -> object:
-    if isinstance(value, str):
-        text = value.strip()
-        if text.startswith(("[", "{")):
-            try:
-                return json.loads(text)
-            except json.JSONDecodeError:
-                return value
-    return value
-
-
-def _roblox_parse_multi_account_store_payload(data: object) -> list[dict[str, object]]:
-    accounts: list[dict[str, object]] = []
-    payload = _roblox_parse_json_maybe(data)
-    entries: list = []
-    if isinstance(payload, list):
-        entries = payload
-    elif isinstance(payload, dict):
-        for key in ("accounts", "users", "items", "Accounts", "Users"):
-            candidate = payload.get(key)
-            if isinstance(candidate, list):
-                entries = candidate
-                break
-        if not entries:
-            single = _roblox_account_entry_from_mapping(payload)
-            if single:
-                return [single]
-    seen: set[str] = set()
-    for entry in entries:
-        account = _roblox_account_entry_from_mapping(entry)
-        if not account:
-            continue
-        user_id = str(account["user_id"])
-        if user_id in seen:
-            continue
-        seen.add(user_id)
-        accounts.append(account)
-    return accounts
-
-
-def _roblox_parse_multi_account_store_from_text(text: str) -> list[dict[str, object]]:
-    if "multiaccountstore" not in str(text or "").lower():
-        return []
-    accounts: list[dict[str, object]] = []
-    fragment = _extract_json_value_after_key(text, "MultiAccountStore")
-    if fragment:
-        try:
-            accounts.extend(_roblox_parse_multi_account_store_payload(json.loads(fragment)))
-        except json.JSONDecodeError:
-            accounts.extend(
-                {
-                    "user_id": row["user_id"],
-                    "username": row.get("username"),
-                    "display_name": row.get("display_name"),
-                    "authenticated": False,
-                }
-                for row in _roblox_parse_account_objects_from_text(fragment)
-                if row.get("user_id")
-            )
-    return accounts
-
-
-def _roblox_guac_accounts_from_mapping(data: dict) -> list[dict[str, object]]:
-    accounts: list[dict[str, object]] = []
-    seen: set[str] = set()
-    for key, value in data.items():
-        if not isinstance(key, str) or not key.startswith("GUAC:"):
-            continue
-        user_id = _roblox_coerce_user_id(key.split(":", 1)[1] if ":" in key else "")
-        if not user_id or user_id in seen:
-            continue
-        seen.add(user_id)
-        accounts.append(
-            {
-                "user_id": user_id,
-                "username": None,
-                "display_name": None,
-                "authenticated": False,
-                "on_switcher_list": True,
-            }
-        )
-    return accounts
-
-
-def _roblox_switcher_sessions_from_cookies(cookie_map: dict[str, str]) -> list[dict[str, str]]:
-    if not cookie_map:
-        return []
-    base = {str(name): str(value) for name, value in cookie_map.items() if value}
-    sessions: list[dict[str, str]] = []
-    seen: set[str] = set()
-
-    def _add(session: dict[str, str]) -> None:
-        cleaned = {str(name): str(value) for name, value in session.items() if value}
-        primary = cleaned.get(".ROBLOSECURITY", "")
-        if not primary:
-            for name, value in cleaned.items():
-                if name.upper().startswith("AM.ROBLOSECURITY."):
-                    cleaned[".ROBLOSECURITY"] = value
-                    primary = value
-                    break
-        if not primary:
-            return
-        fingerprint = hashlib.sha256(primary.encode("utf-8")).hexdigest()[:20]
-        if fingerprint in seen:
-            return
-        seen.add(fingerprint)
-        sessions.append(cleaned)
-
-    if base.get(".ROBLOSECURITY") or any(name.upper().startswith("AM.ROBLOSECURITY.") for name in base):
-        _add(base)
-    for name, value in base.items():
-        if not value:
-            continue
-        if name.upper().startswith("AM.ROBLOSECURITY."):
-            merged = dict(base)
-            merged[".ROBLOSECURITY"] = value
-            merged[name] = value
-            _add(merged)
-    return sessions
-
-
-def _roblox_extract_encrypted_users_blob(text: str) -> str | None:
-    fragment = _extract_json_value_after_key(str(text or ""), "encrypted_users_data_blob")
-    if not fragment:
-        return None
-    if fragment.startswith('"'):
-        try:
-            decoded = json.loads(fragment)
-            return str(decoded).strip() if decoded else None
-        except json.JSONDecodeError:
-            return fragment.strip('"').strip() or None
-    return fragment.strip() or None
-
-
-def _roblox_cookie_user_ids_from_map(cookie_map: dict[str, str]) -> set[str]:
-    user_ids: set[str] = set()
-    for name in cookie_map:
-        upper = str(name or "").upper()
-        if upper.startswith("AM.ROBLOSECURITY."):
-            candidate = str(name).rsplit(".", 1)[-1]
-            if _roblox_valid_user_id(candidate):
-                user_ids.add(candidate)
-    primary = str(cookie_map.get(".ROBLOSECURITY") or "").strip()
-    if primary:
-        auth_user = _roblox_user_from_authenticated_cookie(primary)
-        if auth_user and auth_user.get("user_id"):
-            user_ids.add(str(auth_user["user_id"]))
-    return user_ids
-
-
-def _roblox_filter_switcher_api_accounts(
-    accounts: list[dict[str, object]],
-    cookie_map: dict[str, str],
-) -> list[dict[str, object]]:
-    """Trust the account-switcher API response when called with a valid session cookie."""
-    del cookie_map
-    filtered: list[dict[str, object]] = []
-    for account in accounts:
-        user_id = str(account.get("user_id") or "").strip()
-        if not _roblox_valid_user_id(user_id):
-            continue
-        filtered.append({**account, "authenticated": True, "on_switcher_list": True})
-    return filtered
-
-
-def _roblox_guac_user_ids_from_mapping(data: dict) -> set[str]:
-    user_ids: set[str] = set()
-    if not isinstance(data, dict):
-        return user_ids
-    for key in data:
-        if isinstance(key, str) and key.startswith("GUAC:"):
-            candidate = _roblox_coerce_user_id(key.split(":", 1)[1] if ":" in key else "")
-            if candidate:
-                user_ids.add(candidate)
-    active = _roblox_coerce_user_id(data.get("UserId"))
-    if active:
-        user_ids.add(active)
-    return user_ids
-
-
-def _roblox_mark_switcher_accounts_authenticated(
-    accounts: list[dict[str, object]],
-    *,
-    allowed_user_ids: set[str],
-) -> list[dict[str, object]]:
-    marked: list[dict[str, object]] = []
-    for account in accounts:
-        user_id = str(account.get("user_id") or "").strip()
-        if not _roblox_valid_user_id(user_id):
-            continue
-        has_name = bool(account.get("username") or account.get("display_name"))
-        if user_id in allowed_user_ids or has_name or account.get("on_switcher_list"):
-            marked.append({**account, "authenticated": True, "on_switcher_list": True})
-    return marked
-
-
-def _roblox_fetch_account_switcher_accounts_single(
-    cookie_map: dict[str, str],
-    *,
-    encrypted_blob: str | None = None,
-) -> list[dict[str, object]]:
-    if not cookie_map:
-        return []
-    primary = cookie_map.get(".ROBLOSECURITY", "")
-    if not primary:
-        for name, value in cookie_map.items():
-            if name.upper().startswith("AM.ROBLOSECURITY.") and value:
-                primary = value
-                break
-    if not primary:
-        return []
-    session = requests.Session()
-    session.headers.update(
-        {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Content-Type": "application/json;charset=UTF-8",
-            "Referer": "https://www.roblox.com/",
-            "Origin": "https://www.roblox.com",
-            "Accept": "application/json, text/plain, */*",
-        }
-    )
-    for name, value in cookie_map.items():
-        if value:
-            session.cookies.set(name, value, domain=".roblox.com")
-    try:
-        session.get("https://www.roblox.com/home", timeout=3)
-    except requests.RequestException:
-        pass
-    url = "https://apis.roblox.com/account-switcher/v1/getLoggedInUsersMetadata"
-    body: dict[str, object] = {"remove_invalid_active_user": False}
-    blob = encrypted_blob or cookie_map.get("_encrypted_users_data_blob") or cookie_map.get("encrypted_users_data_blob")
-    if blob:
-        body["encrypted_users_data_blob"] = str(blob)
-    for _ in range(2):
-        try:
-            response = session.post(url, json=body, timeout=5)
-        except requests.RequestException:
-            break
-        if response.status_code == 403:
-            csrf = response.headers.get("x-csrf-token")
-            if csrf:
-                session.headers["x-csrf-token"] = csrf
-                continue
-        if response.status_code == 200:
-            try:
-                parsed = _roblox_parse_switcher_users_payload(response.json())
-                return _roblox_filter_switcher_api_accounts(parsed, cookie_map)
-            except (TypeError, ValueError):
-                return []
-        break
-    return []
-
-
-def _roblox_fetch_account_switcher_accounts(
-    cookie_map: dict[str, str],
-    *,
-    encrypted_blob: str | None = None,
-) -> list[dict[str, object]]:
-    merged: dict[str, dict[str, object]] = {}
-    for session_cookies in _roblox_switcher_sessions_from_cookies(cookie_map):
-        _roblox_merge_switcher_accounts(
-            merged,
-            _roblox_fetch_account_switcher_accounts_single(session_cookies, encrypted_blob=encrypted_blob),
-        )
-    return list(merged.values())
-
-
-def _roblox_parse_switcher_metadata_from_text(text: str) -> list[dict[str, object]]:
-    lowered = str(text or "").lower()
-    if not any(
-        marker in lowered
-        for marker in (
-            "logged_in_users_metadata",
-            "loggedinusers",
-            "account-switcher",
-            "accountswitcher",
-            "multiaccountstore",
-            "guac:",
-            "am.roblobsecurity",
-            "encrypted_users_data_blob",
-        )
-    ):
-        return []
-    accounts: list[dict[str, object]] = []
-    for key in ("logged_in_users_metadata", "loggedInUsers", "logged_in_users"):
-        fragment = _extract_json_value_after_key(text, key)
-        if not fragment:
-            continue
-        try:
-            payload = json.loads(fragment)
-        except json.JSONDecodeError:
-            accounts.extend(
-                {
-                    "user_id": row["user_id"],
-                    "username": row.get("username"),
-                    "display_name": row.get("display_name"),
-                    "authenticated": False,
-                }
-                for row in _roblox_parse_account_objects_from_text(fragment)
-                if row.get("user_id")
-            )
-            continue
-        if isinstance(payload, list):
-            accounts.extend(_roblox_parse_switcher_users_payload(payload))
-        else:
-            accounts.extend(_roblox_parse_switcher_users_payload(payload))
-    return accounts
-
-
-def _roblox_merge_switcher_accounts(target: dict[str, dict[str, object]], accounts: list[dict[str, object]]) -> None:
-    for account in accounts:
-        user_id = str(account.get("user_id") or "").strip()
-        if not _roblox_valid_user_id(user_id):
-            continue
-        existing = target.setdefault(
-            user_id,
-            {
-                "user_id": user_id,
-                "username": None,
-                "display_name": None,
-                "authenticated": False,
-            },
-        )
-        if account.get("authenticated"):
-            existing["authenticated"] = True
-        if account.get("on_switcher_list"):
-            existing["on_switcher_list"] = True
-        username = account.get("username") or account.get("display_name")
-        if username and _roblox_is_plausible_username(str(username)) and not existing.get("username"):
-            existing["username"] = str(username)
-        display_name = account.get("display_name")
-        if display_name and not existing.get("display_name"):
-            existing["display_name"] = str(display_name)
-
-
-def _roblox_scan_storage_texts_for_switcher(texts: Iterable[str], target: dict[str, dict[str, object]]) -> None:
-    for text in texts:
-        _roblox_merge_switcher_accounts(target, _roblox_parse_switcher_metadata_from_text(text))
-        _roblox_merge_switcher_accounts(target, _roblox_parse_multi_account_store_from_text(text))
-
-
-def _roblox_merge_storage_mapping_accounts(
-    target: dict[str, dict[str, object]],
-    data: dict,
-    *,
-    seen_tokens: set[str],
-) -> None:
-    if not isinstance(data, dict):
-        return
-    _roblox_merge_switcher_accounts(target, _roblox_guac_accounts_from_mapping(data))
-    allowed_user_ids = _roblox_guac_user_ids_from_mapping(data)
-    for key in ("logged_in_users_metadata", "loggedInUsers", "logged_in_users"):
-        fragment = _roblox_parse_json_maybe(data.get(key))
-        if isinstance(fragment, list):
-            _roblox_merge_switcher_accounts(
-                target,
-                _roblox_mark_switcher_accounts_authenticated(
-                    _roblox_parse_switcher_users_payload(fragment),
-                    allowed_user_ids=allowed_user_ids,
-                ),
-            )
-        elif isinstance(fragment, str) and fragment.strip():
-            _roblox_merge_switcher_accounts(
-                target,
-                _roblox_mark_switcher_accounts_authenticated(
-                    _roblox_parse_switcher_metadata_from_text(f'"{key}": {fragment}'),
-                    allowed_user_ids=allowed_user_ids,
-                ),
-            )
-    multi_store = _roblox_parse_json_maybe(data.get("MultiAccountStore"))
-    _roblox_merge_switcher_accounts(
-        target,
-        _roblox_mark_switcher_accounts_authenticated(
-            _roblox_parse_multi_account_store_payload(multi_store),
-            allowed_user_ids=allowed_user_ids,
-        ),
-    )
-    cookie_map = _roblox_validate_guac_tokens_in_mapping(target, data, seen_tokens=seen_tokens)
-    _roblox_merge_switcher_api_for_cookies(target, cookie_map, seen_tokens=seen_tokens)
-
-
-def _roblox_discover_client_storage_roots() -> list[Path]:
-    local = Path(os.getenv("LOCALAPPDATA", ""))
-    if not local.is_dir():
-        return []
-    roots: list[Path] = [local / "Roblox"]
-    packages = local / "Packages"
-    if packages.is_dir():
-        try:
-            for pkg in packages.iterdir():
-                if "roblox" not in pkg.name.lower():
-                    continue
-                for candidate in (pkg / "LocalState", pkg / "LocalCache" / "Roblox"):
-                    if candidate.is_dir():
-                        roots.append(candidate)
-        except OSError:
-            pass
-    deduped: list[Path] = []
-    seen: set[str] = set()
-    for root in roots:
-        key = str(root).lower()
-        if key in seen or not root.is_dir():
-            continue
-        seen.add(key)
-        deduped.append(root)
-    return deduped
-
-
-def _roblox_chromium_am_user_ids_from_cookie_names(profile_dir: Path) -> list[str]:
-    user_ids: set[str] = set()
-    for cookie_db in _chromium_cookie_db_paths(profile_dir):
-        conn = _sqlite_open_readonly(cookie_db)
-        if not conn:
-            continue
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                """
-                SELECT name FROM cookies
-                WHERE host_key LIKE '%roblox%'
-                  AND (
-                    UPPER(name) = '.ROBLOSECURITY'
-                    OR UPPER(name) LIKE 'AM.ROBLOSECURITY.%'
-                  )
-                """
-            )
-            for (name,) in cur.fetchall():
-                cookie_name = str(name or "").strip()
-                if not cookie_name:
-                    continue
-                am_match = _ROBLOX_AM_COOKIE_PATTERN.search(cookie_name)
-                if am_match and _roblox_valid_user_id(am_match.group(1)):
-                    user_ids.add(str(am_match.group(1)))
-        except sqlite3.Error:
-            pass
-        finally:
-            conn.close()
-    return sorted(user_ids, key=lambda value: int(value))
-
-
-def _roblox_firefox_am_user_ids_from_cookie_names(profile_dir: Path) -> list[str]:
-    user_ids: set[str] = set()
-    conn = _sqlite_open_readonly(profile_dir / "cookies.sqlite")
-    if not conn:
-        return []
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT name FROM moz_cookies
-            WHERE host LIKE '%roblox%'
-              AND (
-                UPPER(name) = '.ROBLOSECURITY'
-                OR UPPER(name) LIKE 'AM.ROBLOSECURITY.%'
-              )
-            """
-        )
-        for (name,) in cur.fetchall():
-            cookie_name = str(name or "").strip()
-            if not cookie_name:
-                continue
-            am_match = _ROBLOX_AM_COOKIE_PATTERN.search(cookie_name)
-            if am_match and _roblox_valid_user_id(am_match.group(1)):
-                user_ids.add(str(am_match.group(1)))
-    except sqlite3.Error:
-        pass
-    finally:
-        conn.close()
-    return sorted(user_ids, key=lambda value: int(value))
-
-
-def _roblox_validate_guac_tokens_in_mapping(
-    target: dict[str, dict[str, object]],
-    data: dict,
-    *,
-    seen_tokens: set[str],
-) -> dict[str, str]:
-    cookie_map = _roblox_cookie_map_from_app_storage(data)
-    for key, value in data.items():
-        if not isinstance(key, str) or not key.startswith("GUAC:") or not isinstance(value, str):
-            continue
-        token = value.strip()
-        if not token:
-            continue
-        user_id = key.split(":", 1)[1] if ":" in key else ""
-        if not user_id.isdigit():
-            continue
-        cookie_map[f"AM.ROBLOSECURITY.{user_id}"] = token
-        cookie_map.setdefault(".ROBLOSECURITY", token)
-        fingerprint = hashlib.sha256(token.encode("utf-8")).hexdigest()[:20]
-        if fingerprint in seen_tokens:
-            continue
-        seen_tokens.add(fingerprint)
-    return cookie_map
-
-
-def _roblox_chromium_profile_storage_texts(profile_dir: Path) -> list[str]:
-    texts: list[str] = []
-    storage_dir = profile_dir / "Local Storage" / "leveldb"
-    if storage_dir.is_dir():
-        try:
-            blobs = sorted(storage_dir.glob("*.ldb"), key=lambda path: path.stat().st_mtime, reverse=True)[:32]
-            blobs.extend(sorted(storage_dir.glob("*.log"), key=lambda path: path.stat().st_mtime, reverse=True)[:12])
-            for blob in blobs:
-                try:
-                    text = blob.read_bytes()[:3_200_000].decode("latin-1", errors="ignore")
-                except OSError:
-                    continue
-                if "roblox" in text.lower():
-                    texts.append(text)
-        except OSError:
-            pass
-    indexeddb = profile_dir / "IndexedDB"
-    if indexeddb.is_dir():
-        try:
-            for entry in indexeddb.rglob("*"):
-                if not entry.is_file() or entry.suffix not in (".log", ".ldb"):
-                    continue
-                if "roblox" not in str(entry).lower():
-                    continue
-                if entry.stat().st_size > 10_000_000:
-                    continue
-                texts.append(entry.read_bytes()[:2_400_000].decode("latin-1", errors="ignore"))
-        except OSError:
-            pass
-    return texts
-
-
-def _roblox_merge_switcher_api_for_cookies(
-    target: dict[str, dict[str, object]],
-    cookie_map: dict[str, str],
-    *,
-    seen_tokens: set[str],
-    storage_texts: Iterable[str] | None = None,
-) -> None:
-    global _ROBLOX_SWITCHER_API_ATTEMPTS
-    if _ROBLOX_SWITCHER_API_ATTEMPTS >= _ROBLOX_SWITCHER_API_MAX_ATTEMPTS:
-        return
-    encrypted_blob: str | None = None
-    for text in storage_texts or []:
-        encrypted_blob = _roblox_extract_encrypted_users_blob(text)
-        if encrypted_blob:
-            break
-    for session_cookies in _roblox_switcher_sessions_from_cookies(cookie_map):
-        if _ROBLOX_SWITCHER_API_ATTEMPTS >= _ROBLOX_SWITCHER_API_MAX_ATTEMPTS:
-            return
-        primary = session_cookies.get(".ROBLOSECURITY", "")
-        fingerprint = hashlib.sha256(str(primary).encode("utf-8")).hexdigest()[:20] if primary else ""
-        if fingerprint and fingerprint in seen_tokens:
-            continue
-        if fingerprint:
-            seen_tokens.add(fingerprint)
-        fetched = _roblox_fetch_account_switcher_accounts(session_cookies, encrypted_blob=encrypted_blob)
-        if fetched:
-            _roblox_merge_switcher_accounts(target, fetched)
-            _ROBLOX_SWITCHER_API_ATTEMPTS += 1
-            if sum(1 for row in target.values() if row.get("on_switcher_list")) > 1:
-                return
-
-
-def _roblox_client_app_storage_paths() -> list[Path]:
-    paths: list[Path] = []
-    for root in _roblox_discover_client_storage_roots():
-        primary = root / "LocalStorage" / "appStorage.json"
-        if primary.is_file():
-            paths.append(primary)
-        if root.is_dir():
-            try:
-                for extra in root.rglob("appStorage.json"):
-                    if extra.is_file() and extra not in paths:
-                        paths.append(extra)
-            except OSError:
-                pass
-    return paths[:16]
-
-
-def _roblox_cookie_map_from_app_storage(data: dict) -> dict[str, str]:
-    cookie_map: dict[str, str] = {}
-    if not isinstance(data, dict):
-        return cookie_map
-    for key, value in data.items():
-        if not isinstance(key, str) or not isinstance(value, str):
-            continue
-        lowered = key.lower()
-        if lowered in {".roblosecurity", "roblosecurity"} and value.strip():
-            cookie_map[".ROBLOSECURITY"] = value.strip()
-        elif key.startswith("GUAC:") and value.strip():
-            user_id = key.split(":", 1)[1] if ":" in key else ""
-            if user_id.isdigit():
-                cookie_map[f"AM.ROBLOSECURITY.{user_id}"] = value.strip()
-    return cookie_map
-
-
-def _roblox_collect_account_switcher_accounts() -> list[dict[str, object]]:
-    """Collect Roblox accounts from the desktop/browser switch-account list."""
-    if platform.system() != "Windows":
-        return []
-    local = os.getenv("LOCALAPPDATA", "")
-    if not local:
-        return []
-    accounts_by_id: dict[str, dict[str, object]] = {}
-    seen_tokens: set[str] = set()
-    has_switcher_metadata = False
-
-    for storage_path in _roblox_client_app_storage_paths()[:2]:
-        try:
-            raw = storage_path.read_text(encoding="utf-8", errors="ignore")
-            data = json.loads(raw)
-        except (OSError, json.JSONDecodeError):
-            raw = ""
-            data = {}
-        if isinstance(data, dict):
-            _roblox_merge_storage_mapping_accounts(accounts_by_id, data, seen_tokens=seen_tokens)
-            if any(
-                key in data
-                for key in ("logged_in_users_metadata", "loggedInUsers", "logged_in_users", "MultiAccountStore")
-            ):
-                has_switcher_metadata = True
-        if raw:
-            _roblox_merge_switcher_accounts(accounts_by_id, _roblox_parse_switcher_metadata_from_text(raw))
-            _roblox_merge_switcher_accounts(accounts_by_id, _roblox_parse_multi_account_store_from_text(raw))
-
-    if not has_switcher_metadata and not any(row.get("on_switcher_list") for row in accounts_by_id.values()):
-        for root in _roblox_discover_client_storage_roots()[:1]:
-            leveldb = root / "LocalStorage" / "leveldb"
-            if leveldb.is_dir():
-                try:
-                    for entry in sorted(leveldb.iterdir(), key=lambda path: path.stat().st_mtime, reverse=True)[:6]:
-                        if entry.is_file() and entry.suffix in (".log", ".ldb"):
-                            text = entry.read_bytes()[:1_200_000].decode("latin-1", errors="ignore")
-                            _roblox_scan_storage_texts_for_switcher([text], accounts_by_id)
-                except OSError:
-                    pass
-
-    for storage_path in _roblox_client_app_storage_paths()[:1]:
-        try:
-            data = json.loads(storage_path.read_text(encoding="utf-8", errors="ignore"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        if isinstance(data, dict):
-            cookie_map = _roblox_validate_guac_tokens_in_mapping(accounts_by_id, data, seen_tokens=seen_tokens)
-            if cookie_map:
-                _roblox_merge_switcher_api_for_cookies(
-                    accounts_by_id,
-                    cookie_map,
-                    seen_tokens=seen_tokens,
-                    storage_texts=[json.dumps(data)],
-                )
-                break
-
-    for browser, base in _roblox_chromium_browser_roots():
-        if not base.is_dir():
-            continue
-        for profile in _chromium_profile_names(base)[:6]:
-            profile_dir = base / profile
-            storage_texts = _roblox_chromium_profile_storage_texts(profile_dir)[:4]
-            _roblox_scan_storage_texts_for_switcher(storage_texts, accounts_by_id)
-            for user_id in _roblox_chromium_am_user_ids_from_cookie_names(profile_dir):
-                _roblox_merge_switcher_accounts(
-                    accounts_by_id,
-                    [{"user_id": user_id, "username": None, "display_name": None, "authenticated": True}],
-                )
-            cookie_map, _ = _roblox_read_chromium_session_cookies(profile_dir)
-            if cookie_map:
-                _roblox_merge_switcher_api_for_cookies(
-                    accounts_by_id,
-                    cookie_map,
-                    seen_tokens=seen_tokens,
-                    storage_texts=storage_texts,
-                )
-
-    return list(accounts_by_id.values())
-
-
-_ROBLOX_TRUSTED_ACCOUNT_SOURCE_MARKERS = (
-    "roblox client",
-    "roblox account switcher",
-    "roblox profile",
-    "guac",
-    "multiaccount",
-    "web login",
-    "logged_in_users",
-)
 
 
 def _roblox_valid_user_id(user_id: str | None) -> bool:
-    candidate = str(user_id or "").strip()
-    if not candidate.isdigit():
+    if not user_id or not str(user_id).isdigit():
         return False
-    value = int(candidate)
-    return 1 <= value <= 9_999_999_999
-
-
-def _roblox_account_source_is_trusted(sources: list[str] | None) -> bool:
-    for source in sources or []:
-        lowered = str(source or "").lower()
-        if any(marker in lowered for marker in _ROBLOX_TRUSTED_ACCOUNT_SOURCE_MARKERS):
-            return True
-    return False
-
-
-def _roblox_filter_relevant_accounts(
-    accounts: list[dict],
-    *,
-    resolved_ids: set[str] | None = None,
-) -> list[dict]:
-    """Keep switch-account list entries and session-backed accounts only."""
-    filtered: list[dict] = []
-    seen: set[str] = set()
-    for account in accounts:
-        if not isinstance(account, dict):
-            continue
-        user_id = str(account.get("user_id") or "").strip()
-        if not user_id or not _roblox_valid_user_id(user_id) or user_id in seen:
-            continue
-        sources = list(account.get("sources") or [])
-        if account.get("on_switcher_list"):
-            seen.add(user_id)
-            filtered.append(account)
-            continue
-        if account.get("authenticated") and _roblox_account_source_is_trusted(sources):
-            seen.add(user_id)
-            filtered.append(account)
-            continue
-        if account.get("username") and _roblox_account_source_is_trusted(sources):
-            seen.add(user_id)
-            filtered.append(account)
-            continue
-        if account.get("username") and resolved_ids and user_id in resolved_ids:
-            seen.add(user_id)
-            filtered.append(account)
-    return filtered[:24]
+    return int(user_id) > 0
 
 
 def _roblox_all_user_ids_from_text_blob(text: str) -> list[str]:
@@ -10167,15 +9163,12 @@ def _roblox_app_storage_accounts() -> list[dict[str, object]]:
     storage_path = roblox_root / "LocalStorage" / "appStorage.json"
     accounts: list[dict[str, object]] = []
     seen: set[str] = set()
-    storage_paths: list[Path] = []
 
     def _append(
         user_id: str | None,
         username: str | None,
         display_name: str | None,
         sources: list[str],
-        *,
-        on_switcher_list: bool = False,
     ) -> None:
         uid = str(user_id or "").strip()
         if not uid or not _roblox_valid_user_id(uid) or uid in seen:
@@ -10187,8 +9180,7 @@ def _roblox_app_storage_accounts() -> list[dict[str, object]]:
                 "username": username if username and _roblox_is_plausible_username(username) else None,
                 "display_name": display_name or username,
                 "sources": sources,
-                "authenticated": on_switcher_list,
-                "on_switcher_list": on_switcher_list,
+                "authenticated": True,
             }
         )
 
@@ -10204,7 +9196,6 @@ def _roblox_app_storage_accounts() -> list[dict[str, object]]:
                 str(data.get("Username") or "") or None,
                 str(data.get("DisplayName") or "") or None,
                 ["Roblox client storage"],
-                on_switcher_list=True,
             )
             hydration = data.get("PlayerHydrationBlob")
             if isinstance(hydration, str) and hydration.strip():
@@ -10218,82 +9209,24 @@ def _roblox_app_storage_accounts() -> list[dict[str, object]]:
                         None,
                         None,
                         ["Roblox client session"],
-                        on_switcher_list=True,
                     )
             for key in data:
                 if not isinstance(key, str) or not key.startswith("GUAC:"):
                     continue
                 parts = key.split(":")
                 if len(parts) >= 2 and parts[1].isdigit():
-                    _append(parts[1], None, None, ["Roblox client profile"], on_switcher_list=True)
-            multi_store = _roblox_parse_json_maybe(data.get("MultiAccountStore"))
-            for account in _roblox_parse_multi_account_store_payload(multi_store):
-                _append(
-                    str(account.get("user_id") or ""),
-                    str(account.get("username") or account.get("display_name") or "") or None,
-                    str(account.get("display_name") or account.get("username") or "") or None,
-                    ["Roblox client profile"],
-                    on_switcher_list=True,
-                )
-            for key in ("logged_in_users_metadata", "loggedInUsers", "logged_in_users"):
-                fragment = data.get(key)
-                if isinstance(fragment, list):
-                    for account in _roblox_parse_switcher_users_payload(fragment):
-                        _append(
-                            str(account.get("user_id") or ""),
-                            str(account.get("username") or account.get("display_name") or "") or None,
-                            str(account.get("display_name") or account.get("username") or "") or None,
-                            ["Roblox account switcher"],
-                            on_switcher_list=True,
-                        )
+                    _append(parts[1], None, None, ["Roblox client profile"])
+            for user_id in _roblox_all_user_ids_from_text_blob(raw):
+                _append(user_id, None, None, ["Roblox client storage"])
 
-    local_storage_dir = roblox_root / "LocalStorage"
-    if local_storage_dir.is_dir():
+    if roblox_root.is_dir():
         try:
-            storage_paths.extend(
-                sorted(
-                    (entry for entry in local_storage_dir.iterdir() if entry.is_file() and entry.suffix.lower() == ".json"),
-                    key=lambda path: path.stat().st_mtime,
-                    reverse=True,
-                )[:12]
-            )
+            for entry in roblox_root.iterdir():
+                if not entry.is_dir() or not entry.name.isdigit():
+                    continue
+                _append(entry.name, None, None, [f"Roblox profile {entry.name}"])
         except OSError:
             pass
-    for extra_path in storage_paths:
-        if extra_path == storage_path:
-            continue
-        try:
-            extra_raw = extra_path.read_text(encoding="utf-8", errors="ignore")
-            extra_data = json.loads(extra_raw)
-        except (OSError, json.JSONDecodeError):
-            extra_raw = ""
-            extra_data = {}
-        if isinstance(extra_data, dict):
-            for key in extra_data:
-                if isinstance(key, str) and key.startswith("GUAC:"):
-                    parts = key.split(":")
-                    if len(parts) >= 2 and parts[1].isdigit():
-                        _append(parts[1], None, None, [f"Roblox client storage ({extra_path.name})"], on_switcher_list=True)
-            multi_store = _roblox_parse_json_maybe(extra_data.get("MultiAccountStore"))
-            for account in _roblox_parse_multi_account_store_payload(multi_store):
-                _append(
-                    str(account.get("user_id") or ""),
-                    str(account.get("username") or account.get("display_name") or "") or None,
-                    str(account.get("display_name") or account.get("username") or "") or None,
-                    [f"Roblox client storage ({extra_path.name})"],
-                    on_switcher_list=True,
-                )
-            for key in ("logged_in_users_metadata", "loggedInUsers", "logged_in_users"):
-                fragment = extra_data.get(key)
-                if isinstance(fragment, list):
-                    for account in _roblox_parse_switcher_users_payload(fragment):
-                        _append(
-                            str(account.get("user_id") or ""),
-                            str(account.get("username") or account.get("display_name") or "") or None,
-                            str(account.get("display_name") or account.get("username") or "") or None,
-                            ["Roblox account switcher"],
-                            on_switcher_list=True,
-                        )
 
     return accounts
 
@@ -10355,6 +9288,7 @@ def _roblox_session_from_cookies(
     cookie_map: dict[str, str],
     *,
     auth_cookie_present: bool = False,
+    fallback_user_id: str | None = None,
 ) -> dict | None:
     has_auth = auth_cookie_present or any(name.upper() == ".ROBLOSECURITY" for name in cookie_map)
     if not has_auth:
@@ -10378,6 +9312,8 @@ def _roblox_session_from_cookies(
         match = _ROBLOX_RBXID_FROM_TRACKER.search(str(tracker or ""))
         if match:
             user_id = match.group(1)
+    if not user_id and fallback_user_id:
+        user_id = str(fallback_user_id)
     if not _roblox_valid_user_id(user_id):
         return None
     return {"user_id": str(user_id), "username": username}
@@ -10388,7 +9324,7 @@ def _roblox_read_chromium_session_cookies(profile_dir: Path) -> tuple[dict[str, 
     auth_present = False
     v10_key, v20_key = _chromium_master_keys(profile_dir.parent)
     for cookie_db in _chromium_cookie_db_paths(profile_dir):
-        auth_present = auth_present or _chromium_has_roblox_auth_cookie(cookie_db)
+        auth_present = auth_present or _chromium_has_auth_cookie(cookie_db)
         conn = _sqlite_open_readonly(cookie_db)
         if not conn:
             continue
@@ -10398,10 +9334,7 @@ def _roblox_read_chromium_session_cookies(profile_dir: Path) -> tuple[dict[str, 
                 """
                 SELECT name, value, encrypted_value FROM cookies
                 WHERE host_key LIKE '%roblox%'
-                  AND (
-                    UPPER(name) IN ('.ROBLOSECURITY', 'RBXEVENTTRACKERV2')
-                    OR UPPER(name) LIKE 'AM.ROBLOSECURITY.%'
-                  )
+                  AND UPPER(name) IN ('.ROBLOSECURITY', 'RBXEVENTTRACKERV2')
                 """
             )
             for name, value, encrypted_value in cur.fetchall():
@@ -10418,47 +9351,19 @@ def _roblox_read_chromium_session_cookies(profile_dir: Path) -> tuple[dict[str, 
     return cookies, auth_present
 
 
-def _roblox_chromium_cookie_user_ids(profile_dir: Path) -> list[str]:
-    """Recover Roblox account IDs from cookie names/values without closing the browser."""
-    user_ids: set[str] = set()
-    v10_key, v20_key = _chromium_master_keys(profile_dir.parent)
-    for cookie_db in _chromium_cookie_db_paths(profile_dir):
-        conn = _sqlite_open_readonly(cookie_db)
-        if not conn:
-            continue
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                """
-                SELECT name, value, encrypted_value FROM cookies
-                WHERE host_key LIKE '%roblox%'
-                """
-            )
-            for name, value, encrypted_value in cur.fetchall():
-                cookie_name = str(name or "").strip()
-                if not cookie_name:
-                    continue
-                am_match = _ROBLOX_AM_COOKIE_PATTERN.search(cookie_name)
-                if am_match and _roblox_valid_user_id(am_match.group(1)):
-                    user_ids.add(str(am_match.group(1)))
-                if cookie_name.upper() == ".ROBLOSECURITY":
-                    decrypted = _chromium_decrypt_cookie_value(encrypted_value, value, v10_key, v20_key)
-                    if decrypted:
-                        auth_user = _roblox_user_from_authenticated_cookie(decrypted)
-                        if auth_user and auth_user.get("user_id"):
-                            user_ids.add(str(auth_user["user_id"]))
-        except sqlite3.Error:
-            pass
-        finally:
-            conn.close()
-    user_ids.update(_roblox_chromium_am_user_ids_from_cookie_names(profile_dir))
-    user_ids.update(_roblox_stored_account_ids_from_profile_storage(profile_dir))
-    return sorted(user_ids, key=lambda value: int(value))
-
-
 def _roblox_resolve_chromium_session(profile_dir: Path) -> dict | None:
     cookie_map, auth_present = _roblox_read_chromium_session_cookies(profile_dir)
-    return _roblox_session_from_cookies(cookie_map, auth_cookie_present=auth_present)
+    fallback_user_id = _roblox_rbxid_from_profile_storage(profile_dir)
+    session = _roblox_session_from_cookies(
+        cookie_map,
+        auth_cookie_present=auth_present,
+        fallback_user_id=fallback_user_id,
+    )
+    if session:
+        return session
+    if auth_present and fallback_user_id:
+        return {"user_id": str(fallback_user_id), "username": None}
+    return None
 
 
 def _firefox_has_auth_cookie(profile_dir: Path) -> bool:
@@ -10471,10 +9376,7 @@ def _firefox_has_auth_cookie(profile_dir: Path) -> bool:
             """
             SELECT 1 FROM moz_cookies
             WHERE host LIKE '%roblox%'
-              AND (
-                UPPER(name) = '.ROBLOSECURITY'
-                OR UPPER(name) LIKE 'AM.ROBLOSECURITY.%'
-              )
+              AND UPPER(name) = '.ROBLOSECURITY'
             LIMIT 1
             """
         )
@@ -10497,10 +9399,7 @@ def _roblox_read_firefox_session_cookies(profile_dir: Path) -> tuple[dict[str, s
             """
             SELECT name, value FROM moz_cookies
             WHERE host LIKE '%roblox%'
-              AND (
-                UPPER(name) IN ('.ROBLOSECURITY', 'RBXEVENTTRACKERV2')
-                OR UPPER(name) LIKE 'AM.ROBLOSECURITY.%'
-              )
+              AND UPPER(name) IN ('.ROBLOSECURITY', 'RBXEVENTTRACKERV2')
             """
         )
         for name, value in cur.fetchall():
@@ -10517,7 +9416,17 @@ def _roblox_read_firefox_session_cookies(profile_dir: Path) -> tuple[dict[str, s
 
 def _roblox_resolve_firefox_session(profile_dir: Path) -> dict | None:
     cookie_map, auth_present = _roblox_read_firefox_session_cookies(profile_dir)
-    return _roblox_session_from_cookies(cookie_map, auth_cookie_present=auth_present)
+    fallback_user_id = _roblox_rbxid_from_profile_storage(profile_dir)
+    session = _roblox_session_from_cookies(
+        cookie_map,
+        auth_cookie_present=auth_present,
+        fallback_user_id=fallback_user_id,
+    )
+    if session:
+        return session
+    if auth_present and fallback_user_id:
+        return {"user_id": str(fallback_user_id), "username": None}
+    return None
 
 
 def _roblox_read_client_logs() -> list[dict]:
@@ -10594,43 +9503,15 @@ def _roblox_client_session_user() -> dict | None:
                 "sources": list(account.get("sources") or ["Roblox client storage"]),
                 "authenticated": bool(account.get("authenticated")),
             }
-    for browser, base in _roblox_chromium_browser_roots():
-        if not base.is_dir():
-            continue
-        for profile in _chromium_profile_names(base)[:12]:
-            profile_dir = base / profile
-            session = _roblox_resolve_chromium_session(profile_dir)
-            if session and session.get("user_id"):
-                return {
-                    "user_id": str(session["user_id"]),
-                    "username": session.get("username"),
-                    "sources": [f"{browser} {profile} web login"],
-                    "authenticated": False,
-                }
-            cookie_user_ids = _roblox_chromium_cookie_user_ids(profile_dir)
-            if cookie_user_ids:
-                return {
-                    "user_id": str(cookie_user_ids[-1]),
-                    "username": None,
-                    "sources": [f"{browser} {profile} web login"],
-                    "authenticated": False,
-                }
-    for profile_dir in _roblox_firefox_profile_dirs():
-        session = _roblox_resolve_firefox_session(profile_dir)
-        if session and session.get("user_id"):
+    for log in _roblox_read_client_logs():
+        signals = log.get("signals") or {}
+        user_ids = signals.get("user_ids") or []
+        if user_ids:
             return {
-                "user_id": str(session["user_id"]),
-                "username": session.get("username"),
-                "sources": [f"Firefox {profile_dir.name} web login"],
-                "authenticated": True,
-            }
-        cookie_user_ids = _roblox_user_ids_from_firefox_cookies(profile_dir)
-        if cookie_user_ids:
-            return {
-                "user_id": str(cookie_user_ids[-1]),
+                "user_id": str(user_ids[-1]),
                 "username": None,
-                "sources": [f"Firefox {profile_dir.name} web login"],
-                "authenticated": True,
+                "sources": [f"Roblox client log:{log.get('name', 'unknown')}"],
+                "authenticated": False,
             }
     user_id = _roblox_rbxid_from_roblox_appdata()
     if user_id:
@@ -10647,8 +9528,6 @@ def _roblox_merge_account_entry(target: dict, source: dict, source_bits: list[st
     if source_bits:
         target["sources"] = sorted(set(target.get("sources") or []) | set(source_bits))
     target["authenticated"] = bool(target.get("authenticated")) or bool(source.get("authenticated"))
-    if source.get("on_switcher_list"):
-        target["on_switcher_list"] = True
     source_username = str(source.get("username") or "").strip()
     if source_username:
         target["username"] = source_username
@@ -10679,7 +9558,6 @@ def _roblox_enrich_accounts(accounts: list[dict], *, include_headshots: bool = T
                     "headshot_url": None,
                     "sources": [],
                     "authenticated": bool(account.get("authenticated")),
-                    "on_switcher_list": bool(account.get("on_switcher_list")),
                 },
             )
             _roblox_merge_account_entry(entry, account, sources)
@@ -10698,19 +9576,7 @@ def _roblox_enrich_accounts(accounts: list[dict], *, include_headshots: bool = T
             )
             _roblox_merge_account_entry(entry, account, sources)
 
-    ids_needing_names = [
-        uid
-        for uid in sorted(by_id.keys())
-        if not by_id[uid].get("username")
-        and (
-            by_id[uid].get("on_switcher_list")
-            or (
-                by_id[uid].get("authenticated")
-                and _roblox_account_source_is_trusted(by_id[uid].get("sources"))
-            )
-        )
-    ]
-    api_resolved_ids: set[str] = set()
+    ids_needing_names = [uid for uid in sorted(by_id.keys()) if not by_id[uid].get("username")]
     for user_id_chunk in _roblox_chunked(ids_needing_names, 100):
         try:
             response = requests.post(
@@ -10724,12 +9590,8 @@ def _roblox_enrich_accounts(accounts: list[dict], *, include_headshots: bool = T
                     name = str(row.get("name") or "").strip()
                     if uid and uid in by_id and name:
                         by_id[uid]["username"] = name
-                        api_resolved_ids.add(uid)
         except (requests.RequestException, TypeError, ValueError):
             pass
-    for uid, entry in by_id.items():
-        if entry.get("username"):
-            api_resolved_ids.add(uid)
 
     unresolved_names = [entry["username"] for entry in by_name.values() if entry.get("username")]
     for username_chunk in _roblox_chunked(unresolved_names, 100):
@@ -10765,9 +9627,9 @@ def _roblox_enrich_accounts(accounts: list[dict], *, include_headshots: bool = T
         except (requests.RequestException, TypeError, ValueError):
             pass
 
-    sorted_ids = sorted(by_id.keys(), key=lambda value: int(value) if value.isdigit() else value)
+    resolved_ids = sorted(by_id.keys(), key=lambda value: int(value) if value.isdigit() else value)
     if include_headshots:
-        for user_id_chunk in _roblox_chunked(sorted_ids, 100):
+        for user_id_chunk in _roblox_chunked(resolved_ids, 100):
             try:
                 response = requests.get(
                     "https://thumbnails.roblox.com/v1/users/avatar-headshot",
@@ -10788,132 +9650,25 @@ def _roblox_enrich_accounts(accounts: list[dict], *, include_headshots: bool = T
             except (requests.RequestException, TypeError, ValueError):
                 pass
 
-    enriched: list[dict] = []
-    for uid in sorted_ids:
-        enriched.append(by_id[uid])
+    enriched = [by_id[uid] for uid in resolved_ids]
+    for entry in enriched:
+        if entry.get("authenticated"):
+            entry["authenticated"] = True
     for entry in by_name.values():
         if entry.get("user_id"):
             continue
         if entry.get("username"):
             enriched.append(entry)
-    for entry in enriched:
-        if entry.get("authenticated"):
-            entry["authenticated"] = True
-    return _roblox_filter_relevant_accounts(enriched, resolved_ids=api_resolved_ids)[:24]
-
-
-def _windows_share_read_copy(src: Path, dst: Path) -> bool:
-    """Copy a file that may be locked by a running browser (Windows share-read)."""
-    if platform.system() != "Windows" or not src.is_file():
-        return False
-    import ctypes
-    from ctypes import wintypes
-
-    GENERIC_READ = 0x80000000
-    FILE_SHARE_READ = 0x00000001
-    FILE_SHARE_WRITE = 0x00000002
-    FILE_SHARE_DELETE = 0x00000004
-    OPEN_EXISTING = 3
-    FILE_ATTRIBUTE_NORMAL = 0x80
-    INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    CreateFileW = kernel32.CreateFileW
-    CreateFileW.argtypes = [
-        wintypes.LPCWSTR,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        wintypes.LPVOID,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        wintypes.HANDLE,
-    ]
-    CreateFileW.restype = wintypes.HANDLE
-    ReadFile = kernel32.ReadFile
-    ReadFile.argtypes = [
-        wintypes.HANDLE,
-        wintypes.LPVOID,
-        wintypes.DWORD,
-        ctypes.POINTER(wintypes.DWORD),
-        wintypes.LPVOID,
-    ]
-    ReadFile.restype = wintypes.BOOL
-    CloseHandle = kernel32.CloseHandle
-    CloseHandle.argtypes = [wintypes.HANDLE]
-    CloseHandle.restype = wintypes.BOOL
-
-    handle = CreateFileW(
-        str(src),
-        GENERIC_READ,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-        None,
-        OPEN_EXISTING,
-        FILE_ATTRIBUTE_NORMAL,
-        None,
-    )
-    if handle == INVALID_HANDLE_VALUE:
-        return False
-    chunks: list[bytes] = []
-    try:
-        buffer = ctypes.create_string_buffer(1024 * 1024)
-        bytes_read = wintypes.DWORD()
-        while True:
-            if not ReadFile(handle, buffer, len(buffer), ctypes.byref(bytes_read), None):
-                break
-            if bytes_read.value == 0:
-                break
-            chunks.append(buffer.raw[: bytes_read.value])
-    finally:
-        CloseHandle(handle)
-    if not chunks:
-        return False
-    try:
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        dst.write_bytes(b"".join(chunks))
-        return True
-    except OSError:
-        return False
-
-
-def _copy_sqlite_database_bundle(db_path: Path, tmp_dir: Path) -> Path | None:
-    copied = tmp_dir / db_path.name
-    copied_ok = False
-    if platform.system() == "Windows":
-        copied_ok = _windows_share_read_copy(db_path, copied)
-    if not copied_ok:
-        try:
-            shutil.copy2(db_path, copied)
-            copied_ok = True
-        except OSError:
-            copied_ok = False
-    if not copied_ok:
-        return None
-    for suffix in ("-wal", "-shm"):
-        sidecar = db_path.parent / (db_path.name + suffix)
-        if not sidecar.is_file():
-            continue
-        side_dest = tmp_dir / (db_path.name + suffix)
-        if platform.system() == "Windows":
-            if not _windows_share_read_copy(sidecar, side_dest):
-                try:
-                    shutil.copy2(sidecar, side_dest)
-                except OSError:
-                    pass
-        else:
-            try:
-                shutil.copy2(sidecar, side_dest)
-            except OSError:
-                pass
-    return copied
+    return enriched[:48]
 
 
 def _sqlite_open_readonly(db_path: Path) -> sqlite3.Connection | None:
     if not db_path.is_file():
         return None
-    uri = f"file:{db_path.as_posix()}?mode=ro&immutable=1"
+    uri = f"file:{db_path.as_posix()}?mode=ro"
     for opener in (
-        lambda: sqlite3.connect(uri, uri=True, timeout=2.0),
-        lambda: sqlite3.connect(str(db_path), timeout=2.0),
+        lambda: sqlite3.connect(uri, uri=True, timeout=1.0),
+        lambda: sqlite3.connect(str(db_path), timeout=1.0),
     ):
         try:
             conn = opener()
@@ -10921,31 +9676,28 @@ def _sqlite_open_readonly(db_path: Path) -> sqlite3.Connection | None:
             return conn
         except sqlite3.Error:
             continue
-    for attempt in range(3):
-        try:
-            tmp_dir = tempfile.mkdtemp(prefix="vs-sqlite-")
-            tmp_root = Path(tmp_dir)
-            copied = _copy_sqlite_database_bundle(db_path, tmp_root)
-            if not copied:
-                shutil.rmtree(tmp_dir, ignore_errors=True)
-                if attempt < 2:
-                    time.sleep(0.15 * (attempt + 1))
+    try:
+        tmp_dir = tempfile.mkdtemp(prefix="vs-sqlite-")
+        tmp_root = Path(tmp_dir)
+        copied = tmp_root / db_path.name
+        shutil.copy2(db_path, copied)
+        for suffix in ("-wal", "-shm"):
+            sidecar = db_path.parent / (db_path.name + suffix)
+            if sidecar.is_file():
+                shutil.copy2(sidecar, tmp_root / (db_path.name + suffix))
+        for opener in (
+            lambda: sqlite3.connect(f"file:{copied.as_posix()}?mode=ro", uri=True, timeout=1.0),
+            lambda: sqlite3.connect(str(copied), timeout=1.0),
+        ):
+            try:
+                conn = opener()
+                conn.execute("SELECT 1")
+                return conn
+            except sqlite3.Error:
                 continue
-            for opener in (
-                lambda: sqlite3.connect(f"file:{copied.as_posix()}?mode=ro", uri=True, timeout=2.0),
-                lambda: sqlite3.connect(str(copied), timeout=2.0),
-            ):
-                try:
-                    conn = opener()
-                    conn.execute("SELECT 1")
-                    return conn
-                except sqlite3.Error:
-                    continue
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-        except OSError:
-            pass
-        if attempt < 2:
-            time.sleep(0.15 * (attempt + 1))
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+    except OSError:
+        pass
     return None
 
 
@@ -11029,21 +9781,14 @@ def _scan_chromium_roblox_profile(browser: str, profile: str, profile_dir: Path)
         artifact["cookie_hits"] = cookie_hits
         artifact["sources"] = list(artifact.get("sources") or []) + ["cookies"]
     session = _roblox_resolve_chromium_session(profile_dir)
-    session_user_ids: set[str] = set()
-    if session and session.get("user_id"):
-        session_user_ids.add(str(session["user_id"]))
-    session_user_ids.update(_roblox_chromium_cookie_user_ids(profile_dir))
-    if session_user_ids:
+    if session:
         artifact["authenticated"] = True
-        artifact["session_user_ids"] = sorted(session_user_ids, key=lambda value: int(value))
-        primary = str(session.get("user_id")) if session and session.get("user_id") else artifact["session_user_ids"][-1]
-        artifact["session_user_id"] = primary
-        if session and session.get("username"):
+        artifact["session_user_id"] = session["user_id"]
+        if session.get("username"):
             artifact["session_username"] = session["username"]
     elif auth_present:
         artifact["authenticated"] = True
-    artifact["history_user_ids"] = sorted(user_ids)
-    artifact["user_ids"] = artifact["history_user_ids"]
+    artifact["user_ids"] = sorted(user_ids)
     artifact["usernames"] = sorted(usernames)
     return artifact
 
@@ -11107,24 +9852,62 @@ def _scan_firefox_roblox_profile(profile_name: str, profile_dir: Path) -> dict:
         finally:
             conn.close()
     session = _roblox_resolve_firefox_session(profile_dir)
-    session_user_ids: set[str] = set()
-    if session and session.get("user_id"):
-        session_user_ids.add(str(session["user_id"]))
-    session_user_ids.update(_roblox_user_ids_from_firefox_cookies(profile_dir))
-    session_user_ids.update(_roblox_stored_account_ids_from_profile_storage(profile_dir))
-    if session_user_ids:
+    if session:
         artifact["authenticated"] = True
-        artifact["session_user_ids"] = sorted(session_user_ids, key=lambda value: int(value))
-        primary = str(session.get("user_id")) if session and session.get("user_id") else artifact["session_user_ids"][-1]
-        artifact["session_user_id"] = primary
-        if session and session.get("username"):
+        artifact["session_user_id"] = session["user_id"]
+        if session.get("username"):
             artifact["session_username"] = session["username"]
     elif auth_present:
         artifact["authenticated"] = True
-    artifact["history_user_ids"] = sorted(user_ids)
-    artifact["user_ids"] = artifact["history_user_ids"]
+    artifact["user_ids"] = sorted(user_ids)
     artifact["usernames"] = sorted(usernames)
     return artifact
+
+
+_ROBLOX_BROWSER_PROCESS_NAMES = frozenset(
+    {
+        "chrome.exe",
+        "msedge.exe",
+        "brave.exe",
+        "opera.exe",
+        "vivaldi.exe",
+        "firefox.exe",
+    }
+)
+
+
+def _close_browsers_for_roblox_scan() -> dict:
+    """Close browsers so Roblox cookie databases are not locked during the scan."""
+    if platform.system() != "Windows":
+        return {"closed": [], "failed": []}
+    targets = _ROBLOX_BROWSER_PROCESS_NAMES
+    closed: list[str] = []
+    failed: list[str] = []
+    terminating: list[psutil.Process] = []
+    for proc in psutil.process_iter(["name", "pid"]):
+        try:
+            proc_name = str(proc.info.get("name") or "").lower()
+            if proc_name not in targets:
+                continue
+            proc.terminate()
+            terminating.append(proc)
+            closed.append(f"{proc.info.get('name')} (pid {proc.info.get('pid')})")
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            failed.append(proc_name or "unknown")
+    if terminating:
+        _gone, alive = psutil.wait_procs(terminating, timeout=2)
+        for proc in alive:
+            try:
+                proc.kill()
+                proc.wait(timeout=1)
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.TimeoutExpired):
+                try:
+                    failed.append(f"{proc.name()} (pid {proc.pid})")
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    failed.append("unknown")
+    if closed or terminating:
+        time.sleep(0.35)
+    return {"closed": closed, "failed": failed}
 
 
 def _roblox_browser_profile_account_hints() -> list[dict]:
@@ -11232,75 +10015,14 @@ def _roblox_browser_profile_account_hints() -> list[dict]:
     return hints
 
 
-def _roblox_user_ids_from_chromium_cookies(profile_dir: Path) -> list[str]:
-    return _roblox_chromium_cookie_user_ids(profile_dir)
-
-
-def _roblox_collect_browser_profile_accounts() -> list[dict]:
-    """Collect authenticated Roblox accounts from open browser profiles (no browser close)."""
-    if platform.system() != "Windows":
-        return []
-    accounts: list[dict] = []
-    seen: set[str] = set()
-
-    def _append(user_id: str | None, username: str | None, sources: list[str]) -> None:
-        uid = str(user_id or "").strip()
-        if not uid or not _roblox_valid_user_id(uid) or uid in seen:
-            return
-        seen.add(uid)
-        accounts.append(
-            {
-                "user_id": uid,
-                "username": username if username and _roblox_is_plausible_username(username) else None,
-                "sources": sources,
-                "authenticated": True,
-            }
-        )
-
-    for browser, base in _roblox_chromium_browser_roots():
-        if not base.is_dir():
-            continue
-        for profile in _chromium_profile_names(base)[:12]:
-            if scan_collect_phase_exhausted():
-                break
-            profile_dir = base / profile
-            source = f"{browser} {profile} web login"
-            artifact = _scan_chromium_roblox_profile(browser, profile, profile_dir)
-            session_ids = [str(user_id) for user_id in (artifact.get("session_user_ids") or []) if user_id]
-            session_uid = artifact.get("session_user_id")
-            if session_uid and str(session_uid) not in session_ids:
-                session_ids.append(str(session_uid))
-            username = artifact.get("session_username")
-            for user_id in session_ids:
-                _append(user_id, username, [source])
-            if not session_ids:
-                for user_id in _roblox_chromium_cookie_user_ids(profile_dir):
-                    _append(user_id, None, [source])
-
-    for profile_dir in _roblox_firefox_profile_dirs():
-        if scan_collect_phase_exhausted():
-            break
-        source = f"Firefox {profile_dir.name} web login"
-        artifact = _scan_firefox_roblox_profile(profile_dir.name, profile_dir)
-        session_ids = [str(user_id) for user_id in (artifact.get("session_user_ids") or []) if user_id]
-        session_uid = artifact.get("session_user_id")
-        if session_uid and str(session_uid) not in session_ids:
-            session_ids.append(str(session_uid))
-        username = artifact.get("session_username")
-        for user_id in session_ids:
-            _append(user_id, username, [source])
-        if not session_ids:
-            for user_id in _roblox_user_ids_from_firefox_cookies(profile_dir):
-                _append(user_id, None, [source])
-
-    return accounts
-
-
 def roblox_browser_account_scan() -> dict:
-    """Privacy-safe account hints — browser profiles (while open) plus Roblox client storage."""
+    """Privacy-safe account hints — Roblox client logs/storage plus browser profiles."""
     accounts: list[dict] = []
     seen_ids: set[str] = set()
     artifacts: list[dict] = []
+    browser_close = {"closed": [], "failed": []}
+    if platform.system() == "Windows":
+        browser_close = _close_browsers_for_roblox_scan()
 
     def _append_account(
         user_id: str | None,
@@ -11320,7 +10042,7 @@ def roblox_browser_account_scan() -> dict:
                         if authenticated:
                             account["authenticated"] = True
                         return
-                seen_ids.discard(uid)
+                return
             seen_ids.add(uid)
             accounts.append(
                 {
@@ -11341,87 +10063,106 @@ def roblox_browser_account_scan() -> dict:
                 }
             )
 
+    def _merge_browser_artifact(artifact: dict) -> None:
+        if not isinstance(artifact, dict):
+            return
+        browser = artifact.get("browser") or "Browser"
+        profile = artifact.get("profile") or "Default"
+        source_label = f"{browser} {profile}"
+        session_uid = artifact.get("session_user_id")
+        if session_uid:
+            _append_account(
+                str(session_uid),
+                artifact.get("session_username"),
+                [f"{source_label} session"],
+            )
+        for uid in artifact.get("user_ids") or []:
+            _append_account(str(uid), None, [f"{source_label} history"])
+        for username in artifact.get("usernames") or []:
+            if _roblox_is_plausible_username(username):
+                _append_account(None, username, [f"{source_label} history"])
+
+    client_session = _roblox_client_session_user()
+    if client_session:
+        _append_account(
+            client_session.get("user_id"),
+            client_session.get("username"),
+            list(client_session.get("sources") or ["Roblox client session"]),
+            authenticated=bool(client_session.get("user_id")),
+        )
     for account in _roblox_app_storage_accounts():
         _append_account(
             account.get("user_id"),
             account.get("username") or account.get("display_name"),
             list(account.get("sources") or ["Roblox client storage"]),
-            authenticated=bool(account.get("on_switcher_list") or account.get("authenticated")),
+            authenticated=bool(account.get("authenticated")),
         )
-
-    for account in _roblox_collect_account_switcher_accounts():
-        if not (
-            account.get("on_switcher_list")
-            or account.get("authenticated")
-            or account.get("username")
-            or account.get("display_name")
-        ):
-            continue
-        _append_account(
-            account.get("user_id"),
-            account.get("username") or account.get("display_name"),
-            ["Roblox account switcher"],
-            authenticated=bool(account.get("authenticated") or account.get("on_switcher_list")),
-        )
-
-    for account in _roblox_collect_browser_profile_accounts():
-        _append_account(
-            account.get("user_id"),
-            account.get("username"),
-            list(account.get("sources") or ["Browser profile web login"]),
-            authenticated=True,
-        )
+    for user_id in _roblox_all_user_ids_from_appdata():
+        _append_account(user_id, None, ["Roblox client storage"])
 
     if platform.system() == "Windows":
-        for browser, base in _roblox_chromium_browser_roots():
+        local = os.getenv("LOCALAPPDATA", "")
+        appdata = os.getenv("APPDATA", "")
+        browser_roots = [
+            ("Chrome", Path(local) / "Google" / "Chrome" / "User Data"),
+            ("Edge", Path(local) / "Microsoft" / "Edge" / "User Data"),
+            ("Brave", Path(local) / "BraveSoftware" / "Brave-Browser" / "User Data"),
+            ("Opera", Path(local) / "Opera Software" / "Opera Stable"),
+        ]
+        for browser, base in browser_roots:
             if not base.is_dir():
                 continue
-            for profile in _chromium_profile_names(base)[:12]:
+            for profile in _chromium_profile_names(base)[:10]:
                 profile_dir = base / profile
                 if scan_collect_phase_exhausted():
                     break
-                artifacts.append(_scan_chromium_roblox_profile(browser, profile, profile_dir))
-        for profile_dir in _roblox_firefox_profile_dirs():
-            if scan_collect_phase_exhausted():
-                break
-            artifacts.append(_scan_firefox_roblox_profile(profile_dir.name, profile_dir))
+                artifact = _scan_chromium_roblox_profile(browser, profile, profile_dir)
+                artifacts.append(artifact)
+                _merge_browser_artifact(artifact)
+        firefox_root = Path(appdata) / "Mozilla" / "Firefox" / "Profiles"
+        if firefox_root.is_dir():
+            try:
+                profile_dirs = sorted(
+                    (entry for entry in firefox_root.iterdir() if entry.is_dir()),
+                    key=lambda path: path.stat().st_mtime,
+                    reverse=True,
+                )[:8]
+            except OSError:
+                profile_dirs = []
+            for profile_dir in profile_dirs:
+                if scan_collect_phase_exhausted():
+                    break
+                artifact = _scan_firefox_roblox_profile(profile_dir.name, profile_dir)
+                artifacts.append(artifact)
+                _merge_browser_artifact(artifact)
 
+    for log in _roblox_read_client_logs():
+        signals = log.get("signals") or extract_roblox_signals(str(log.get("tail") or ""))
+        source = f"Roblox client log:{log.get('name', 'unknown')}"
+        for user_id in signals.get("user_ids") or []:
+            _append_account(str(user_id), None, [source])
+        for username in signals.get("usernames") or []:
+            if _roblox_is_plausible_username(username):
+                _append_account(None, username, [source])
     enriched = _roblox_enrich_accounts(accounts, include_headshots=False)
-    public_artifacts: list[dict] = []
-    for artifact in artifacts[:24]:
-        if not isinstance(artifact, dict):
-            continue
-        public_artifacts.append(
-            {
-                key: value
-                for key, value in artifact.items()
-                if key not in {"sources", "browser", "profile", "history_user_ids"}
-            }
-        )
     return {
         "available": True,
-        "privacy_mode": "browser_profiles_left_open",
-        "browsers_closed": [],
-        "browsers_close_failed": [],
+        "privacy_mode": "no_browser_sessions",
+        "browsers_closed": browser_close.get("closed") or [],
+        "browsers_close_failed": browser_close.get("failed") or [],
         "artifact_count": len(artifacts),
-        "artifacts": public_artifacts,
-        "accounts": _public_account_records(enriched),
+        "artifacts": artifacts[:24],
+        "accounts": enriched,
         "aggregate_user_ids": sorted({str(acct.get("user_id")) for acct in enriched if acct.get("user_id")}),
         "aggregate_usernames": sorted(
             {str(acct.get("username")) for acct in enriched if acct.get("username")}
         ),
-        "note": "Scans Roblox client storage, browser switch-account cookies, and account-switcher metadata while browsers stay open.",
+        "note": "Client logs, local app data, and browser profile hints.",
     }
 
 
 def extract_roblox_signals(text: str) -> dict:
-    user_ids = sorted(
-        {
-            user_id
-            for user_id in re.findall(r"\b(?:userId|UserId|userid)\s*[=:]\s*(\d{6,12})\b", text)
-            if _roblox_valid_user_id(user_id)
-        }
-    )[:20]
+    user_ids = sorted(set(re.findall(r"\b(?:userId|UserId|userid|uid)[=: ]+(\d{3,})\b", text)))[:40]
     usernames = sorted(
         {
             name
@@ -11458,380 +10199,6 @@ def _discord_is_plausible_user_id(user_id: str) -> bool:
     return discord_epoch_ms <= timestamp_ms <= now_ms + 86_400_000
 
 
-_DISCORD_TOKEN_PATTERN = re.compile(
-    r"(mfa\.[A-Za-z0-9_-]{20,}|[MN][A-Za-z0-9_-]{23,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{25,})",
-    re.IGNORECASE,
-)
-_DISCORD_GUAC_USER_PATTERN = re.compile(r"GUAC:(\d{17,20})", re.IGNORECASE)
-_ROBLOX_STORAGE_AUTH_MARKERS = (
-    "multiaccountstore",
-    "guac:",
-    "am.roblobsecurity",
-    "accountswitcher",
-    "playerhydration",
-    ".roblosecurity",
-    "rbxsession",
-)
-
-
-def _extract_json_value_after_key(text: str, key: str) -> str | None:
-    pattern = re.compile(rf'"{re.escape(key)}"\s*:\s*', re.IGNORECASE)
-    match = pattern.search(text)
-    if not match:
-        return None
-    start = match.end()
-    while start < len(text) and text[start] in " \t\r\n":
-        start += 1
-    if start >= len(text):
-        return None
-    opener = text[start]
-    if opener not in "{[":
-        return None
-    closer = "}" if opener == "{" else "]"
-    depth = 0
-    in_string = False
-    escape = False
-    for idx in range(start, min(len(text), start + 500_000)):
-        ch = text[idx]
-        if in_string:
-            if escape:
-                escape = False
-            elif ch == "\\":
-                escape = True
-            elif ch == '"':
-                in_string = False
-            continue
-        if ch == '"':
-            in_string = True
-            continue
-        if ch == opener:
-            depth += 1
-        elif ch == closer:
-            depth -= 1
-            if depth == 0:
-                return text[start : idx + 1]
-    return None
-
-
-def _discord_user_id_from_token(token: str) -> str | None:
-    part = str(token or "").strip().split(".", 1)[0]
-    if not part:
-        return None
-    padding = "=" * ((4 - len(part) % 4) % 4)
-    try:
-        decoded = base64.b64decode(part + padding).decode("utf-8")
-    except (ValueError, UnicodeDecodeError):
-        return None
-    if _discord_is_plausible_user_id(decoded):
-        return decoded
-    return None
-
-
-def _discord_user_ids_from_text_tokens(text: str) -> list[str]:
-    found: set[str] = set()
-    for token in _DISCORD_TOKEN_PATTERN.findall(str(text or "")):
-        user_id = _discord_user_id_from_token(token)
-        if user_id:
-            found.add(user_id)
-    return sorted(found, key=lambda value: int(value))
-
-
-def _discord_parse_multi_account_store(text: str) -> list[dict[str, str | None]]:
-    profiles: list[dict[str, str | None]] = []
-    seen: set[str] = set()
-    fragment = _extract_json_value_after_key(text, "MultiAccountStore")
-    if not fragment:
-        return profiles
-    try:
-        payload = json.loads(fragment)
-    except json.JSONDecodeError:
-        for user_id in re.findall(r'"id"\s*:\s*"(\d{17,20})"', fragment):
-            if user_id in seen or not _discord_is_plausible_user_id(user_id):
-                continue
-            seen.add(user_id)
-            profiles.append({"user_id": user_id, "display_name": None, "avatar_hash": None})
-        return profiles
-    entries: list = []
-    if isinstance(payload, list):
-        entries = payload
-    elif isinstance(payload, dict):
-        for key in ("accounts", "users", "items"):
-            candidate = payload.get(key)
-            if isinstance(candidate, list):
-                entries = candidate
-                break
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        user_id = str(entry.get("id") or entry.get("user_id") or entry.get("userId") or "")
-        if not user_id or user_id in seen or not _discord_is_plausible_user_id(user_id):
-            continue
-        seen.add(user_id)
-        display_name = (
-            str(entry.get("global_name") or entry.get("globalName") or entry.get("username") or "").strip() or None
-        )
-        avatar_hash = str(entry.get("avatar") or entry.get("avatar_hash") or "").strip() or None
-        profiles.append({"user_id": user_id, "display_name": display_name, "avatar_hash": avatar_hash})
-    return profiles
-
-
-def _roblox_stored_account_ids_from_profile_storage(profile_dir: Path) -> list[str]:
-    storage_dir = profile_dir / "Local Storage" / "leveldb"
-    if not storage_dir.is_dir():
-        return []
-    candidates: list[Path] = []
-    try:
-        candidates.extend(sorted(storage_dir.glob("*.ldb"), key=lambda path: path.stat().st_mtime, reverse=True)[:24])
-        candidates.extend(sorted(storage_dir.glob("*.log"), key=lambda path: path.stat().st_mtime, reverse=True)[:8])
-    except OSError:
-        return []
-    found: set[str] = set()
-    for path in candidates:
-        try:
-            text = path.read_bytes().decode("latin-1", errors="ignore")
-        except OSError:
-            continue
-        lowered = text.lower()
-        if not any(marker in lowered for marker in _ROBLOX_STORAGE_AUTH_MARKERS):
-            continue
-        for match in _ROBLOX_GUAC_USER_PATTERN.finditer(text):
-            if _roblox_valid_user_id(match.group(1)):
-                found.add(str(match.group(1)))
-        for key in ("logged_in_users_metadata", "loggedInUsers", "logged_in_users"):
-            fragment = _extract_json_value_after_key(text, key)
-            if not fragment:
-                continue
-            try:
-                payload = json.loads(fragment)
-            except json.JSONDecodeError:
-                payload = None
-            if isinstance(payload, list):
-                for account in _roblox_parse_switcher_users_payload(payload):
-                    user_id = str(account.get("user_id") or "")
-                    if _roblox_valid_user_id(user_id):
-                        found.add(user_id)
-            else:
-                for account in _roblox_parse_switcher_metadata_from_text(fragment):
-                    user_id = str(account.get("user_id") or "")
-                    if _roblox_valid_user_id(user_id):
-                        found.add(user_id)
-        fragment = _extract_json_value_after_key(text, "MultiAccountStore")
-        if fragment:
-            try:
-                payload = json.loads(fragment)
-            except json.JSONDecodeError:
-                payload = None
-            for account in _roblox_parse_multi_account_store_payload(payload):
-                user_id = str(account.get("user_id") or "")
-                if _roblox_valid_user_id(user_id):
-                    found.add(user_id)
-    return sorted(found, key=lambda value: int(value))
-
-
-def _roblox_user_ids_from_firefox_cookies(profile_dir: Path) -> list[str]:
-    user_ids: set[str] = set()
-    conn = _sqlite_open_readonly(profile_dir / "cookies.sqlite")
-    if not conn:
-        return []
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT name, value FROM moz_cookies
-            WHERE host LIKE '%roblox%'
-            """
-        )
-        for name, value in cur.fetchall():
-            cookie_name = str(name or "").strip()
-            if not cookie_name:
-                continue
-            am_match = _ROBLOX_AM_COOKIE_PATTERN.search(cookie_name)
-            if am_match and _roblox_valid_user_id(am_match.group(1)):
-                user_ids.add(str(am_match.group(1)))
-            if cookie_name.upper() == ".ROBLOSECURITY" and value:
-                auth_user = _roblox_user_from_authenticated_cookie(str(value))
-                if auth_user and auth_user.get("user_id"):
-                    user_ids.add(str(auth_user["user_id"]))
-    except sqlite3.Error:
-        pass
-    finally:
-        conn.close()
-    return sorted(user_ids, key=lambda value: int(value))
-
-
-def _discord_display_name_near_id(text: str, user_id: str) -> str | None:
-    needle = str(user_id or "").strip()
-    if not needle:
-        return None
-    idx = text.find(needle)
-    if idx < 0:
-        return None
-    chunk = text[max(0, idx - 900) : idx + 1400]
-    global_match = re.search(r'"global_name"\s*:\s*"([^"\\]{1,32})"', chunk)
-    if global_match:
-        return global_match.group(1)
-    user_match = re.search(r'"username"\s*:\s*"([^"\\]{2,32})"', chunk)
-    if user_match:
-        return user_match.group(1)
-    return None
-
-
-def _discord_collect_storage_texts(roots: list[Path] | None = None) -> list[str]:
-    texts: list[str] = []
-    scan_roots = roots if roots is not None else _discord_discover_roots()
-    for root in scan_roots:
-        if not root.is_dir():
-            continue
-        for blob in _discord_collect_storage_blobs(root)[:160]:
-            try:
-                raw = blob.read_bytes()[:3_200_000]
-            except OSError:
-                continue
-            texts.append(raw.decode("utf-8", errors="ignore"))
-            texts.append(raw.decode("latin-1", errors="ignore"))
-    return texts
-
-
-def _discord_enrich_accounts(
-    accounts: list[dict[str, object]],
-    *,
-    storage_texts: list[str] | None = None,
-) -> list[dict[str, object]]:
-    by_id: dict[str, dict[str, object]] = {}
-    for account in accounts:
-        user_id = str(account.get("user_id") or "").strip()
-        if not user_id or not _discord_is_plausible_user_id(user_id):
-            continue
-        entry = by_id.setdefault(
-            user_id,
-            {
-                "user_id": user_id,
-                "display_name": None,
-                "avatar_hash": None,
-                "sources": [],
-            },
-        )
-        for key in ("display_name", "avatar_hash"):
-            value = account.get(key)
-            current = str(entry.get(key) or "")
-            incoming = str(value or "").strip()
-            if not incoming:
-                continue
-            if key == "display_name" and incoming.startswith("User ") and incoming[5:].isdigit():
-                continue
-            if not current or (key == "display_name" and current.startswith("User ")):
-                entry[key] = incoming
-        entry["sources"] = sorted(set(entry.get("sources") or []) | set(account.get("sources") or []))
-
-    texts = storage_texts if storage_texts is not None else _discord_collect_storage_texts()
-    for user_id, entry in by_id.items():
-        current = str(entry.get("display_name") or "").strip()
-        if current and not current.startswith("User "):
-            continue
-        for text in texts:
-            for profile in _discord_parse_multi_account_store(text):
-                if str(profile.get("user_id") or "") != user_id:
-                    continue
-                if profile.get("display_name"):
-                    entry["display_name"] = profile["display_name"]
-                if profile.get("avatar_hash"):
-                    entry["avatar_hash"] = profile["avatar_hash"]
-                break
-            if entry.get("display_name"):
-                break
-            near_name = _discord_display_name_near_id(text, user_id)
-            if near_name:
-                entry["display_name"] = near_name
-                avatar_match = re.search(
-                    rf'"{re.escape(user_id)}"[^}}]{{0,500}}?"avatar"\s*:\s*"([a-fA-F0-9]{{32}})"',
-                    text,
-                    re.IGNORECASE | re.DOTALL,
-                )
-                if avatar_match:
-                    entry["avatar_hash"] = avatar_match.group(1)
-                break
-
-    bot_token = os.getenv("DISCORD_BOT_TOKEN") or os.getenv("DISCORD_TOKEN", "")
-    if bot_token:
-        for user_id, entry in by_id.items():
-            current = str(entry.get("display_name") or "").strip()
-            if current and not current.startswith("User "):
-                continue
-            try:
-                response = requests.get(
-                    f"https://discord.com/api/v10/users/{user_id}",
-                    headers={"Authorization": f"Bot {bot_token}"},
-                    timeout=4,
-                )
-                if response.status_code != 200:
-                    continue
-                data = response.json()
-                entry["display_name"] = data.get("global_name") or data.get("username") or entry.get("display_name")
-                if data.get("avatar"):
-                    entry["avatar_hash"] = data["avatar"]
-            except (requests.RequestException, TypeError, ValueError):
-                pass
-
-    enriched: list[dict[str, object]] = []
-    for user_id in sorted(by_id.keys(), key=lambda value: int(value)):
-        entry = by_id[user_id]
-        display_name = str(entry.get("display_name") or "").strip() or None
-        enriched.append(
-            {
-                "user_id": user_id,
-                "display_name": display_name,
-                "avatar_hash": entry.get("avatar_hash"),
-                "sources": list(entry.get("sources") or []),
-            }
-        )
-    return enriched
-
-
-def _roblox_parse_account_objects_from_text(text: str) -> list[dict[str, str | None]]:
-    found: list[dict[str, str | None]] = []
-    seen: set[str] = set()
-    object_pattern = re.compile(
-        r'\{[^{}]{0,1200}?(?:"(?:id|userId|UserId)"\s*:\s*"?(\d{5,12})"?)[^{}]{0,1200}?\}',
-        re.IGNORECASE | re.DOTALL,
-    )
-    account_context_markers = (
-        "username",
-        "displayname",
-        "multiaccount",
-        "logged_in_users",
-        "accountswitcher",
-        "guac:",
-        "am.roblobsecurity",
-    )
-    for match in object_pattern.finditer(str(text or "")):
-        blob = match.group(0)
-        blob_lower = blob.lower()
-        if not any(marker in blob_lower for marker in account_context_markers):
-            continue
-        user_id = str(match.group(1) or "").strip()
-        if not _roblox_valid_user_id(user_id) or user_id in seen:
-            continue
-        username_match = re.search(
-            r'"(?:username|Username|name)"\s*:\s*"([^"\\]{2,32})"',
-            blob,
-            re.IGNORECASE,
-        )
-        display_match = re.search(
-            r'"(?:displayName|DisplayName)"\s*:\s*"([^"\\]{1,32})"',
-            blob,
-            re.IGNORECASE,
-        )
-        seen.add(user_id)
-        found.append(
-            {
-                "user_id": user_id,
-                "username": (username_match.group(1) if username_match else None),
-                "display_name": (display_match.group(1) if display_match else None),
-            }
-        )
-    return found
-
-
 def _discord_extract_user_profiles(text: str) -> list[dict[str, str | None]]:
     profiles: list[dict[str, str | None]] = []
     seen: set[str] = set()
@@ -11864,23 +10231,6 @@ def _discord_extract_user_profiles(text: str) -> list[dict[str, str | None]]:
                 continue
             seen.add(user_id)
             profiles.append({"user_id": user_id, "display_name": None, "avatar_hash": None})
-    for profile in _discord_parse_multi_account_store(text):
-        user_id = str(profile.get("user_id") or "")
-        if not user_id or user_id in seen:
-            continue
-        seen.add(user_id)
-        profiles.append(profile)
-    for user_id in _discord_user_ids_from_text_tokens(text):
-        if user_id in seen:
-            continue
-        seen.add(user_id)
-        profiles.append({"user_id": user_id, "display_name": None, "avatar_hash": None})
-    for match in _DISCORD_GUAC_USER_PATTERN.finditer(text):
-        user_id = match.group(1)
-        if user_id in seen or not _discord_is_plausible_user_id(user_id):
-            continue
-        seen.add(user_id)
-        profiles.append({"user_id": user_id, "display_name": None, "avatar_hash": None})
     for pattern in profile_patterns:
         for user_id in pattern.findall(text):
             if user_id in seen or not _discord_is_plausible_user_id(user_id):
@@ -11908,9 +10258,6 @@ def _discord_all_user_ids_from_text(text: str) -> list[str]:
         user_id = str(profile.get("user_id") or "")
         if user_id and _discord_is_plausible_user_id(user_id):
             found.add(user_id)
-    for user_id in _discord_user_ids_from_text_tokens(text):
-        if _discord_is_plausible_user_id(user_id):
-            found.add(user_id)
     for match in re.finditer(r'"id"\s*:\s*"(\d{17,20})"', text):
         user_id = match.group(1)
         if _discord_is_plausible_user_id(user_id):
@@ -11937,80 +10284,38 @@ def _discord_browser_profile_account_hints() -> list[dict[str, object]]:
         ("Brave", Path(local) / "BraveSoftware" / "Brave-Browser" / "User Data"),
         ("Opera", Path(local) / "Opera Software" / "Opera Stable"),
     ]
-
-    def _add_hint(user_id: str, display_name: str | None, source: str) -> None:
-        if not user_id or user_id in seen or not _discord_is_plausible_user_id(user_id):
-            return
-        seen.add(user_id)
-        hints.append(
-            {
-                "user_id": user_id,
-                "display_name": display_name,
-                "avatar_hash": None,
-                "source": source,
-            }
-        )
-
     for browser, base in browser_roots:
         if not base.is_dir():
             continue
-        for profile in _chromium_profile_names(base)[:12]:
-            profile_dir = base / profile
+        for profile in _chromium_profile_names(base)[:10]:
+            storage_dir = base / profile / "Local Storage" / "leveldb"
+            if not storage_dir.is_dir():
+                continue
             source = f"{browser} {profile}"
-            for blob in _discord_collect_storage_blobs(profile_dir)[:64]:
+            try:
+                blobs = sorted(storage_dir.glob("*.ldb"), key=lambda path: path.stat().st_mtime, reverse=True)[:10]
+                blobs.extend(sorted(storage_dir.glob("*.log"), key=lambda path: path.stat().st_mtime, reverse=True)[:4])
+            except OSError:
+                continue
+            for blob in blobs:
                 try:
-                    raw = blob.read_bytes()[:3_200_000]
+                    text = blob.read_bytes()[:1_600_000].decode("utf-8", errors="ignore")
                 except OSError:
                     continue
-                for text in (
-                    raw.decode("utf-8", errors="ignore"),
-                    raw.decode("latin-1", errors="ignore"),
-                ):
-                    if "discord" not in text.lower():
-                        continue
-                    for profile_entry in _discord_parse_multi_account_store(text):
-                        _add_hint(
-                            str(profile_entry.get("user_id") or ""),
-                            profile_entry.get("display_name"),
-                            source,
-                        )
-                    for user_id in _discord_user_ids_from_text_tokens(text):
-                        _add_hint(user_id, None, source)
-                    for user_id in _discord_all_user_ids_from_text(text):
-                        _add_hint(user_id, None, source)
-    firefox_root = Path(os.getenv("APPDATA", "")) / "Mozilla" / "Firefox" / "Profiles"
-    if firefox_root.is_dir():
-        try:
-            profile_dirs = sorted(
-                (entry for entry in firefox_root.iterdir() if entry.is_dir()),
-                key=lambda path: path.stat().st_mtime,
-                reverse=True,
-            )[:8]
-        except OSError:
-            profile_dirs = []
-        for profile_dir in profile_dirs:
-            source = f"Firefox {profile_dir.name}"
-            for blob in _discord_collect_storage_blobs(profile_dir)[:48]:
-                try:
-                    raw = blob.read_bytes()[:3_200_000]
-                except OSError:
+                if "discord" not in text.lower():
                     continue
-                for text in (
-                    raw.decode("utf-8", errors="ignore"),
-                    raw.decode("latin-1", errors="ignore"),
-                ):
-                    if "discord" not in text.lower():
+                for user_id in _discord_all_user_ids_from_text(text):
+                    if user_id in seen:
                         continue
-                    for profile_entry in _discord_parse_multi_account_store(text):
-                        _add_hint(
-                            str(profile_entry.get("user_id") or ""),
-                            profile_entry.get("display_name"),
-                            source,
-                        )
-                    for user_id in _discord_user_ids_from_text_tokens(text):
-                        _add_hint(user_id, None, source)
-                    for user_id in _discord_all_user_ids_from_text(text):
-                        _add_hint(user_id, None, source)
+                    seen.add(user_id)
+                    hints.append(
+                        {
+                            "user_id": user_id,
+                            "display_name": None,
+                            "avatar_hash": None,
+                            "source": source,
+                        }
+                    )
     return hints
 
 
@@ -12108,64 +10413,47 @@ def discord_local_accounts_scan() -> dict[str, object]:
 
     discord_roots = _discord_discover_roots()
     accounts_by_id: dict[str, dict[str, object]] = {}
-    storage_texts: list[str] = []
 
     for root in discord_roots:
         if not root.is_dir():
             continue
-        root_label = root.name or "Discord"
         blobs = _discord_collect_storage_blobs(root)
-        for blob in blobs[:128]:
+        for blob in blobs[:96]:
             if scan_collect_phase_exhausted():
                 break
             try:
                 raw = blob.read_bytes()[:3_200_000]
             except OSError:
                 continue
-            source_label = f"Discord app ({root_label})"
             for text in (
                 raw.decode("utf-8", errors="ignore"),
                 raw.decode("latin-1", errors="ignore"),
             ):
-                storage_texts.append(text)
-                profiles = _discord_extract_user_profiles(text)
-                if profiles:
-                    for profile in profiles:
-                        user_id = str(profile.get("user_id") or "")
-                        if not user_id:
-                            continue
-                        account = accounts_by_id.setdefault(
-                            user_id,
-                            {
-                                "user_id": user_id,
-                                "display_name": None,
-                                "avatar_hash": None,
-                                "sources": [],
-                            },
-                        )
-                        account_sources = list(account.get("sources") or [])
-                        if source_label not in account_sources:
-                            account_sources.append(source_label)
-                        account["sources"] = account_sources
-                        if profile.get("display_name") and not account.get("display_name"):
-                            account["display_name"] = profile["display_name"]
-                        if profile.get("avatar_hash") and not account.get("avatar_hash"):
-                            account["avatar_hash"] = profile["avatar_hash"]
-                else:
-                    for user_id in _discord_all_user_ids_from_text(text):
-                        account = accounts_by_id.setdefault(
-                            user_id,
-                            {
-                                "user_id": user_id,
-                                "display_name": None,
-                                "avatar_hash": None,
-                                "sources": [],
-                            },
-                        )
-                        account_sources = list(account.get("sources") or [])
-                        if source_label not in account_sources:
-                            account_sources.append(source_label)
-                        account["sources"] = account_sources
+                for user_id in _discord_all_user_ids_from_text(text):
+                    account = accounts_by_id.setdefault(
+                        user_id,
+                        {
+                            "user_id": user_id,
+                            "display_name": None,
+                            "avatar_hash": None,
+                        },
+                    )
+                for profile in _discord_extract_user_profiles(text):
+                    user_id = str(profile.get("user_id") or "")
+                    if not user_id:
+                        continue
+                    account = accounts_by_id.setdefault(
+                        user_id,
+                        {
+                            "user_id": user_id,
+                            "display_name": None,
+                            "avatar_hash": None,
+                        },
+                    )
+                    if profile.get("display_name") and not account.get("display_name"):
+                        account["display_name"] = profile["display_name"]
+                    if profile.get("avatar_hash") and not account.get("avatar_hash"):
+                        account["avatar_hash"] = profile["avatar_hash"]
 
     for hint in _discord_browser_profile_account_hints():
         user_id = str(hint.get("user_id") or "")
@@ -12177,46 +10465,35 @@ def discord_local_accounts_scan() -> dict[str, object]:
                 "user_id": user_id,
                 "display_name": None,
                 "avatar_hash": None,
-                "sources": [],
             },
         )
         if hint.get("display_name") and not account.get("display_name"):
             account["display_name"] = hint["display_name"]
-        browser_source = str(hint.get("source") or "Browser profile")
-        account_sources = list(account.get("sources") or [])
-        if browser_source not in account_sources:
-            account_sources.append(f"{browser_source} web login")
-        account["sources"] = account_sources
 
     accounts: list[dict[str, object]] = []
     for user_id, raw in accounts_by_id.items():
-        sources: list[str] = list(raw.get("sources") or [])
-        if not sources:
-            sources = ["Discord app storage"]
         accounts.append(
             {
                 "user_id": user_id,
-                "display_name": raw.get("display_name"),
+                "display_name": raw.get("display_name") or f"User {user_id}",
                 "avatar_hash": raw.get("avatar_hash"),
-                "sources": sources,
             }
         )
 
-    accounts = _discord_enrich_accounts(accounts, storage_texts=storage_texts)
-    accounts.sort(key=lambda row: str(row.get("display_name") or row.get("user_id") or ""))
+    accounts.sort(key=lambda row: str(row.get("display_name") or ""))
     return {
         "available": True,
         "account_count": len(accounts),
-        "accounts": _public_account_records(accounts[:64]),
-        "aggregate_user_ids": sorted({str(row.get("user_id")) for row in accounts if row.get("user_id")}),
-        "note": "Discord accounts detected on this device.",
+        "accounts": accounts[:64],
+        "note": "Discord desktop app storage and browser profile hints.",
     }
 
 
 def roblox_diagnostics() -> dict:
     logs = _roblox_read_client_logs()
     browser_scan = roblox_browser_account_scan()
-    accounts = list(browser_scan.get("accounts") or [])
+    merged_accounts: list[dict] = list(browser_scan.get("accounts") or [])
+    accounts = _roblox_enrich_accounts(merged_accounts, include_headshots=False)
 
     log_locations_checked: list[str] = []
     if platform.system() == "Windows":
@@ -12231,7 +10508,7 @@ def roblox_diagnostics() -> dict:
         "log_locations_checked": log_locations_checked,
         "logs": logs,
         "browser_scan": browser_scan,
-        "accounts": _public_account_records(accounts),
+        "accounts": accounts,
         "account_count": len(accounts),
         "multiple_accounts_detected": len(accounts) > 1,
         "aggregate_user_ids": sorted({str(acct.get("user_id")) for acct in accounts if acct.get("user_id")}),
@@ -13506,225 +11783,6 @@ def scan_amcache_executor_hits() -> list[dict[str, object]]:
     return hits[:120]
 
 
-def srum_metadata() -> dict[str, object]:
-    """SRUM database availability — bounded metadata only."""
-    if platform.system() != "Windows":
-        return {"available": False, "reason": "SRUM is a Windows artifact"}
-    db_path = Path(os.getenv("SystemRoot", "C:\\Windows")) / "System32" / "sru" / "SRUDB.dat"
-    if not _path_is_file_safe(db_path):
-        return {
-            "available": False,
-            "path": str(db_path),
-            "reason": "SRUDB.dat not accessible (missing or access denied — run as Administrator for full SRUM parse)",
-        }
-    stat = _path_stat_safe(db_path)
-    modified = (
-        datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()
-        if stat is not None
-        else None
-    )
-    return {
-        "available": True,
-        "path": str(db_path),
-        "size_bytes": stat.st_size if stat is not None else 0,
-        "modified_utc": modified,
-        "note": "System Resource Usage Monitor database records application/network activity.",
-    }
-
-
-def scan_srum_executor_hits() -> list[dict[str, object]]:
-    """Binary string match in SRUDB.dat for executor paths/names."""
-    if platform.system() != "Windows":
-        return []
-    path = Path(os.getenv("SystemRoot", "C:\\Windows")) / "System32" / "sru" / "SRUDB.dat"
-    if not _path_is_file_safe(path):
-        return []
-    try:
-        data = path.read_bytes()[:SRUM_DB_MAX_BYTES]
-        stat = _path_stat_safe(path)
-        modified = (
-            datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()
-            if stat is not None
-            else None
-        )
-    except OSError:
-        return []
-    hits: list[dict[str, object]] = []
-    seen: set[str] = set()
-    for label in scan_binary_blob_for_executor_names(data):
-        _append_executor_artifact_hit(
-            hits,
-            seen,
-            path=str(path),
-            labels=[label],
-            occurred_at=modified,
-            artifact_source="srum_database",
-            file_exists=True,
-            note="SRUM database contains a checked executor name (binary string match).",
-        )
-    for extracted in extract_dos_paths_from_binary(data, limit=30):
-        path_labels = executor_labels_for_artifact_text(extracted)
-        if not path_labels:
-            continue
-        _append_executor_artifact_hit(
-            hits,
-            seen,
-            path=extracted,
-            labels=path_labels,
-            occurred_at=modified,
-            artifact_source="srum_database_path",
-            file_exists=path_exists_on_disk(extracted),
-            note="SRUM database embeds a full path to a checked executor — survives file deletion.",
-        )
-    return hits[:80]
-
-
-def _temp_directory_roots() -> list[Path]:
-    roots: list[Path] = []
-    seen: set[str] = set()
-    for env_name in ("TEMP", "TMP", "LOCALAPPDATA"):
-        value = os.getenv(env_name)
-        if not value:
-            continue
-        candidate = Path(value)
-        if env_name == "LOCALAPPDATA":
-            candidate = candidate / "Temp"
-        key = str(candidate).lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        if candidate.is_dir():
-            roots.append(candidate)
-    if platform.system() == "Windows":
-        win_temp = Path(os.getenv("SystemRoot", "C:\\Windows")) / "Temp"
-        key = str(win_temp).lower()
-        if key not in seen and win_temp.is_dir():
-            roots.append(win_temp)
-    return roots[:4]
-
-
-def scan_temp_directory_executor_hits() -> list[dict[str, object]]:
-    """Recent executables in TEMP directories."""
-    if platform.system() != "Windows":
-        return []
-    hits: list[dict[str, object]] = []
-    seen: set[str] = set()
-    for root in _temp_directory_roots():
-        if scan_collect_phase_exhausted():
-            break
-        try:
-            files = sorted(
-                (p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in {".exe", ".dll", ".bat", ".ps1", ".cmd"}),
-                key=lambda p: p.stat().st_mtime,
-                reverse=True,
-            )[:TEMP_DIR_SCAN_MAX_FILES]
-        except OSError:
-            continue
-        for path in files:
-            if scan_collect_phase_exhausted():
-                break
-            labels = executor_labels_for_artifact_text(str(path))
-            if not labels:
-                try:
-                    labels = scan_binary_blob_for_executor_names(path.read_bytes()[:500_000])
-                except OSError:
-                    continue
-            if not labels:
-                continue
-            try:
-                modified = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
-            except OSError:
-                modified = None
-            _append_executor_artifact_hit(
-                hits,
-                seen,
-                path=str(path),
-                labels=labels,
-                occurred_at=modified,
-                artifact_source="temp_directory",
-                file_exists=True,
-                note="Executor-related file found in a temp directory.",
-            )
-            if len(hits) >= 60:
-                return hits
-    return hits
-
-
-def _chromium_cache_directory_paths() -> list[tuple[str, str, Path]]:
-    local = os.getenv("LOCALAPPDATA", "")
-    if not local:
-        return []
-    paths: list[tuple[str, str, Path]] = []
-    for browser, rel in (
-        ("Chrome", "Google/Chrome/User Data"),
-        ("Edge", "Microsoft/Edge/User Data"),
-        ("Brave", "BraveSoftware/Brave-Browser/User Data"),
-        ("Opera", "Opera Software/Opera Stable"),
-        ("Vivaldi", "Vivaldi/User Data"),
-    ):
-        base = Path(local) / rel.replace("/", os.sep)
-        if not base.is_dir():
-            continue
-        try:
-            profile_dirs = [p for p in base.iterdir() if p.is_dir()][:4]
-        except OSError:
-            continue
-        for profile_dir in profile_dirs:
-            cache_dir = profile_dir / "Cache" / "Cache_Data"
-            if not cache_dir.is_dir():
-                cache_dir = profile_dir / "Cache"
-            if cache_dir.is_dir():
-                paths.append((browser, profile_dir.name, cache_dir))
-    return paths[:8]
-
-
-def scan_browser_cache_executor_hits() -> list[dict[str, object]]:
-    """Executor name/path matches in browser cache data files."""
-    if platform.system() != "Windows":
-        return []
-    hits: list[dict[str, object]] = []
-    seen: set[str] = set()
-    scanned = 0
-    for browser, profile, cache_dir in _chromium_cache_directory_paths():
-        if scan_collect_phase_exhausted():
-            break
-        try:
-            files = sorted(
-                (p for p in cache_dir.iterdir() if p.is_file()),
-                key=lambda p: p.stat().st_mtime,
-                reverse=True,
-            )[:20]
-        except OSError:
-            continue
-        for path in files:
-            if scan_collect_phase_exhausted() or scanned >= BROWSER_CACHE_SCAN_MAX_FILES:
-                return hits
-            scanned += 1
-            try:
-                data = path.read_bytes()[:800_000]
-                modified = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
-            except OSError:
-                continue
-            labels = scan_binary_blob_for_executor_names(data)
-            if not labels:
-                continue
-            for extracted in extract_dos_paths_from_binary(data, limit=3) or [str(path)]:
-                _append_executor_artifact_hit(
-                    hits,
-                    seen,
-                    path=extracted if extracted.startswith(("http", "file:")) or re.match(r"^[A-Za-z]:\\", extracted) else str(path),
-                    labels=labels,
-                    occurred_at=modified,
-                    artifact_source="browser_cache",
-                    file_exists=path_exists_on_disk(extracted) if re.match(r"^[A-Za-z]:\\", extracted or "") else None,
-                    note=f"Browser cache ({browser}/{profile}) contains a checked executor name or path.",
-                    extra={"browser": browser, "profile": profile, "cache_file": str(path)},
-                )
-            if len(hits) >= 40:
-                return hits
-    return hits
-
-
 def scan_entire_prefetch_executor_hits() -> list[dict[str, object]]:
     """Scan every Prefetch .pf file on disk — not just the newest 120."""
     if platform.system() != "Windows":
@@ -13942,7 +12000,6 @@ $paths=@(
  'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\TypedPaths',
  'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\RecentDocs',
  'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\RunMRU',
- 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\ComDlg32\OpenSaveMRU',
  'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\ComDlg32\OpenSavePidlMRU',
  'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\ComDlg32\LastVisitedPidlMRU'
 )
@@ -14402,12 +12459,10 @@ def build_cross_artifact_executor_correlation(
     prefetch_health: dict | None,
     executor_artifact_evidence: dict | None,
     forensic_bundle: dict | None,
-    srum: dict | None = None,
-    prefetch: dict | None = None,
 ) -> dict[str, object]:
     """
-    Cross-validate executor evidence across independent Windows artifacts
-    (BAM, Prefetch, Amcache, SRUM, USN) and flag inconsistencies.
+    Cross-validate executor evidence across independent Windows artifacts (BAM, Prefetch, Amcache, USN).
+    Survives single-source tampering when multiple forensic layers disagree.
     """
     if platform.system() != "Windows":
         return {"available": False, "reason": "Windows-only", "signals": []}
@@ -14521,115 +12576,6 @@ def build_cross_artifact_executor_correlation(
             }
         )
 
-    all_prefetch_stems = {
-        prefetch_extract_stem(str(row.get("name") or "")).lower()
-        for row in (prefetch or {}).get("items") or []
-        if row.get("name")
-    } | prefetch_stems
-    bam_stems = {
-        Path(str(item.get("normalized_path") or "")).stem.lower()
-        for item in bam.get("items") or []
-        if item.get("executor_name_hits") or item.get("cheat_filename_hints")
-    }
-    srum_stems = {
-        Path(str(hit.get("path") or "")).stem.lower()
-        for hit in artifact_hits
-        if str(hit.get("artifact_source") or "").startswith("srum")
-    }
-    srum_stems = {stem for stem in srum_stems if stem and len(stem) >= 4}
-    amcache_stems = {
-        Path(str(row.get("path") or row.get("full_path") or "")).stem.lower()
-        for row in (amcache or {}).get("items") or []
-        if row.get("path") or row.get("full_path")
-    }
-    usn_delete_stems = {
-        Path(path).stem.lower()
-        for path in usn_deletes
-        if path
-    }
-
-    for stem in sorted(all_prefetch_stems):
-        if len(stem) < 4 or stem not in bam_stems:
-            continue
-        if stem not in srum_stems and (srum or {}).get("available"):
-            signals.append(
-                {
-                    "type": "prefetch_bam_without_srum",
-                    "severity": "medium",
-                    "summary": "Prefetch and BAM agree on execution but SRUM has no matching application record.",
-                    "path": stem,
-                    "labels": [],
-                    "corroborating_sources": ["prefetch", "bam"],
-                }
-            )
-        if stem not in amcache_stems and (amcache or {}).get("available"):
-            signals.append(
-                {
-                    "type": "prefetch_bam_without_amcache",
-                    "severity": "low",
-                    "summary": "Prefetch and BAM agree but Amcache has no matching program inventory entry.",
-                    "path": stem,
-                    "labels": [],
-                    "corroborating_sources": ["prefetch", "bam"],
-                }
-            )
-
-    for stem in sorted(bam_stems):
-        if len(stem) < 4:
-            continue
-        if stem not in all_prefetch_stems:
-            signals.append(
-                {
-                    "type": "bam_without_prefetch",
-                    "severity": "medium",
-                    "summary": "BAM records execution but no matching Prefetch artifact was found (possible prefetch tampering or cleanup).",
-                    "path": stem,
-                    "labels": [],
-                    "corroborating_sources": ["bam"],
-                }
-            )
-        if stem in usn_delete_stems and stem not in all_prefetch_stems:
-            signals.append(
-                {
-                    "type": "bam_usn_delete_without_prefetch",
-                    "severity": "high",
-                    "summary": "BAM and USN deletion agree on a removed executable but Prefetch residue is missing.",
-                    "path": stem,
-                    "labels": [],
-                    "corroborating_sources": ["bam", "usn_journal"],
-                }
-            )
-
-    for stem in sorted(srum_stems):
-        if len(stem) < 4:
-            continue
-        if stem not in bam_stems and stem not in all_prefetch_stems:
-            signals.append(
-                {
-                    "type": "srum_without_execution_traces",
-                    "severity": "medium",
-                    "summary": "SRUM references a flagged program but BAM and Prefetch show no matching execution trace.",
-                    "path": stem,
-                    "labels": [],
-                    "corroborating_sources": ["srum"],
-                }
-            )
-
-    inconsistency_count = sum(
-        1
-        for row in signals
-        if str(row.get("type") or "").endswith(
-            (
-                "without_prefetch",
-                "without_srum",
-                "without_amcache",
-                "without_execution_traces",
-                "without_bam",
-            )
-        )
-        or "without_" in str(row.get("type") or "")
-    )
-
     deduped: list[dict[str, object]] = []
     seen_keys: set[str] = set()
     for row in signals:
@@ -14643,8 +12589,7 @@ def build_cross_artifact_executor_correlation(
         "available": True,
         "signal_count": len(deduped),
         "signals": deduped[:40],
-        "inconsistency_count": inconsistency_count,
-        "note": "Cross-artifact correlation validates executor evidence across BAM, Prefetch, Amcache, SRUM, and USN.",
+        "note": "Cross-artifact correlation validates executor evidence across BAM, Prefetch, Amcache, and USN.",
     }
 
 
@@ -14986,9 +12931,6 @@ def _submit_independent_artifact_scans(pool: ThreadPoolExecutor) -> dict[str, ob
         "shimcache": scan_shimcache_executor_hits,
         "scheduled_task": scan_scheduled_tasks_executor_hits,
         "prefetch_execution": scan_entire_prefetch_executor_hits,
-        "srum_database": scan_srum_executor_hits,
-        "temp_directory": scan_temp_directory_executor_hits,
-        "browser_cache": scan_browser_cache_executor_hits,
     }
     return {key: pool.submit(fn) for key, fn in jobs.items()}
 
@@ -15235,7 +13177,7 @@ def build_executor_artifact_evidence(
 
     for item in (browser_download_history or {}).get("items") or []:
         path = str(item.get("target_path") or "")
-        labels = _meaningful_inventory_labels(list(item.get("matched_labels") or []) or executor_labels_for_artifact_text(path))
+        labels = list(item.get("matched_labels") or []) or executor_labels_for_artifact_text(path)
         if not labels:
             continue
         _append_executor_artifact_hit(
@@ -15338,9 +13280,6 @@ def build_executor_artifact_evidence(
     ingest("live_process", list(prefetched.get("live_process") or []))
     ingest("roblox_autoexec", list(prefetched.get("roblox_autoexec") or []))
     ingest("browser_history_domain", list(prefetched.get("browser_history_domain") or []))
-    ingest("srum_database", list(prefetched.get("srum_database") or []))
-    ingest("temp_directory", list(prefetched.get("temp_directory") or []))
-    ingest("browser_cache", list(prefetched.get("browser_cache") or []))
 
     by_executor: dict[str, int] = {}
     for hit in hits:
@@ -15858,7 +13797,11 @@ def _download_row_matches(path: str, url: str, patterns: dict[str, re.Pattern[st
         if any(domain in url_low for domain in domains):
             labels.append(label)
     labels = sorted(set(labels))
-    return bool(_meaningful_inventory_labels(labels)), _meaningful_inventory_labels(labels)
+    if not labels and url:
+        lower = url.lower()
+        if any(ext in lower for ext in (".exe", ".dll", ".bat", ".ps1", ".msi", ".zip", ".rar", ".7z")):
+            labels.append("download_url_extension")
+    return bool(labels), labels
 
 
 def _executor_site_label(url: str) -> str | None:
@@ -16251,13 +14194,6 @@ class UnifiedCorrelationEngine:
                 "bam_basenames": len(bam_names),
                 "usn_rows": len(usn_records),
                 "flat_detection_count": len(detections_flat),
-                "inconsistency_checks": [
-                    "prefetch_vs_bam",
-                    "prefetch_vs_amcache",
-                    "prefetch_vs_srum",
-                    "bam_vs_usn_delete",
-                    "srum_vs_execution_traces",
-                ],
             },
         }
 
@@ -17628,24 +15564,6 @@ SUSPICIOUS_STRING_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
                 re.escape(name)
                 for name in EXECUTOR_NAMES
                 if name not in EXECUTOR_AMBIGUOUS_NAMES
-            )
-            + "|"
-            + "|".join(
-                re.escape(token)
-                for token in (
-                    "app.solara/index.html",
-                    "Solara.exe",
-                    "Wave.exe",
-                    "waveexecutor",
-                    "Wave Executor",
-                    "Potassium.exe",
-                    "game_overlay.dll",
-                    "Volt Executor",
-                    "SerotoninSetup.exe",
-                    "Serotonin Executor",
-                    "Velocity Executor",
-                    "RbxCli",
-                )
             ),
             re.IGNORECASE,
         ),
@@ -17886,9 +15804,6 @@ def build_executable_inventory(
         path = forensic_normalize_pathish(path) or path
         if artifact_path_is_review_noise(path):
             return
-        labels = _meaningful_inventory_labels(labels)
-        if not labels and not suspicious:
-            return
         key = _digest_path_key(path)
         name = _digest_basename(path)
         row = by_path.get(key)
@@ -18124,23 +16039,6 @@ def build_execution_activity_feed(
             occurred_at=occurred,
             source="matched_signal",
             summary=str(event.get("detail") or "Matched a reviewed executor or cheat signal."),
-            suspicious=True,
-        )
-
-    for item in userassist.get("items") or []:
-        path = str(item.get("path") or "")
-        if not path or inventory_path_is_noise(path):
-            continue
-        labels = match_executor_labels(path, patterns, path_context=True)
-        labels.extend(item.get("executor_name_hits") or [])
-        labels = _meaningful_inventory_labels(sorted(set(labels)))
-        if not labels:
-            continue
-        add(
-            path=path,
-            occurred_at=item.get("display_at") or item.get("last_run_utc") or item.get("modified"),
-            source="userassist",
-            summary=f"UserAssist recorded this program opening: {', '.join(labels)}.",
             suspicious=True,
         )
 
@@ -18783,176 +16681,6 @@ def build_scan_review_bundle(
     }
 
 
-def _minutes_ago_from_iso(iso_value: str | None, *, reference: datetime | None = None) -> int | None:
-    if not iso_value:
-        return None
-    ref = reference or datetime.now(timezone.utc)
-    if ref.tzinfo is None:
-        ref = ref.replace(tzinfo=timezone.utc)
-    try:
-        dt = datetime.fromisoformat(str(iso_value).replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        delta = ref - dt.astimezone(timezone.utc)
-        return max(0, int(delta.total_seconds() // 60))
-    except ValueError:
-        return None
-
-
-def build_forensic_artifact_timeline(
-    *,
-    scan_started_at: str,
-    generated_at: str,
-    prefetch: dict,
-    prefetch_health: dict,
-    bam: dict,
-    trash: dict,
-    deletion: dict,
-    filesystem_integrity: dict,
-    bypass_resilience: dict | None = None,
-) -> dict[str, object]:
-    """Summarize recent changes or tampering across prefetch, USN, BAM, and recycle bin."""
-    try:
-        reference = datetime.fromisoformat(str(generated_at).replace("Z", "+00:00"))
-        if reference.tzinfo is None:
-            reference = reference.replace(tzinfo=timezone.utc)
-    except ValueError:
-        reference = datetime.now(timezone.utc)
-
-    events: list[dict[str, object]] = []
-
-    latest_trash = trash.get("latest") if isinstance(trash, dict) else None
-    latest_trash_ts = None
-    if isinstance(latest_trash, dict):
-        latest_trash_ts = (
-            latest_trash.get("display_at")
-            or latest_trash.get("deleted_at")
-            or latest_trash.get("modified")
-        )
-    recycle_minutes = _minutes_ago_from_iso(latest_trash_ts, reference=reference)
-    if latest_trash_ts:
-        events.append(
-            {
-                "source": "recycle_bin",
-                "change": "latest_item_change",
-                "severity": "info",
-                "detail": "Most recent recycle bin metadata change on this PC.",
-                "occurred_at": latest_trash_ts,
-                "minutes_ago": recycle_minutes,
-            }
-        )
-
-    if isinstance(prefetch_health, dict) and prefetch_health.get("available"):
-        newest = prefetch_health.get("newest_modified")
-        if newest:
-            events.append(
-                {
-                    "source": "prefetch",
-                    "change": "latest_trace_update",
-                    "severity": "info",
-                    "detail": "Most recent prefetch trace update sampled during scan.",
-                    "occurred_at": newest,
-                    "minutes_ago": _minutes_ago_from_iso(newest, reference=reference),
-                }
-            )
-        for hint in prefetch_health.get("tamper_hints") or []:
-            events.append(
-                {
-                    "source": "prefetch",
-                    "change": str(hint),
-                    "severity": "high" if "empty" in str(hint) else "medium",
-                    "detail": f"Prefetch health signal: {hint.replace('_', ' ')}.",
-                    "occurred_at": generated_at,
-                    "minutes_ago": 0,
-                }
-            )
-
-    integrity_findings = (filesystem_integrity or {}).get("findings") or []
-    for finding in integrity_findings[:12]:
-        if not isinstance(finding, dict):
-            continue
-        category = str(finding.get("category") or "")
-        if category not in {"usn_journal", "prefetch", "bam", "recycle_bin", "event_log", "volume_shadow_copy"}:
-            continue
-        events.append(
-            {
-                "source": category,
-                "change": str(finding.get("action") or "changed"),
-                "severity": str(finding.get("severity") or "medium"),
-                "detail": str(finding.get("detail") or finding.get("impact") or "Evidence source changed."),
-                "occurred_at": finding.get("occurred_at") or generated_at,
-                "minutes_ago": _minutes_ago_from_iso(finding.get("occurred_at"), reference=reference),
-            }
-        )
-
-    for finding in (bypass_resilience or {}).get("findings") or []:
-        if not isinstance(finding, dict):
-            continue
-        category = str(finding.get("category") or "")
-        if category not in {"tamper", "cover_up"}:
-            continue
-        title = str(finding.get("title") or "Evidence change")
-        if not any(token in title.lower() for token in ("prefetch", "usn", "bam", "recycle", "journal", "log")):
-            continue
-        events.append(
-            {
-                "source": category,
-                "change": title,
-                "severity": str(finding.get("severity") or "medium"),
-                "detail": str(finding.get("detail") or title),
-                "occurred_at": generated_at,
-                "minutes_ago": 0,
-            }
-        )
-
-    bam_items = (bam or {}).get("items") or []
-    recent_bam = sorted(
-        [item for item in bam_items if isinstance(item, dict) and item.get("last_execution_utc")],
-        key=lambda row: str(row.get("last_execution_utc") or ""),
-        reverse=True,
-    )[:5]
-    for item in recent_bam:
-        occurred_at = str(item.get("last_execution_utc") or "")
-        events.append(
-            {
-                "source": "bam",
-                "change": "execution_record",
-                "severity": "info",
-                "detail": f"BAM execution trace: {Path(str(item.get('normalized_path') or item.get('path') or 'unknown')).name}",
-                "occurred_at": occurred_at,
-                "minutes_ago": _minutes_ago_from_iso(occurred_at, reference=reference),
-            }
-        )
-
-    deletion_blob = f"{deletion.get('raw_sample') or ''}\n{deletion.get('usn_delete_sample') or ''}"
-    if re.search(r"Remove-Item.*Prefetch|del\s+/f.*\.pf|Clear-RecycleBin|fsutil\s+usn\s+deletejournal", deletion_blob, re.I):
-        events.append(
-            {
-                "source": "deletion_signals",
-                "change": "cleanup_command_detected",
-                "severity": "high",
-                "detail": "Recent command or event history mentions prefetch, recycle bin, or USN journal cleanup.",
-                "occurred_at": scan_started_at,
-                "minutes_ago": _minutes_ago_from_iso(scan_started_at, reference=reference),
-            }
-        )
-
-    events.sort(
-        key=lambda row: (
-            row.get("minutes_ago") if row.get("minutes_ago") is not None else 10**9,
-            str(row.get("occurred_at") or ""),
-        ),
-    )
-
-    return {
-        "available": True,
-        "recycle_bin_latest_change_minutes_ago": recycle_minutes,
-        "recycle_bin_latest_at": latest_trash_ts,
-        "event_count": len(events),
-        "events": events[:40],
-    }
-
-
 def in_scan_binary_change_signals(usn_rows: list[dict], bam_items: list[dict]) -> dict:
     """
     Summarize install/rename/move-related evidence from the current scan only.
@@ -18999,172 +16727,6 @@ def _process_overview_sample() -> dict:
     }
 
 
-def build_forensic_detection_catalog(
-    *,
-    defender: dict,
-    prefetch: dict,
-    amcache: dict,
-    bam: dict,
-    srum: dict,
-    userassist: dict,
-    recent_items: dict,
-    browser_download_history: dict,
-    deletion: dict,
-    trash: dict,
-    windows_event_logs: dict,
-    filesystem_evidence_integrity: dict,
-    cross_artifact: dict,
-) -> dict[str, object]:
-    """Catalog of forensic detection sources collected during this scan."""
-    sources = [
-        {
-            "id": "defender_protection_history",
-            "label": "Windows Defender Protection History",
-            "available": bool(defender.get("available")),
-            "detail": "Defender operational events and threat detections",
-        },
-        {
-            "id": "defender_exclusions",
-            "label": "Windows Defender Exclusions",
-            "available": bool(defender.get("available")),
-            "detail": "ExclusionPath/Process/Extension from Get-MpPreference",
-        },
-        {
-            "id": "recent_items",
-            "label": "Recent Items",
-            "available": bool(recent_items.get("count", 0)),
-            "detail": "Recent shortcuts, Jump Lists, Downloads/Desktop/Documents",
-        },
-        {
-            "id": "prefetch",
-            "label": "Prefetch",
-            "available": bool(prefetch.get("available")),
-            "detail": "Windows Prefetch execution artifacts",
-        },
-        {
-            "id": "browser_history",
-            "label": "Browser History",
-            "available": True,
-            "detail": "Chromium/Firefox history keyword and domain scans",
-        },
-        {
-            "id": "downloads_folder",
-            "label": "Downloads Folder",
-            "available": True,
-            "detail": "User Downloads folder sweep and browser download tables",
-        },
-        {
-            "id": "recycle_bin",
-            "label": "Recycle Bin",
-            "available": bool(trash.get("available") or trash.get("items")),
-            "detail": "Recycle Bin $I/$R metadata and payload hashing",
-        },
-        {
-            "id": "amcache",
-            "label": "Amcache",
-            "available": bool(amcache.get("available")),
-            "detail": "Amcache.hve program inventory hive",
-        },
-        {
-            "id": "bam",
-            "label": "BAM",
-            "available": bool(bam.get("available")),
-            "detail": "Background Activity Moderator execution registry",
-        },
-        {
-            "id": "srum",
-            "label": "SRUM",
-            "available": bool(srum.get("available")),
-            "detail": "System Resource Usage Monitor database (SRUDB.dat)",
-        },
-        {
-            "id": "usn_journal",
-            "label": "USN Journal",
-            "available": bool(deletion.get("usn_delete_line_count", 0) or deletion.get("usn_delete_sample")),
-            "detail": "NTFS change journal delete/rename lifecycle sample",
-        },
-        {
-            "id": "userassist",
-            "label": "UserAssist",
-            "available": bool(userassist.get("available")),
-            "detail": "Explorer UserAssist last-run registry entries",
-        },
-        {
-            "id": "run_mru",
-            "label": "RunMRU",
-            "available": True,
-            "detail": "Explorer Run dialog MRU registry (registry_shell scan)",
-        },
-        {
-            "id": "opensave_mru",
-            "label": "OpenSaveMRU",
-            "available": True,
-            "detail": "Open/Save dialog MRU registry (OpenSaveMRU + PidlMRU)",
-        },
-        {
-            "id": "jump_lists",
-            "label": "Jump Lists",
-            "available": True,
-            "detail": "AutomaticDestinations/CustomDestinations and Recent .lnk parsing",
-        },
-        {
-            "id": "windows_event_logs",
-            "label": "Windows Event Logs",
-            "available": bool(windows_event_logs.get("available")),
-            "detail": "Application, System, Security, PowerShell, and Sysmon samples",
-        },
-        {
-            "id": "temp_directories",
-            "label": "Temp Directories",
-            "available": True,
-            "detail": "TEMP/TMP/AppData/Local/Temp and Windows\\Temp executable sweep",
-        },
-        {
-            "id": "browser_download_history",
-            "label": "Browser Download History",
-            "available": bool(browser_download_history.get("available")),
-            "detail": "Chromium downloads table and Firefox moz_downloads",
-        },
-        {
-            "id": "browser_cache",
-            "label": "Browser Cache",
-            "available": True,
-            "detail": "Chromium Cache_Data binary sweep for executor strings",
-        },
-        {
-            "id": "file_timestamps",
-            "label": "File Creation / Deletion Timestamps",
-            "available": bool(deletion.get("available")),
-            "detail": "USN journal, Security 4660/4663, Sysmon 23/26, Recycle Bin $I times",
-        },
-        {
-            "id": "log_clearing",
-            "label": "Evidence of Log Clearing",
-            "available": bool(filesystem_evidence_integrity.get("available")),
-            "detail": "Event log clears, USN journal deletion, PowerShell history tamper patterns",
-        },
-        {
-            "id": "trace_cleaner",
-            "label": "Evidence of Trace Cleaner Execution",
-            "available": True,
-            "detail": "CCleaner/BleachBit/PrivaZer and similar tokens in history or execution traces",
-        },
-        {
-            "id": "cross_artifact_inconsistency",
-            "label": "Cross-artifact inconsistency checks",
-            "available": bool(cross_artifact.get("available")),
-            "detail": "Prefetch, Amcache, BAM, SRUM, and USN Journal cross-validation",
-            "signal_count": cross_artifact.get("inconsistency_count", 0),
-        },
-    ]
-    return {
-        "available": True,
-        "source_count": len(sources),
-        "sources": sources,
-        "note": "All listed forensic detection sources are attempted each scan within the time budget.",
-    }
-
-
 def build_report() -> dict:
     import time as _time
 
@@ -19196,7 +16758,6 @@ def build_report() -> dict:
 
     _reset_usn_comprehensive_cache()
     _reset_roblox_logs_cache()
-    _reset_roblox_account_scan_state()
     _reset_full_pc_recent_executables_cache()
     _reset_executor_indicator_cache()
     _reset_profile_binary_sweep_cache()
@@ -19211,7 +16772,6 @@ def build_report() -> dict:
     executor_artifact_evidence: dict = {"available": False, "hits": []}
     roblox_runtime: dict = {"available": False}
     evidence_verdict: dict = {"available": False}
-    forensic_timeline: dict = {"available": False}
 
     with ThreadPoolExecutor(max_workers=SCAN_WORKERS) as pool:
         fut_prefetch = pool.submit(prefetch_metadata)
@@ -19226,9 +16786,6 @@ def build_report() -> dict:
         fut_roblox = pool.submit(roblox_diagnostics)
         fut_discord = pool.submit(discord_local_accounts_scan)
         fut_amcache = pool.submit(amcache_metadata)
-        fut_srum = pool.submit(
-            lambda: _run_collector_with_timeout(srum_metadata, label="srum")
-        )
         fut_userassist = pool.submit(userassist_registry_entries)
         fut_defender = pool.submit(windows_defender_signals)
         fut_events = pool.submit(
@@ -19287,7 +16844,6 @@ def build_report() -> dict:
                 fut_trash,
                 fut_roblox,
                 fut_amcache,
-                fut_srum,
                 fut_userassist,
                 fut_defender,
                 fut_events,
@@ -19374,7 +16930,6 @@ def build_report() -> dict:
         hardware = fut_hardware.result()
         installed_apps = fut_apps.result()
         amcache = fut_amcache.result()
-        srum = fut_srum.result()
         defender = fut_defender.result()
         windows_event_logs = fut_events.result()
         windows_security_events = fut_security_events.result()
@@ -19451,8 +17006,6 @@ def build_report() -> dict:
             prefetch_health=prefetch_health,
             executor_artifact_evidence=executor_artifact_evidence,
             forensic_bundle=forensic_bundle,
-            srum=srum,
-            prefetch=prefetch,
         )
         roblox_runtime = (
             {"available": False, "reason": "Scan time budget exhausted", "skipped_fast_scan": True}
@@ -19533,17 +17086,6 @@ def build_report() -> dict:
             usn_rows=usn_rows if isinstance(usn_rows, list) else [],
             bam_items=bam_registry.get("items") or [],
         )
-        forensic_timeline = build_forensic_artifact_timeline(
-            scan_started_at=scan_started_at,
-            generated_at=generated_at,
-            prefetch=prefetch,
-            prefetch_health=prefetch_health,
-            bam=bam_registry,
-            trash=trash,
-            deletion=deletion_signals,
-            filesystem_integrity=filesystem_evidence_integrity,
-            bypass_resilience=bypass_resilience,
-        )
         boot_time_iso = datetime.fromtimestamp(psutil.boot_time(), timezone.utc).isoformat()
         scan_review = build_scan_review_bundle(
             generated_at=generated_at,
@@ -19601,22 +17143,6 @@ def build_report() -> dict:
             "runtime_reasons": evidence_verdict.get("runtime_reasons"),
         }
 
-    forensic_detection_catalog = build_forensic_detection_catalog(
-        defender=defender,
-        prefetch=prefetch,
-        amcache=amcache,
-        bam=bam_registry,
-        srum=srum,
-        userassist=userassist,
-        recent_items=recent_items,
-        browser_download_history=browser_download_history,
-        deletion=deletion_signals,
-        trash=trash,
-        windows_event_logs=windows_event_logs,
-        filesystem_evidence_integrity=filesystem_evidence_integrity,
-        cross_artifact=cross_artifact_executor,
-    )
-
     return {
         "scan_started_at": scan_started_at,
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -19655,26 +17181,12 @@ def build_report() -> dict:
                     "bam",
                     "prefetch",
                     "usn_journal",
-                    "amcache",
-                    "srum",
-                    "userassist",
-                    "run_mru",
-                    "opensave_mru",
-                    "jump_lists",
-                    "temp_directories",
-                    "browser_cache",
-                    "browser_downloads",
-                    "browser_history_domains",
-                    "defender_protection_history",
-                    "defender_exclusions",
-                    "windows_event_logs",
-                    "log_clearing_detection",
-                    "trace_cleaner_detection",
-                    "cross_artifact_inconsistency",
                     "sha256_blocklist",
                     "binary_probe",
                     "recycle_bin",
                     "persistence",
+                    "browser_downloads",
+                    "browser_history_domains",
                     "roblox_integrity",
                     "roblox_runtime_provenance",
                     "evidence_confidence_engine",
@@ -19689,7 +17201,6 @@ def build_report() -> dict:
         "process_overview": process_overview,
         "security_integrity_signals": {
             "amcache": amcache,
-            "srum": srum,
             "bam": bam_registry,
             "dam": dam_registry,
             "userassist": userassist,
@@ -19720,10 +17231,8 @@ def build_report() -> dict:
             "evidence_verdict": evidence_verdict,
             "forensic_analysis": forensic_bundle,
             "bypass_resilience": bypass_resilience,
-            "forensic_timeline": forensic_timeline,
             "scan_review": scan_review,
             "browser_download_history": browser_download_history,
-            "forensic_detection_catalog": forensic_detection_catalog,
             "binary_change_signals_in_scan": in_scan_changes,
         },
     }
@@ -19823,17 +17332,13 @@ class RectButton(Frame):
         x1, y1 = self._width - 1, self._height - 1 + offset
         height = max(y1 - y0, 1)
 
-        bands = 8
-        band_height = max(height // bands, 1)
-        for band in range(bands):
-            band_y0 = y0 + band * band_height
-            band_y1 = y0 + height if band == bands - 1 else band_y0 + band_height
-            t = (band_y0 + band_y1) / 2 / max(y0 + height, 1)
-            t = (t * height - y0) / max(height - 1, 1)
+        for i in range(height):
+            t = i / max(height - 1, 1)
             color = _blend_hex(self._top, self._bottom, t)
-            if self._primary and self._hovered and band < bands // 3:
-                color = _blend_hex(color, "#ffffff", 0.12 * (1 - band / max(bands // 3, 1)))
-            self._canvas.create_rectangle(x0, band_y0, x1, band_y1, fill=color, outline=color)
+            if self._primary and self._hovered and i < height // 3:
+                color = _blend_hex(color, "#ffffff", 0.12 * (1 - i / max(height // 3, 1)))
+            y = y0 + i
+            self._canvas.create_line(x0, y, x1, y, fill=color)
 
         self._canvas.create_rectangle(x0, y0, x1, y1, outline=self._outline_color, width=1)
 
@@ -19879,7 +17384,7 @@ class RectButton(Frame):
         start_outline = self._outline_color
         start_offset = self._press_offset
         state = {"step": 0}
-        steps = 5
+        steps = 8
 
         def tick() -> None:
             if not self.winfo_exists():
@@ -19893,7 +17398,7 @@ class RectButton(Frame):
             self._press_offset = start_offset + (target_offset - start_offset) * t
             self._paint()
             if state["step"] < steps:
-                self._anim_job = self._canvas.after(28, tick)
+                self._anim_job = self._canvas.after(12, tick)
             else:
                 self._top = target_top
                 self._bottom = target_bottom
@@ -19938,120 +17443,6 @@ class RectButton(Frame):
         self._animate_state()
 
 
-class GlowProgressBar(Canvas):
-    """Rounded progress bar with a subtle glow on the fill edge."""
-
-    def __init__(
-        self,
-        parent,
-        *,
-        width: int = 360,
-        height: int = 10,
-        bg: str = "#121214",
-        fill: str = "#dc2626",
-        glow: str = "#ef4444",
-        border: str = "#252528",
-    ) -> None:
-        super().__init__(
-            parent,
-            width=width,
-            height=height + 8,
-            bg=parent.cget("bg") if hasattr(parent, "cget") else bg,
-            highlightthickness=0,
-            bd=0,
-        )
-        self._bar_width = width
-        self._bar_height = height
-        self._bar_y = 4
-        self._track_bg = "#1a1a1f"
-        self._bg = bg
-        self._fill = fill
-        self._glow = glow
-        self._border = border
-        self._value = 0.0
-        self._pulse = 0.0
-        self._pulse_job: str | None = None
-        self._draw_static()
-
-    def _draw_static(self) -> None:
-        y = self._bar_y
-        h = self._bar_height
-        self._track = self.create_round_rect(0, y, self._bar_width, y + h, 5, fill=self._track_bg, outline=self._border)
-        self._glow_rect = self.create_round_rect(0, y + 1, 0, y + h - 1, 4, fill=self._glow, outline="")
-        self._fill_rect = self.create_round_rect(0, y + 2, 0, y + h - 2, 3, fill=self._fill, outline="")
-
-    def _ensure_pulse(self) -> None:
-        if self._pulse_job is not None or self._value <= 0:
-            return
-
-        def tick() -> None:
-            if self._value <= 0:
-                self._pulse_job = None
-                return
-            self._pulse = (self._pulse + 0.1) % (2 * math.pi)
-            self._render_fill()
-            self._pulse_job = self.after(220, tick)
-
-        tick()
-
-    def create_round_rect(self, x1, y1, x2, y2, radius, **kwargs):
-        points = [
-            x1 + radius,
-            y1,
-            x2 - radius,
-            y1,
-            x2,
-            y1,
-            x2,
-            y1 + radius,
-            x2,
-            y2 - radius,
-            x2,
-            y2,
-            x2 - radius,
-            y2,
-            x1 + radius,
-            y2,
-            x1,
-            y2,
-            x1,
-            y2 - radius,
-            x1,
-            y1 + radius,
-            x1,
-            y1,
-        ]
-        return self.create_polygon(points, smooth=True, **kwargs)
-
-    def destroy(self) -> None:
-        if self._pulse_job is not None:
-            try:
-                self.after_cancel(self._pulse_job)
-            except Exception:
-                pass
-            self._pulse_job = None
-        super().destroy()
-
-    def set_value(self, percent: float) -> None:
-        self._value = max(0.0, min(100.0, float(percent)))
-        self._render_fill()
-        self._ensure_pulse()
-
-    def _render_fill(self) -> None:
-        y = self._bar_y
-        h = self._bar_height
-        width = self._bar_width * (self._value / 100.0)
-        pulse_boost = 1.0 + 0.08 * math.sin(self._pulse)
-        glow_width = min(self._bar_width, width * pulse_boost + 6)
-        fill_width = min(self._bar_width, width)
-        if fill_width < 1:
-            self.coords(self._glow_rect, 0, y, 0, y + h)
-            self.coords(self._fill_rect, 0, y + 2, 0, y + h - 2)
-            return
-        self.coords(self._glow_rect, 0, y + 1, glow_width, y + h - 1)
-        self.coords(self._fill_rect, 0, y + 2, fill_width, y + h - 2)
-
-
 class DiagnosticApp:
     UI_BG = "#0a0a0c"
     UI_SURFACE = "#121214"
@@ -20061,13 +17452,12 @@ class DiagnosticApp:
     UI_TEXT = "#fafafa"
     UI_MUTED = "#71717a"
     UI_SUCCESS = "#16a34a"
-    UI_GLOW = "#ef4444"
     WIN_WIDTH = 720
-    WIN_HEIGHT = 440
-    TEXT_WRAP = 380
+    WIN_HEIGHT = 400
+    TEXT_WRAP = 320
     BTN_WIDTH = 164
-    RIGHT_COL_WIDTH = 260
-    WELCOME_BTN_WIDTH = 200
+    RIGHT_COL_WIDTH = 272
+    WELCOME_BTN_WIDTH = 248
 
     def __init__(self) -> None:
         self.root = Tk()
@@ -20086,21 +17476,14 @@ class DiagnosticApp:
         self.consent = BooleanVar(value=False)
         self.status = StringVar(value="Ready to scan")
         self.progress_percent = StringVar(value="0%")
-        self.eta_text = StringVar(value="Estimated time: ~5 min")
         self.stage_labels: dict[str, ttk.Label] = {}
         self._screen: Frame | None = None
         self._viewport: Frame | None = None
         self._transition_job: str | None = None
-        self._progress_job: str | None = None
-        self._progress_state: dict | None = None
-        self._progress_lock = threading.Lock()
-        self._ui_queue: Queue = Queue()
         self._fade_widgets: list[tuple[ttk.Label, float]] = []
-        self.progress: GlowProgressBar | None = None
-        self._header_status: ttk.Label | None = None
+        self.progress: ttk.Progressbar | None = None
         self.configure_style()
         self._build_shell()
-        self._poll_ui_queue()
         self._show_screen(self._build_welcome_content)
 
     def load_logo(self) -> PhotoImage | None:
@@ -20128,10 +17511,7 @@ class DiagnosticApp:
         style.configure("Eyebrow.TLabel", background=bg, foreground=self.UI_MUTED, font=("Segoe UI", 8, "bold"))
         style.configure("Title.TLabel", background=bg, foreground="#ffffff", font=("Segoe UI", 19, "bold"))
         style.configure("Heading.TLabel", background=bg, foreground="#ffffff", font=("Segoe UI", 11, "bold"))
-        style.configure("Percent.TLabel", background=bg, foreground=self.UI_TEXT, font=("Segoe UI", 12, "bold"))
-        style.configure("SurfacePercent.TLabel", background=self.UI_SURFACE, foreground=self.UI_TEXT, font=("Segoe UI", 12, "bold"))
-        style.configure("Eta.TLabel", background=bg, foreground=self.UI_MUTED, font=("Segoe UI", 9))
-        style.configure("HeaderMuted.TLabel", background=self.UI_SURFACE, foreground=self.UI_MUTED, font=("Segoe UI", 8))
+        style.configure("Percent.TLabel", background=bg, foreground=self.UI_TEXT, font=("Segoe UI", 11, "bold"))
         style.configure("Stage.TLabel", background=bg, foreground=self.UI_TEXT, font=("Segoe UI", 9))
         style.configure("StageStatus.TLabel", background=bg, foreground=self.UI_MUTED, font=("Segoe UI", 9))
         style.configure("Brand.TLabel", background=self.UI_SURFACE, foreground="#ffffff", font=("Segoe UI", 10, "bold"))
@@ -20151,30 +17531,16 @@ class DiagnosticApp:
         )
 
     def _build_shell(self) -> None:
-        accent_strip = Frame(self.root, bg=self.UI_ACCENT, height=2)
-        accent_strip.pack(fill="x")
-        header = Frame(self.root, bg=self.UI_SURFACE, height=48)
+        header = Frame(self.root, bg=self.UI_SURFACE, height=44)
         header.pack(fill="x")
         header.pack_propagate(False)
-        header_inner = Frame(header, bg=self.UI_SURFACE, padx=24)
+        header_inner = Frame(header, bg=self.UI_SURFACE, padx=20)
         header_inner.pack(fill=BOTH, expand=True)
         if self.logo_image:
             ttk.Label(header_inner, image=self.logo_image, style="Surface.TLabel").pack(side="left", padx=(0, 10))
-        title_block = Frame(header_inner, bg=self.UI_SURFACE)
-        title_block.pack(side="left", pady=8)
-        ttk.Label(title_block, text="VIRELLO", style="Brand.TLabel").pack(anchor="w")
-        ttk.Label(
-            title_block,
-            text="Secure Forensic Scanner",
-            style="HeaderMuted.TLabel",
-        ).pack(anchor="w")
-        status_chip = Frame(header_inner, bg="#1a1a1e", padx=10, pady=4)
-        status_chip.pack(side="right", pady=10)
-        self._header_status = ttk.Label(status_chip, text="● Ready", style="Surface.TLabel")
-        self._header_status.configure(foreground=self.UI_SUCCESS)
-        self._header_status.pack()
+        ttk.Label(header_inner, text="VIRELLO SCANNER", style="Brand.TLabel").pack(side="left", pady=10)
         Frame(self.root, bg=self.UI_BORDER, height=1).pack(fill="x")
-        viewport = Frame(self.root, bg=self.UI_BG, padx=32, pady=24)
+        viewport = Frame(self.root, bg=self.UI_BG, padx=28, pady=22)
         viewport.pack(fill=BOTH, expand=True)
         self._viewport = viewport
         self._screen = Frame(viewport, bg=self.UI_BG)
@@ -20196,21 +17562,22 @@ class DiagnosticApp:
         self._mount_screen(builder, animated=animated)
 
     def _animate_out(self, on_done) -> None:
-        steps = 6
+        steps = 10
         state = {"step": 0}
 
         def tick() -> None:
             state["step"] += 1
             t = _ease_in_out_cubic(state["step"] / steps)
+            offset = int(10 * t)
             opacity = 1.0 - t
+            self._apply_screen_offset(offset)
             self._apply_fade_opacity(opacity)
             if state["step"] < steps:
-                self._transition_job = self.root.after(24, tick)
+                self._transition_job = self.root.after(14, tick)
             else:
                 self._transition_job = None
                 on_done()
 
-        self._apply_screen_offset(0)
         tick()
 
     def _mount_screen(self, builder, *, animated: bool = True) -> None:
@@ -20234,18 +17601,21 @@ class DiagnosticApp:
                 pass
 
     def _animate_in(self) -> None:
-        steps = 6
+        steps = 12
         state = {"step": 0}
-        self._apply_screen_offset(0)
+        self._apply_screen_offset(12)
         self._apply_fade_opacity(0.0)
 
         def tick() -> None:
             state["step"] += 1
             t = _ease_in_out_cubic(state["step"] / steps)
+            offset = int(12 * (1 - t))
+            self._apply_screen_offset(offset)
             self._apply_fade_opacity(t)
             if state["step"] < steps:
-                self._transition_job = self.root.after(24, tick)
+                self._transition_job = self.root.after(14, tick)
             else:
+                self._apply_screen_offset(0)
                 self._apply_fade_opacity(1.0)
                 self._transition_job = None
 
@@ -20256,38 +17626,12 @@ class DiagnosticApp:
             return
         self._screen.pack_configure(pady=(offset, 0))
 
-    def _dispatch_ui(self, fn, *args) -> None:
-        self._ui_queue.put((fn, args))
-
-    def _poll_ui_queue(self) -> None:
-        while True:
-            try:
-                fn, args = self._ui_queue.get_nowait()
-            except Empty:
-                break
-            try:
-                fn(*args)
-            except Exception:
-                pass
-        self.root.after(40, self._poll_ui_queue)
-
-    def _set_header_status(self, mode: str) -> None:
-        if self._header_status is None:
-            return
-        if mode == "scanning":
-            self._header_status.configure(text="● Scanning", foreground=self.UI_ACCENT)
-        elif mode == "done":
-            self._header_status.configure(text="● Complete", foreground=self.UI_SUCCESS)
-        else:
-            self._header_status.configure(text="● Ready", foreground=self.UI_SUCCESS)
-
-    def _split_columns(self, *, show_divider: bool = True) -> tuple[Frame, Frame]:
+    def _split_columns(self) -> tuple[Frame, Frame]:
         row = Frame(self._screen, bg=self.UI_BG)
         row.pack(fill=BOTH, expand=True)
         left = Frame(row, bg=self.UI_BG)
         left.pack(side="left", fill=BOTH, expand=True)
-        if show_divider:
-            Frame(row, bg=self.UI_BORDER, width=1).pack(side="left", fill="y", padx=20)
+        Frame(row, bg=self.UI_BORDER, width=1).pack(side="left", fill="y", padx=24)
         right = Frame(row, bg=self.UI_BG, width=self.RIGHT_COL_WIDTH)
         right.pack(side="left", fill=BOTH)
         right.pack_propagate(False)
@@ -20349,37 +17693,39 @@ class DiagnosticApp:
         )
 
     def _build_welcome_content(self) -> None:
-        wrap = Frame(self._screen, bg=self.UI_BG)
-        wrap.pack(fill=BOTH, expand=True)
-        col = Frame(wrap, bg=self.UI_BG)
-        col.place(relx=0.5, rely=0.5, anchor="center")
-        if self.logo_image:
-            ttk.Label(col, image=self.logo_image, style="TLabel").pack(pady=(0, 14))
-        self._fade_label(col, "WELCOME", "Eyebrow.TLabel", delay=0.0).pack()
-        self._fade_label(col, "Virello Scanner", "Title.TLabel", delay=0.04).pack(pady=(8, 0))
+        left, right = self._split_columns()
+        left_block = Frame(left, bg=self.UI_BG)
+        left_block.pack(fill=BOTH, expand=True)
+        left_inner = Frame(left_block, bg=self.UI_BG)
+        left_inner.pack(expand=True, anchor="w")
+        self._fade_label(left_inner, "WELCOME", "Eyebrow.TLabel", delay=0.0).pack(anchor="w")
+        self._fade_label(left_inner, "Virello Scanner", "Title.TLabel", delay=0.04).pack(anchor="w", pady=(6, 0))
         self._fade_label(
-            col,
-            "Secure remote diagnostics for screenshare reviews. Enter your session PIN, run one scan, and submit results to your reviewer.",
+            left_inner,
+            "Secure remote system diagnostics. Run a one-time scan with your session PIN and submit results to your reviewer.",
             "Muted.TLabel",
             delay=0.08,
-            wraplength=420,
-            justify="center",
-        ).pack(pady=(12, 22))
-        btn_row = Frame(col, bg=self.UI_BG)
-        btn_row.pack()
+            wraplength=self.TEXT_WRAP,
+        ).pack(anchor="w", pady=(12, 0))
+        right_block = Frame(right, bg=self.UI_BG)
+        right_block.pack(fill=BOTH, expand=True)
+        btn_col = Frame(right_block, bg=self.UI_BG)
+        btn_col.pack(expand=True)
+        btn_stack = Frame(btn_col, bg=self.UI_BG)
+        btn_stack.pack(expand=True)
         self._rect_btn(
-            btn_row,
+            btn_stack,
             "Get Started",
             lambda: self._show_screen(self._build_pin_content),
             width=self.WELCOME_BTN_WIDTH,
-        ).pack(side="left", padx=(0, 10))
+        ).pack(fill="x", pady=(0, 10))
         self._rect_btn(
-            btn_row,
+            btn_stack,
             "Discord",
             lambda: webbrowser.open(DISCORD_URL),
             primary=False,
-            width=132,
-        ).pack(side="left")
+            width=self.WELCOME_BTN_WIDTH,
+        ).pack(fill="x")
 
     def _build_pin_content(self) -> None:
         left, right = self._split_columns()
@@ -20414,52 +17760,33 @@ class DiagnosticApp:
 
     def _build_progress_content(self) -> None:
         left, right = self._split_columns()
-        self._fade_label(left, "SCAN IN PROGRESS", "Eyebrow.TLabel", delay=0.0).pack(anchor="w")
-        self._fade_label(left, "Running diagnostics", "Title.TLabel", delay=0.04).pack(anchor="w", pady=(6, 0))
-        status_row = Frame(left, bg=self.UI_BG)
-        status_row.pack(anchor="w", pady=(10, 0), fill="x")
-        ttk.Label(status_row, textvariable=self.status, style="Muted.TLabel").pack(side="left")
-        ttk.Label(status_row, textvariable=self.eta_text, style="Eta.TLabel").pack(side="right")
-        progress_card = Frame(left, bg=self.UI_SURFACE, padx=16, pady=14)
-        progress_card.pack(fill="x", pady=(16, 0))
-        progress_header = Frame(progress_card, bg=self.UI_SURFACE)
+        self._fade_label(left, "SCAN", "Eyebrow.TLabel", delay=0.0).pack(anchor="w")
+        self._fade_label(left, "In progress", "Title.TLabel", delay=0.04).pack(anchor="w", pady=(6, 0))
+        ttk.Label(left, textvariable=self.status, style="Muted.TLabel").pack(anchor="w", pady=(10, 16))
+        progress_header = Frame(left, bg=self.UI_BG)
         progress_header.pack(fill="x")
-        ttk.Label(progress_header, text="Overall progress", style="Surface.TLabel", foreground=self.UI_MUTED).pack(
-            side="left"
-        )
-        percent = ttk.Label(progress_header, textvariable=self.progress_percent, style="SurfacePercent.TLabel")
+        ttk.Label(progress_header, text="Progress", style="Muted.TLabel").pack(side="left")
+        percent = self._fade_label(progress_header, "0%", "Percent.TLabel", delay=0.06)
+        percent.configure(textvariable=self.progress_percent)
         percent.pack(side="right")
-        self.progress = GlowProgressBar(
-            progress_card,
-            width=340,
-            height=12,
-            bg=self.UI_SURFACE,
-            fill=self.UI_ACCENT,
-            glow=self.UI_GLOW,
-            border="#3f3f46",
+        self.progress = ttk.Progressbar(
+            left,
+            maximum=100,
+            mode="determinate",
+            length=320,
+            style="Accent.Horizontal.TProgressbar",
         )
-        self.progress.pack(anchor="w", pady=(12, 0))
-        hint = ttk.Label(
-            progress_card,
-            text="Deep forensic pass — this may pause near 90% while evidence is correlated.",
-            style="Surface.TLabel",
-            foreground=self.UI_MUTED,
-            wraplength=360,
-        )
-        hint.pack(anchor="w", pady=(10, 0))
-        self._fade_label(right, "PIPELINE", "Eyebrow.TLabel", delay=0.08).pack(anchor="w", pady=(0, 10))
+        self.progress.pack(fill="x", pady=(10, 0))
+        self._fade_label(right, "STAGES", "Eyebrow.TLabel", delay=0.08).pack(anchor="w", pady=(0, 10))
         self.stage_labels = {}
         for stage in SCAN_STAGES:
             row = Frame(right, bg=self.UI_BG)
             row.pack(fill="x")
             inner = Frame(row, bg=self.UI_BG)
             inner.pack(fill="x", pady=7)
-            dot = ttk.Label(inner, text="○", style="StageStatus.TLabel")
-            dot.pack(side="left", padx=(0, 8))
             ttk.Label(inner, text=stage, style="Stage.TLabel").pack(side="left")
             status_label = ttk.Label(inner, text="Waiting", style="StageStatus.TLabel")
             status_label.pack(side="right")
-            status_label._stage_dot = dot
             self.stage_labels[stage] = status_label
             Frame(row, bg=self.UI_BORDER, height=1).pack(fill="x")
 
@@ -20476,150 +17803,20 @@ class DiagnosticApp:
         label = self.stage_labels.get(stage)
         if label is None:
             return
-        dot = getattr(label, "_stage_dot", None)
         if state == "complete":
             label.config(text="Complete", foreground=self.UI_SUCCESS)
-            if dot is not None:
-                dot.config(text="●", foreground=self.UI_SUCCESS)
         elif state == "running":
-            label.config(text="Running", foreground=self.UI_ACCENT)
-            if dot is not None:
-                dot.config(text="◉", foreground=self.UI_ACCENT)
+            label.config(text="In progress", foreground=self.UI_ACCENT)
         else:
             label.config(text="Waiting", foreground=self.UI_MUTED)
-            if dot is not None:
-                dot.config(text="○", foreground=self.UI_MUTED)
+        self.root.update_idletasks()
 
     def set_progress_percent(self, percent: float) -> None:
         clamped = max(0.0, min(100.0, float(percent)))
         if self.progress is not None:
-            self.progress.set_value(clamped)
+            self.progress.config(maximum=100, value=clamped)
         self.progress_percent.set(f"{round(clamped)}%")
-
-    def _format_eta(self, seconds: float) -> str:
-        remaining = max(0, int(round(seconds)))
-        if remaining <= 0:
-            return "Finishing up…"
-        if remaining >= 120:
-            minutes = (remaining + 59) // 60
-            return f"Estimated time: ~{minutes} min"
-        if remaining >= 60:
-            return "Estimated time: ~1 min"
-        return f"Estimated time: ~{remaining}s"
-
-    def _update_eta(self, display: float, state: dict) -> None:
-        if state.get("upload_done"):
-            self.eta_text.set("Complete")
-            return
-        if display >= PROGRESS_HOLD_PERCENT and not state.get("scan_done"):
-            self.eta_text.set("Correlating evidence…")
-            return
-        if display >= PROGRESS_HOLD_PERCENT and state.get("scan_done"):
-            self.eta_text.set("Uploading report…")
-            return
-        elapsed = max(0.0, time.monotonic() - float(state.get("started_at", time.monotonic())))
-        if display < 35:
-            remaining = ESTIMATED_SCAN_SECONDS - elapsed
-        elif display > 8:
-            projected_total = elapsed * (100.0 / max(display, 1.0))
-            remaining = max(ESTIMATED_SCAN_SECONDS - elapsed, projected_total - elapsed)
-        else:
-            remaining = ESTIMATED_SCAN_SECONDS - elapsed
-        self.eta_text.set(self._format_eta(remaining))
-
-    def _stop_progress_animation(self) -> None:
-        if self._progress_job is not None:
-            try:
-                self.root.after_cancel(self._progress_job)
-            except Exception:
-                pass
-            self._progress_job = None
-
-    def _animate_progress_tick(self) -> None:
-        state = self._progress_state
-        if state is None:
-            return
-        with self._progress_lock:
-            display = float(state["display"])
-            milestone = float(state["milestone"])
-            scan_done = bool(state["scan_done"])
-            upload_done = bool(state["upload_done"])
-            pause_until = float(state.get("pause_until", 0.0))
-            started_at = float(state["started_at"])
-            snapshot = {
-                "display": display,
-                "milestone": milestone,
-                "scan_done": scan_done,
-                "upload_done": upload_done,
-                "pause_until": pause_until,
-                "started_at": started_at,
-            }
-
-        now = time.monotonic()
-        if upload_done:
-            display = min(100.0, display + 2.8)
-        elif display >= PROGRESS_HOLD_PERCENT and not scan_done:
-            display = PROGRESS_HOLD_PERCENT
-        elif now < pause_until:
-            pass
-        elif display < PROGRESS_PAUSE_AT:
-            display += PROGRESS_SLOW_STEP
-            if display >= PROGRESS_PAUSE_AT:
-                with self._progress_lock:
-                    if self._progress_state is not None:
-                        self._progress_state["pause_until"] = now + PROGRESS_PAUSE_SEC
-        elif display < PROGRESS_FAST_END:
-            display += PROGRESS_FAST_STEP
-        elif display < PROGRESS_HOLD_PERCENT:
-            display += PROGRESS_MED_STEP
-
-        floor = min(milestone, PROGRESS_HOLD_PERCENT - 0.5)
-        display = max(display, floor)
-        if not scan_done:
-            display = min(display, PROGRESS_HOLD_PERCENT)
-        display = max(0.0, min(100.0, display))
-
-        with self._progress_lock:
-            if self._progress_state is not None:
-                self._progress_state["display"] = display
-
-        self.set_progress_percent(display)
-        self._update_eta(display, snapshot)
-
-        if display < 100.0 or not upload_done:
-            self._progress_job = self.root.after(PROGRESS_TICK_MS, self._animate_progress_tick)
-
-    def _start_progress_animation(self) -> None:
-        self._stop_progress_animation()
-        self._progress_state = {
-            "milestone": 5.0,
-            "display": 5.0,
-            "scan_done": False,
-            "upload_done": False,
-            "pause_until": 0.0,
-            "started_at": time.monotonic(),
-        }
-        self.eta_text.set(self._format_eta(ESTIMATED_SCAN_SECONDS))
-        self.set_progress_percent(5.0)
-        self._progress_job = self.root.after(PROGRESS_TICK_MS, self._animate_progress_tick)
-
-    def _set_progress_milestone(self, percent: float) -> None:
-        with self._progress_lock:
-            if self._progress_state is None:
-                return
-            self._progress_state["milestone"] = max(self._progress_state["milestone"], float(percent))
-
-    def _mark_scan_done(self) -> None:
-        with self._progress_lock:
-            if self._progress_state is not None:
-                self._progress_state["scan_done"] = True
-                self._progress_state["milestone"] = max(self._progress_state["milestone"], PROGRESS_HOLD_PERCENT)
-
-    def _mark_upload_done(self) -> None:
-        with self._progress_lock:
-            if self._progress_state is not None:
-                self._progress_state["upload_done"] = True
-                self._progress_state["milestone"] = 100.0
+        self.root.update_idletasks()
 
     def start_scan(self) -> None:
         if not self.pin.get().strip():
@@ -20629,94 +17826,106 @@ class DiagnosticApp:
             messagebox.showerror("Agreement required", "Please agree to run the diagnostic scan before continuing.")
             return
         self.progress_percent.set("0%")
-        self.eta_text.set(self._format_eta(ESTIMATED_SCAN_SECONDS))
-        self.status.set("Preparing scan…")
+        self.status.set("Starting scan...")
         self.stage_labels = {}
-        self._set_header_status("scanning")
         self.build_progress_screen()
         self.root.after_idle(self._begin_scan_thread)
 
     def _begin_scan_thread(self) -> None:
-        self._start_progress_animation()
         thread = threading.Thread(target=self.scan_and_upload, daemon=True)
         thread.start()
 
     def scan_and_upload(self) -> None:
         try:
-            pre_scan_done = {"v": False}
+            stop_anim = threading.Event()
+            progress_value = {"v": 5.0}
+            progress_lock = threading.Lock()
+            stage_state = {"current": SCAN_STAGES[0]}
 
             def on_scan_progress(percent: float, stage: str | None = None) -> None:
-                self._dispatch_ui(self._set_progress_milestone, float(percent))
-                if stage and pre_scan_done["v"]:
-                    self._dispatch_ui(self.set_stage, stage, "running")
+                with progress_lock:
+                    progress_value["v"] = max(progress_value["v"], float(percent))
+                    if stage:
+                        stage_state["current"] = stage
+                self.root.after(0, self.set_progress_percent, progress_value["v"])
+                if stage:
+                    self.root.after(0, self.set_stage, stage, "running")
+
+            def animate_progress() -> None:
+                while not stop_anim.is_set():
+                    with progress_lock:
+                        current = progress_value["v"]
+                        if current < PROGRESS_CAP_DURING_SCAN:
+                            progress_value["v"] = min(PROGRESS_CAP_DURING_SCAN, current + PROGRESS_STEP)
+                            pct = progress_value["v"]
+                        else:
+                            pct = current
+                    self.root.after(0, self.set_progress_percent, pct)
+                    time.sleep(PROGRESS_TICK_SEC)
+
+            anim_thread = threading.Thread(target=animate_progress, daemon=True)
 
             set_scan_progress_callback(on_scan_progress)
             try:
-                self._dispatch_ui(self.status.set, "Running pre-checks…")
-                for stage in SCAN_STAGES[:3]:
-                    self._dispatch_ui(self.set_stage, stage, "running")
-                    self._dispatch_ui(self._set_progress_milestone, PRE_SCAN_STAGE_PROGRESS.get(stage, 8.0))
-                    time.sleep(PRE_SCAN_STAGE_DELAY_SEC)
-                    self._dispatch_ui(self.set_stage, stage, "complete")
-
-                pre_scan_done["v"] = True
-                collect_stage = SCAN_STAGES[3]
-                self._dispatch_ui(self.set_stage, collect_stage, "running")
-                self._dispatch_ui(self.status.set, "Collecting forensic evidence…")
-
                 with ThreadPoolExecutor(max_workers=1) as pool:
                     report_future = pool.submit(build_report)
 
+                    self.root.after(0, self.set_progress_percent, progress_value["v"])
+                    for stage in SCAN_STAGES[:3]:
+                        self.root.after(0, self.set_stage, stage, "running")
+                        time.sleep(PRE_SCAN_STAGE_DELAY_SEC)
+                        progress_value["v"] = max(
+                            progress_value["v"],
+                            PRE_SCAN_STAGE_PROGRESS.get(stage, progress_value["v"]),
+                        )
+                        self.root.after(0, self.set_progress_percent, progress_value["v"])
+                        self.root.after(0, self.set_stage, stage, "complete")
+
+                    collect_stage = SCAN_STAGES[3]
+                    self.root.after(0, self.set_stage, collect_stage, "running")
+                    anim_thread.start()
+
+                    scan_deadline = time.monotonic() + SCAN_MAX_SECONDS
                     while not report_future.done():
-                        time.sleep(0.25)
+                        time.sleep(0.3)
 
+                    stop_anim.set()
+                    anim_thread.join(timeout=2.0)
                     report = report_future.result(timeout=15)
+                    self.root.after(0, self.set_stage, collect_stage, "complete")
 
-                self._dispatch_ui(self.set_stage, collect_stage, "complete")
+                    finalize_stage = SCAN_STAGES[4]
+                    self.root.after(0, self.set_stage, finalize_stage, "running")
+                    progress_value["v"] = max(progress_value["v"], 90.0)
+                    self.root.after(0, self.set_progress_percent, progress_value["v"])
+                    time.sleep(0.04)
+                    self.root.after(0, self.set_stage, finalize_stage, "complete")
 
-                finalize_stage = SCAN_STAGES[4]
-                self._dispatch_ui(self.set_stage, finalize_stage, "running")
-                self._dispatch_ui(self.status.set, "Correlating evidence…")
-                self._dispatch_ui(self._set_progress_milestone, 90.0)
-                self._dispatch_ui(self._mark_scan_done)
-                time.sleep(0.8)
-                self._dispatch_ui(self.set_stage, finalize_stage, "complete")
-
-                upload_stage = SCAN_STAGES[5]
-                self._dispatch_ui(self.set_stage, upload_stage, "running")
-                self._dispatch_ui(self.status.set, "Uploading report…")
-                payload = {
-                    "pin": self.pin.get().strip(),
-                    "consent_version": CONSENT_VERSION,
-                    "collected_categories": COLLECTED_CATEGORIES,
-                    "report": report,
-                }
-                response = requests.post(f"{API_URL}/reports", json=payload, timeout=20)
-                if response.status_code == 410:
-                    raise RuntimeError("This PIN has expired. Ask your reviewer for a new PIN.")
-                if response.status_code == 404:
-                    raise RuntimeError("PIN not found. Check the code and try again.")
-                if response.status_code == 409:
-                    raise RuntimeError("This PIN was already used or is no longer valid.")
-                response.raise_for_status()
-                self._dispatch_ui(self._mark_upload_done)
-                self._dispatch_ui(self.set_stage, upload_stage, "complete")
+                    upload_stage = SCAN_STAGES[5]
+                    self.root.after(0, self.set_stage, upload_stage, "running")
+                    payload = {
+                        "pin": self.pin.get().strip(),
+                        "consent_version": CONSENT_VERSION,
+                        "collected_categories": COLLECTED_CATEGORIES,
+                        "report": report,
+                    }
+                    response = requests.post(f"{API_URL}/reports", json=payload, timeout=20)
+                    if response.status_code == 410:
+                        raise RuntimeError("This PIN has expired. Ask your reviewer for a new PIN.")
+                    if response.status_code == 404:
+                        raise RuntimeError("PIN not found. Check the code and try again.")
+                    if response.status_code == 409:
+                        raise RuntimeError("This PIN was already used or is no longer valid.")
+                    response.raise_for_status()
+                    self.root.after(0, self.set_progress_percent, 100)
+                    self.root.after(0, self.set_stage, upload_stage, "complete")
             finally:
                 set_scan_progress_callback(None)
 
-            deadline = time.monotonic() + 4.0
-            while time.monotonic() < deadline:
-                with self._progress_lock:
-                    done = bool(self._progress_state and self._progress_state.get("display", 0) >= 99.5)
-                if done:
-                    break
-                time.sleep(0.1)
-
-            self._dispatch_ui(self.complete)
+            self.root.after(0, self.complete)
         except Exception as exc:
             set_scan_progress_callback(None)
-            self._dispatch_ui(self._stop_progress_animation)
-            self._dispatch_ui(self.fail, str(exc))
+            self.root.after(0, self.fail, str(exc))
 
     def _exit_after_success(self) -> None:
         """End the UI and process; Windows often needs quit + destroy + hard exit."""
@@ -20731,10 +17940,6 @@ class DiagnosticApp:
         os._exit(0)
 
     def complete(self) -> None:
-        self._stop_progress_animation()
-        self.set_progress_percent(100.0)
-        self.eta_text.set("Complete")
-        self._set_header_status("done")
         self.status.set("Scan completed. Your results have been submitted.")
         self._show_completion_overlay()
 

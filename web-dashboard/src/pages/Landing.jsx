@@ -1,19 +1,10 @@
-import React, { useEffect, useState } from "react";
+import React from "react";
 import { Link } from "react-router-dom";
-import { DEMO_VIDEO_URL, DISCORD_INVITE_URL } from "../config/brand.js";
+import { DISCORD_INVITE_URL } from "../config/brand.js";
 import { MaterialIcon } from "../components/MaterialIcon.jsx";
 import { IconDiscord } from "../components/VirelloIcons.jsx";
-import { fetchSiteConfig } from "../lib/siteApi.js";
 
 export function LandingPage() {
-  const [demoUrl, setDemoUrl] = useState(DEMO_VIDEO_URL);
-
-  useEffect(() => {
-    void fetchSiteConfig().then((config) => {
-      if (config.demo_video_url) setDemoUrl(config.demo_video_url);
-    });
-  }, []);
-
   return (
     <div className="landing">
       <section className="hero hero--asymmetric">
@@ -38,14 +29,14 @@ export function LandingPage() {
           <ul className="hero__trust">
             <li>Consent before upload</li>
             <li>Watch lists you control</li>
-            <li>Most scans take about 5 minutes</li>
+            <li>Most scans take about 2 minutes</li>
           </ul>
         </div>
         <aside className="hero__panel">
           <div className="hero__panel-inner">
             <div className="hero__stat hero__stat--highlight">
               <MaterialIcon name="timer" size={22} />
-              <span className="hero__stat-value">5 min</span>
+              <span className="hero__stat-value">~2 min</span>
               <span className="hero__stat-label">Typical scan time</span>
             </div>
             <div className="hero__stat">
@@ -61,32 +52,6 @@ export function LandingPage() {
             Reviewers sign in with Discord. Scanned users do not need an account.
           </p>
         </aside>
-      </section>
-
-      <section className="demo-section" id="demo">
-        <div className="demo-section__copy">
-          <p className="demo-section__eyebrow">Live demo</p>
-          <h2>See Virello in action</h2>
-          <p>
-            Full walkthrough from PIN entry to the finished report in the review console. Replace this with your video from the admin panel when ready.
-          </p>
-        </div>
-        <div className="demo-video">
-          {demoUrl ? (
-            <video className="demo-video__player" controls playsInline poster="/assets/demo-poster.png">
-              <source src={demoUrl} type="video/mp4" />
-              Your browser does not support embedded video.
-            </video>
-          ) : (
-            <div className="demo-video__placeholder" aria-label="Demo video coming soon">
-              <MaterialIcon name="play_circle" size={56} />
-              <p className="demo-video__title">Demo video coming soon</p>
-              <p className="demo-video__hint muted">
-                Your walkthrough will appear here. Set the URL in Admin → Site once uploaded.
-              </p>
-            </div>
-          )}
-        </div>
       </section>
 
       <section className="cta-band">

@@ -3,11 +3,11 @@ import { Link, NavLink, Outlet } from "react-router-dom";
 import {
   BRAND_FULL,
   BRAND_LOGO,
+  BRAND_TAGLINE,
   DISCORD_INVITE_URL,
   FOOTER_LINKS,
   NAV_LINKS,
 } from "../config/brand.js";
-import { SiteAlertBanner } from "./SiteAlertBanner.jsx";
 import { IconDiscord } from "./VirelloIcons.jsx";
 
 export function SiteLayout({ children, variant = "default" }) {
@@ -21,6 +21,7 @@ export function SiteLayout({ children, variant = "default" }) {
             <img src={BRAND_LOGO} alt={BRAND_FULL} className="site-brand__logo" />
             <div className="site-brand__text">
               <span className="site-brand__name">{BRAND_FULL}</span>
+              <span className="site-brand__tag">{BRAND_TAGLINE}</span>
             </div>
           </Link>
 
@@ -55,8 +56,6 @@ export function SiteLayout({ children, variant = "default" }) {
         </div>
       </header>
 
-      <SiteAlertBanner />
-
       <main className="site-main">{content}</main>
 
       <footer className="site-footer">
@@ -65,6 +64,7 @@ export function SiteLayout({ children, variant = "default" }) {
             <img src={BRAND_LOGO} alt="" className="site-footer__logo" />
             <div>
               <strong>{BRAND_FULL}</strong>
+              <p>Consent-first Roblox diagnostic scans for reviewers and support teams.</p>
             </div>
           </div>
 

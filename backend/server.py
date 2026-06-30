@@ -8,7 +8,6 @@ import secrets
 import sqlite3
 import base64
 import smtplib
-import threading
 from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
@@ -20,16 +19,7 @@ from urllib import request as urlrequest
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 import backup
-import bot_fulfillment
-import discord_roles
-import discord_sync
-import pricing
 import rate_limit
-import shoppex
-import shoppex_catalog
-import shoppex_relay
-import site_store
-import stripe_checkout
 
 DB_PATH = Path(__file__).resolve().parent / "diagnostics.db"
 DATABASE_URL = os.getenv("DATABASE_URL", "")
@@ -82,10 +72,6 @@ BREVO_API_KEY = os.getenv("BREVO_API_KEY", "")
 BREVO_FROM_EMAIL = os.getenv("BREVO_FROM_EMAIL", "")
 BRAND_NAME = "Virello Scanner"
 BREVO_FROM_NAME = os.getenv("BREVO_FROM_NAME", BRAND_NAME)
-SHARING_FINGERPRINT_LIMIT = int(os.getenv("SHARING_FINGERPRINT_LIMIT", "3"))
-DEMO_VIDEO_URL = os.getenv("DEMO_VIDEO_URL", "")
-STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
-STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
 
 
 def utc_now() -> datetime:
@@ -186,15 +172,6 @@ def init_db() -> None:
             )
             """
         )
-        ensure_column(conn, "discord_users", "admin_banned", "INTEGER NOT NULL DEFAULT 0")
-        ensure_column(conn, "discord_users", "admin_notes", "TEXT")
-        ensure_column(conn, "discord_users", "access_override", "INTEGER")
-        ensure_column(conn, "discord_users", "owner_fingerprint", "TEXT")
-        ensure_column(conn, "discord_users", "fingerprint_seen_json", "TEXT NOT NULL DEFAULT '[]'")
-        ensure_column(conn, "discord_users", "sharing_locked", "INTEGER NOT NULL DEFAULT 0")
-        ensure_column(conn, "discord_users", "sharing_reason", "TEXT")
-        ensure_column(conn, "discord_users", "license_plan_id", "TEXT")
-        ensure_column(conn, "discord_users", "license_expires_at", "TEXT")
         db_execute(
             conn,
             f"""
@@ -231,8 +208,6 @@ def init_db() -> None:
             )
             """
         )
-        site_store.init_site_tables(conn, db_execute, id_column)
-        site_store.ensure_order_columns(conn, db_execute)
 
 
 def make_token(email: str) -> str:
@@ -583,44 +558,8 @@ def exchange_discord_code(code: str) -> dict:
         return json.loads(response.read().decode("utf-8"))
 
 
-def db_changed() -> None:
-    discord_sync.notify_db_changed()
-
-
-def save_discord_user(user: dict, roles: list[str], fingerprint: str | None = None, ip_address: str = "") -> None:
+def save_discord_user(user: dict, roles: list[str]) -> None:
     with connect() as conn:
-        existing = db_execute(
-            conn,
-            "SELECT owner_fingerprint, fingerprint_seen_json, sharing_locked, sharing_reason FROM discord_users WHERE discord_id = ?",
-            (user["id"],),
-        ).fetchone()
-        owner_fingerprint = existing["owner_fingerprint"] if existing else None
-        sharing_locked = bool(existing["sharing_locked"]) if existing else False
-        sharing_reason = existing["sharing_reason"] if existing else None
-        fingerprints = []
-        if existing and existing["fingerprint_seen_json"]:
-            try:
-                fingerprints = json.loads(existing["fingerprint_seen_json"])
-            except json.JSONDecodeError:
-                fingerprints = []
-        fingerprints = [str(item) for item in fingerprints if item]
-
-        if fingerprint:
-            if not owner_fingerprint:
-                owner_fingerprint = fingerprint
-            if fingerprint not in fingerprints:
-                fingerprints.append(fingerprint)
-            if (
-                owner_fingerprint
-                and fingerprint != owner_fingerprint
-                and not is_super_admin_discord_id(user["id"])
-                and len(fingerprints) >= SHARING_FINGERPRINT_LIMIT
-            ):
-                sharing_locked = True
-                sharing_reason = (
-                    f"Account locked: {len(fingerprints)} device fingerprints detected from multiple devices."
-                )
-
         db_execute(
             conn,
             """
@@ -640,27 +579,6 @@ def save_discord_user(user: dict, roles: list[str], fingerprint: str | None = No
                 to_iso(utc_now()),
             ),
         )
-        db_execute(
-            conn,
-            """
-            UPDATE discord_users
-            SET owner_fingerprint = ?,
-                fingerprint_seen_json = ?,
-                sharing_locked = ?,
-                sharing_reason = ?,
-                admin_notes = COALESCE(admin_notes, ?)
-            WHERE discord_id = ?
-            """,
-            (
-                owner_fingerprint,
-                json.dumps(fingerprints[:20]),
-                1 if sharing_locked else 0,
-                sharing_reason,
-                f"Owner IP: {ip_address}" if ip_address else None,
-                user["id"],
-            ),
-        )
-    db_changed()
 
 
 def save_user_discord_access(user_id: int, user: dict, roles: list[str]) -> bool:
@@ -740,31 +658,6 @@ def get_discord_profile(discord_id: str) -> dict | None:
     if row is None:
         return None
     roles = json.loads(row["roles_json"] or "[]")
-    keys = row.keys()
-    admin_banned = bool(row["admin_banned"]) if "admin_banned" in keys else False
-    access_override = row["access_override"] if "access_override" in keys else None
-    license_expires_at = row["license_expires_at"] if "license_expires_at" in keys else None
-    license_plan_id = row["license_plan_id"] if "license_plan_id" in keys else None
-    has_role_access = DISCORD_ACCESS_ROLE_ID in roles
-    sharing_locked = bool(row["sharing_locked"]) if "sharing_locked" in keys else False
-    sharing_reason = row["sharing_reason"] if "sharing_reason" in keys else None
-    if access_override == 0:
-        has_access = False
-    elif access_override == 1:
-        has_access = True
-    else:
-        has_access = has_role_access
-    if has_access and license_expires_at and not site_store.license_is_active(license_expires_at):
-        has_access = False
-        with connect() as conn:
-            site_store.ensure_discord_user_access(conn, db_execute, discord_id=discord_id, grant_access=False)
-        db_changed()
-    if admin_banned:
-        has_access = False
-    if sharing_locked and not is_super_admin_discord_id(discord_id):
-        has_access = False
-    if is_super_admin_discord_id(discord_id):
-        has_access = True
     avatar = row["avatar"]
     avatar_url = None
     if avatar:
@@ -773,14 +666,7 @@ def get_discord_profile(discord_id: str) -> dict | None:
         "discord_id": discord_id,
         "username": row["username"],
         "avatar_url": avatar_url,
-        "has_access": has_access,
-        "admin_banned": admin_banned,
-        "admin_notes": row["admin_notes"] if "admin_notes" in keys else None,
-        "access_override": access_override,
-        "license_plan_id": license_plan_id,
-        "license_expires_at": license_expires_at,
-        "sharing_locked": sharing_locked,
-        "sharing_reason": sharing_reason,
+        "has_access": DISCORD_ACCESS_ROLE_ID in roles,
         "is_super_admin": is_super_admin_discord_id(discord_id),
     }
 
@@ -791,8 +677,6 @@ def subject_has_dashboard_access(subject: str) -> bool:
     discord_id = discord_id_from_subject(subject)
     if not discord_id:
         return False
-    if is_super_admin_discord_id(discord_id):
-        return True
     profile = get_discord_profile(discord_id)
     return bool(profile and profile["has_access"])
 
@@ -899,60 +783,6 @@ def fetch_roblox_profiles(user_ids: list[str]) -> list[dict]:
     return [profiles[user_id] for user_id in normalized]
 
 
-def fetch_discord_profiles(user_ids: list[str]) -> list[dict]:
-    normalized: list[str] = []
-    seen: set[str] = set()
-    for raw_id in user_ids:
-        user_id = str(raw_id or "").strip()
-        if not user_id or not user_id.isdigit() or user_id in seen:
-            continue
-        seen.add(user_id)
-        normalized.append(user_id)
-    if not normalized:
-        return []
-
-    bot_token = os.getenv("DISCORD_BOT_TOKEN") or os.getenv("DISCORD_TOKEN", "")
-    profiles: dict[str, dict] = {
-        user_id: {
-            "user_id": user_id,
-            "display_name": None,
-            "avatar_hash": None,
-            "avatar_url": None,
-        }
-        for user_id in normalized
-    }
-    if not bot_token:
-        return [profiles[user_id] for user_id in normalized]
-
-    for user_id in normalized:
-        try:
-            request = urlrequest.Request(
-                f"{DISCORD_API_BASE}/users/{user_id}",
-                headers={
-                    "Authorization": f"Bot {bot_token}",
-                    "Accept": "application/json",
-                    "User-Agent": "VirelloScannerDashboard/1.0",
-                },
-            )
-            with urlrequest.urlopen(request, timeout=8) as response:
-                data = json.loads(response.read().decode("utf-8"))
-            display_name = str(data.get("global_name") or data.get("username") or "").strip() or None
-            avatar_hash = str(data.get("avatar") or "").strip() or None
-            avatar_url = None
-            if avatar_hash:
-                avatar_url = f"https://cdn.discordapp.com/avatars/{user_id}/{avatar_hash}.png?size=128"
-            profiles[user_id] = {
-                "user_id": user_id,
-                "display_name": display_name,
-                "avatar_hash": avatar_hash,
-                "avatar_url": avatar_url,
-            }
-        except (urlerror.URLError, TimeoutError, json.JSONDecodeError, TypeError, ValueError):
-            continue
-
-    return [profiles[user_id] for user_id in normalized]
-
-
 def is_super_admin_subject(subject: str) -> bool:
     if is_checker_subject(subject):
         return True
@@ -996,58 +826,6 @@ class Handler(BaseHTTPRequestHandler):
             return forwarded
         return str(self.client_address[0] if self.client_address else "unknown")
 
-    def request_fingerprint(self) -> str:
-        user_agent = self.headers.get("User-Agent", "")
-        accept_lang = self.headers.get("Accept-Language", "")
-        sec_platform = self.headers.get("Sec-CH-UA-Platform", "")
-        ip = self.client_key()
-        digest_input = f"{user_agent}|{accept_lang}|{sec_platform}|{ip}"
-        return hashlib.sha256(digest_input.encode("utf-8")).hexdigest()
-
-    def enforce_subject_owner(self, subject: str) -> bool:
-        discord_id = discord_id_from_subject(subject)
-        if not discord_id or is_super_admin_discord_id(discord_id):
-            return True
-        with connect() as conn:
-            row = db_execute(
-                conn,
-                "SELECT owner_fingerprint, sharing_locked, sharing_reason FROM discord_users WHERE discord_id = ?",
-                (discord_id,),
-            ).fetchone()
-            if row is None:
-                return True
-            if row["sharing_locked"]:
-                self.send_json(
-                    HTTPStatus.FORBIDDEN,
-                    {"detail": "account_sharing_locked", "message": row["sharing_reason"] or "Account is locked."},
-                )
-                return False
-            owner = row["owner_fingerprint"] or ""
-            if not owner:
-                db_execute(
-                    conn,
-                    "UPDATE discord_users SET owner_fingerprint = ?, fingerprint_seen_json = ? WHERE discord_id = ?",
-                    (self.request_fingerprint(), json.dumps([self.request_fingerprint()]), discord_id),
-                )
-                db_changed()
-                return True
-            if owner != self.request_fingerprint():
-                db_execute(
-                    conn,
-                    "UPDATE discord_users SET sharing_locked = 1, sharing_reason = ? WHERE discord_id = ?",
-                    ("Account sharing detected from a different device fingerprint.", discord_id),
-                )
-                db_changed()
-                self.send_json(
-                    HTTPStatus.FORBIDDEN,
-                    {
-                        "detail": "account_sharing_locked",
-                        "message": "Account sharing detected. Access has been locked for security.",
-                    },
-                )
-                return False
-        return True
-
     def end_headers(self) -> None:
         request_origin = self.headers.get("Origin", "").rstrip("/")
         allowed_origin = request_origin if request_origin in CORS_ORIGINS else CORS_ORIGINS[0]
@@ -1071,59 +849,6 @@ class Handler(BaseHTTPRequestHandler):
     def do_DELETE(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
-
-        if path.startswith("/admin/sessions/"):
-            if not self.require_super_admin():
-                return
-            try:
-                session_id = int(path.split("/")[-1])
-            except ValueError:
-                self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Invalid session id"})
-                return
-            with connect() as conn:
-                cursor = db_execute(conn, "DELETE FROM sessions WHERE id = ?", (session_id,))
-                deleted = cursor.rowcount
-            if deleted == 0:
-                self.send_json(HTTPStatus.NOT_FOUND, {"detail": "Session not found"})
-                return
-            db_changed()
-            self.send_json(HTTPStatus.OK, {"status": "deleted"})
-            return
-
-        if path.startswith("/admin/changelog/"):
-            if not self.require_super_admin():
-                return
-            try:
-                entry_id = int(path.split("/")[-1])
-            except ValueError:
-                self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Invalid changelog id"})
-                return
-            with connect() as conn:
-                deleted = site_store.delete_changelog(conn, db_execute, entry_id)
-            if not deleted:
-                self.send_json(HTTPStatus.NOT_FOUND, {"detail": "Not found"})
-                return
-            db_changed()
-            self.send_json(HTTPStatus.OK, {"status": "deleted"})
-            return
-
-        if path.startswith("/admin/alerts/"):
-            if not self.require_super_admin():
-                return
-            try:
-                alert_id = int(path.split("/")[-1])
-            except ValueError:
-                self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Invalid alert id"})
-                return
-            with connect() as conn:
-                deleted = site_store.delete_alert(conn, db_execute, alert_id)
-            if not deleted:
-                self.send_json(HTTPStatus.NOT_FOUND, {"detail": "Not found"})
-                return
-            db_changed()
-            self.send_json(HTTPStatus.OK, {"status": "deleted"})
-            return
-
         if not path.startswith("/sessions/"):
             self.send_json(HTTPStatus.NOT_FOUND, {"detail": "Not found"})
             return
@@ -1148,7 +873,6 @@ class Handler(BaseHTTPRequestHandler):
         if deleted == 0:
             self.send_json(HTTPStatus.NOT_FOUND, {"detail": "Session not found"})
             return
-        db_changed()
         self.send_json(HTTPStatus.OK, {"status": "deleted"})
 
     def read_json(self) -> dict:
@@ -1181,8 +905,6 @@ class Handler(BaseHTTPRequestHandler):
         subject = self.require_auth_subject()
         if not subject:
             return None
-        if not self.enforce_subject_owner(subject):
-            return None
         if not subject_has_dashboard_access(subject):
             self.send_json(
                 HTTPStatus.FORBIDDEN,
@@ -1207,94 +929,8 @@ class Handler(BaseHTTPRequestHandler):
         query = parse_qs(parsed.query)
 
         if path == "/health":
-            try:
-                with connect() as conn:
-                    db_execute(conn, "SELECT 1").fetchone()
-                db_ok = True
-            except Exception:
-                db_ok = False
-
-            if discord_sync.storage_mode() == "discord":
-                sync_status = discord_sync.get_status()
-                payload = {
-                    "status": "ok" if db_ok and sync_status.get("configured") else "degraded",
-                    "service": "virello-scanner-backend",
-                    "timestamp": to_iso(utc_now()),
-                    "database": {
-                        "connected": db_ok,
-                        "engine": "discord-txt",
-                        "has_data": db_ok,
-                    },
-                    "storage": sync_status,
-                    "shoppex": {
-                        "webhook_configured": bool(shoppex.SHOPPEX_WEBHOOK_SECRET),
-                        "api_configured": shoppex_catalog.shoppex_api_configured(),
-                        "bot_fulfillment_configured": bot_fulfillment.bot_fulfillment_configured(),
-                        "discord_role_grant_configured": discord_roles.role_grant_configured(),
-                    },
-                }
-                self.send_json(HTTPStatus.OK if payload["status"] == "ok" else HTTPStatus.SERVICE_UNAVAILABLE, payload)
-                return
-
             status_code, payload = backup.get_health_status()
-            payload["shoppex"] = {
-                "webhook_configured": bool(shoppex.SHOPPEX_WEBHOOK_SECRET),
-                "api_configured": shoppex_catalog.shoppex_api_configured(),
-                "bot_fulfillment_configured": bot_fulfillment.bot_fulfillment_configured(),
-                "discord_role_grant_configured": discord_roles.role_grant_configured(),
-            }
             self.send_json(HTTPStatus(status_code), payload)
-            return
-
-        if path == "/site/config":
-            demo_fallback = os.getenv("DEMO_VIDEO_URL", "")
-            with connect() as conn:
-                payload = site_store.site_config(conn, db_execute, demo_fallback)
-            self.send_json(HTTPStatus.OK, payload)
-            return
-
-        if path == "/site/pricing":
-            payload = pricing.pricing_payload()
-            payload["shoppex_claim_hint"] = (
-                "After paying, run /claim <order_id> in the Virello Discord server if access is not granted automatically."
-            )
-            self.send_json(HTTPStatus.OK, payload)
-            return
-
-        if path == "/site/changelog":
-            with connect() as conn:
-                entries = site_store.list_changelog(conn, db_execute, published_only=True)
-            self.send_json(HTTPStatus.OK, entries)
-            return
-
-        if path == "/site/alerts":
-            with connect() as conn:
-                alerts = site_store.list_alerts(conn, db_execute, active_only=True)
-            self.send_json(HTTPStatus.OK, alerts)
-            return
-
-        if path == "/admin/changelog":
-            if not self.require_super_admin():
-                return
-            with connect() as conn:
-                entries = site_store.list_changelog(conn, db_execute, published_only=False)
-            self.send_json(HTTPStatus.OK, entries)
-            return
-
-        if path == "/admin/alerts":
-            if not self.require_super_admin():
-                return
-            with connect() as conn:
-                alerts = site_store.list_alerts(conn, db_execute, active_only=False)
-            self.send_json(HTTPStatus.OK, alerts)
-            return
-
-        if path == "/admin/site-settings":
-            if not self.require_super_admin():
-                return
-            with connect() as conn:
-                demo_url = site_store.get_setting(conn, db_execute, "demo_video_url", "")
-            self.send_json(HTTPStatus.OK, {"demo_video_url": demo_url})
             return
 
         if path == "/auth/me":
@@ -1357,11 +993,7 @@ class Handler(BaseHTTPRequestHandler):
             except (KeyError, urlerror.URLError, urlerror.HTTPError, TimeoutError, json.JSONDecodeError):
                 self.redirect(add_query_params(return_to, {"discord_error": "discord_auth_failed"}))
                 return
-            save_discord_user(user, roles, self.request_fingerprint(), self.client_key())
-            profile = get_discord_profile(user["id"])
-            if profile and profile.get("sharing_locked"):
-                self.redirect(add_query_params(return_to, {"discord_error": "account_sharing_locked"}))
-                return
+            save_discord_user(user, roles)
             token = make_token(f"discord-{user['id']}")
             self.redirect(add_query_params(return_to, {"token": token}))
             return
@@ -1371,18 +1003,11 @@ class Handler(BaseHTTPRequestHandler):
                 return
             with connect() as conn:
                 expire_stale_pending_sessions(conn)
-                rows = db_execute(conn, "SELECT status, completed_at, created_by, reviewer_verdict FROM sessions").fetchall()
-                user_rows = db_execute(conn, "SELECT discord_id, admin_banned, access_override, roles_json FROM discord_users").fetchall()
+                rows = db_execute(conn, "SELECT status, completed_at FROM sessions").fetchall()
             counts: dict[str, int] = {}
-            verdict_counts: dict[str, int] = {}
             for row in rows:
                 status = row["status"]
                 counts[status] = counts.get(status, 0) + 1
-                verdict = row["reviewer_verdict"] if "reviewer_verdict" in row.keys() else None
-                if verdict:
-                    verdict_counts[verdict] = verdict_counts.get(verdict, 0) + 1
-            banned_users = sum(1 for row in user_rows if row["admin_banned"])
-            forced_access = sum(1 for row in user_rows if row["access_override"] == 1)
             recent = sorted(
                 [dict(row) for row in rows if row["status"] == "completed" and row["completed_at"]],
                 key=lambda item: item["completed_at"] or "",
@@ -1393,82 +1018,21 @@ class Handler(BaseHTTPRequestHandler):
                 {
                     "total_sessions": len(rows),
                     "by_status": counts,
-                    "by_verdict": verdict_counts,
-                    "discord_users": len(user_rows),
-                    "banned_users": banned_users,
-                    "forced_access_users": forced_access,
                     "recent_completions": recent,
-                    "storage": discord_sync.get_status(),
                 },
             )
-            return
-
-        if path == "/admin/health":
-            if not self.require_super_admin():
-                return
-            sync_status = discord_sync.get_status()
-            if sync_status["mode"] == "discord":
-                payload = {
-                    "status": "ok" if sync_status["configured"] else "degraded",
-                    "storage": sync_status,
-                }
-            else:
-                status_code, payload = backup.get_health_status()
-                payload = {**payload, "storage": sync_status}
-            self.send_json(HTTPStatus.OK, payload)
             return
 
         if path == "/admin/sessions":
             if not self.require_super_admin():
                 return
-            status_filter = (query.get("status") or [""])[0].strip()
-            search = (query.get("q") or [""])[0].strip().lower()
-            try:
-                limit = min(int((query.get("limit") or ["200"])[0]), 500)
-            except ValueError:
-                limit = 200
             with connect() as conn:
                 expire_stale_pending_sessions(conn)
                 rows = db_execute(
                     conn,
-                    "SELECT id, pin, status, created_at, expires_at, completed_at, reviewer_verdict, reviewer_note, reviewed_at, reviewed_by, created_by FROM sessions ORDER BY id DESC",
+                    "SELECT id, pin, status, created_at, expires_at, completed_at, reviewer_verdict, reviewer_note, reviewed_at, reviewed_by FROM sessions ORDER BY id DESC LIMIT 200",
                 ).fetchall()
-            items = []
-            for row in rows:
-                summary = row_to_summary(row)
-                if status_filter and summary["status"] != status_filter:
-                    continue
-                if search:
-                    haystack = " ".join(
-                        str(summary.get(key) or "")
-                        for key in ("pin", "reviewer_verdict", "reviewer_note", "created_by")
-                    ).lower()
-                    if search not in haystack:
-                        continue
-                items.append(summary)
-                if len(items) >= limit:
-                    break
-            self.send_json(HTTPStatus.OK, items)
-            return
-
-        if path.startswith("/admin/sessions/"):
-            if not self.require_super_admin():
-                return
-            try:
-                session_id = int(path.split("/")[-1])
-            except ValueError:
-                self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Invalid session id"})
-                return
-            with connect() as conn:
-                row = db_execute(conn, "SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
-            if row is None:
-                self.send_json(HTTPStatus.NOT_FOUND, {"detail": "Session not found"})
-                return
-            result = dict(row)
-            result["status"] = effective_session_status(row)
-            result["collected_categories"] = json.loads(result.get("collected_categories") or "[]")
-            result["report"] = json.loads(result.pop("report_json") or "{}")
-            self.send_json(HTTPStatus.OK, result)
+            self.send_json(HTTPStatus.OK, [row_to_summary(row) for row in rows])
             return
 
         if path == "/admin/users":
@@ -1477,31 +1041,17 @@ class Handler(BaseHTTPRequestHandler):
             with connect() as conn:
                 rows = db_execute(
                     conn,
-                    "SELECT discord_id, username, roles_json, last_login_at, admin_banned, admin_notes, access_override FROM discord_users ORDER BY last_login_at DESC LIMIT 500",
+                    "SELECT discord_id, username, roles_json, last_login_at FROM discord_users ORDER BY last_login_at DESC LIMIT 200",
                 ).fetchall()
             users = []
             for row in rows:
                 roles = json.loads(row["roles_json"] or "[]")
-                access_override = row["access_override"]
-                has_role = DISCORD_ACCESS_ROLE_ID in roles
-                if access_override == 0:
-                    has_access = False
-                elif access_override == 1:
-                    has_access = True
-                else:
-                    has_access = has_role
-                if row["admin_banned"]:
-                    has_access = False
                 users.append(
                     {
                         "discord_id": row["discord_id"],
                         "username": row["username"],
                         "last_login_at": row["last_login_at"],
-                        "has_access": has_access,
-                        "has_role_access": has_role,
-                        "admin_banned": bool(row["admin_banned"]),
-                        "admin_notes": row["admin_notes"],
-                        "access_override": access_override,
+                        "has_access": DISCORD_ACCESS_ROLE_ID in roles,
                     }
                 )
             self.send_json(HTTPStatus.OK, users)
@@ -1548,309 +1098,10 @@ class Handler(BaseHTTPRequestHandler):
 
         self.send_json(HTTPStatus.NOT_FOUND, {"detail": "Not found"})
 
-    def read_raw_body(self) -> bytes:
-        length = int(self.headers.get("Content-Length", "0"))
-        if length == 0:
-            return b""
-        return self.rfile.read(length)
-
-    def handle_stripe_webhook(self) -> None:
-        raw = self.read_raw_body()
-        if not stripe_checkout.STRIPE_WEBHOOK_SECRET:
-            self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"detail": "Webhook not configured"})
-            return
-        try:
-            event = json.loads(raw.decode("utf-8"))
-        except json.JSONDecodeError:
-            self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Invalid payload"})
-            return
-        if event.get("type") == "checkout.session.completed":
-            session = event.get("data", {}).get("object", {})
-            session_id = session.get("id")
-            if session_id:
-                with connect() as conn:
-                    site_store.fulfill_order(conn, db_execute, session_id)
-                db_changed()
-        self.send_json(HTTPStatus.OK, {"received": True})
-
-    def fulfill_shoppex_purchase(self, payload: dict) -> dict:
-        event_type = str(payload.get("event") or payload.get("type") or "").strip().lower()
-        trust_paid = event_type in {
-            "order:paid",
-            "order:paid:product",
-            "subscription:created",
-            "subscription:renewed",
-            "product:dynamic",
-        }
-
-        purchase = shoppex_relay.resolve_shoppex_purchase(payload)
-        result = {
-            "discord_id": purchase.get("discord_id"),
-            "plan_id": purchase.get("plan_id"),
-            "invoice_id": purchase.get("invoice_id"),
-            "bot": None,
-            "role_fallback": None,
-        }
-
-        if not purchase.get("discord_id"):
-            print(
-                "Shoppex fulfillment: missing Discord user ID after API resolve",
-                json.dumps(
-                    {
-                        "invoice_id": purchase.get("invoice_id"),
-                        "subscription_id": purchase.get("subscription_id"),
-                        "event": event_type,
-                    },
-                ),
-                flush=True,
-            )
-        elif not purchase.get("plan_id"):
-            print(
-                "Shoppex fulfillment: missing plan after API resolve",
-                json.dumps(
-                    {
-                        "discord_id": purchase.get("discord_id"),
-                        "invoice_id": purchase.get("invoice_id"),
-                        "event": event_type,
-                    },
-                ),
-                flush=True,
-            )
-        else:
-            result["bot"] = shoppex_relay.relay_purchase_to_bot(purchase, trust_paid=trust_paid)
-            if result["bot"].get("ok"):
-                bot_payload = result["bot"].get("payload") or {}
-                result["discord_id"] = bot_payload.get("discordId") or bot_payload.get("discord_id") or purchase["discord_id"]
-                result["plan_id"] = bot_payload.get("planId") or bot_payload.get("plan_id") or purchase["plan_id"]
-
-        discord_id = purchase.get("discord_id")
-        if discord_id and not shoppex_relay.license_granted(result.get("bot")) and discord_roles.role_grant_configured():
-            result["role_fallback"] = discord_roles.grant_access_role(discord_id)
-
-        if shoppex_relay.license_granted(result.get("bot")) and purchase.get("discord_id") and purchase.get("plan_id"):
-            with connect() as conn:
-                license_expires_at = shoppex_relay.record_scanner_access(
-                    conn,
-                    db_execute,
-                    purchase,
-                    bot_result=result.get("bot"),
-                )
-            db_changed()
-            result["license_expires_at"] = license_expires_at
-
-        print("Shoppex fulfillment:", shoppex_relay.fulfillment_log_fields(purchase, result), flush=True)
-        return result
-
-    def schedule_shoppex_fulfillment_retry(self, payload: dict, attempt: int = 1) -> None:
-        delays = (15, 45, 120, 300, 600)
-        if attempt > len(delays):
-            return
-        if not shoppex.extract_invoice_id(payload) and not shoppex.extract_subscription_id(payload):
-            return
-
-        delay = delays[attempt - 1]
-
-        def retry() -> None:
-            try:
-                result = self.fulfill_shoppex_purchase(payload)
-                if shoppex.fulfillment_complete(result):
-                    return
-                self.schedule_shoppex_fulfillment_retry(payload, attempt + 1)
-            except Exception as error:
-                print(f"Shoppex fulfillment retry {attempt} failed: {error}", flush=True)
-
-        timer = threading.Timer(delay, retry)
-        timer.daemon = True
-        timer.start()
-        print(f"Shoppex fulfillment: scheduled retry #{attempt} in {delay}s", flush=True)
-
-    def handle_shoppex_event_webhook(self) -> None:
-        raw = self.read_raw_body()
-        if not shoppex.SHOPPEX_WEBHOOK_SECRET:
-            self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"detail": "Shoppex webhook not configured"})
-            return
-        signature = self.headers.get("X-Shoppex-Signature-V2") or self.headers.get("X-Shoppex-Signature", "")
-        delivery_id = self.headers.get("X-Shoppex-Delivery") or self.headers.get("X-Shoppex-Delivery-Id", "")
-        timestamp = self.headers.get("X-Shoppex-Timestamp", "")
-        if not shoppex.verify_event_webhook(
-            raw,
-            signature,
-            delivery_id=delivery_id,
-            timestamp_header=timestamp,
-        ):
-            print(
-                "Shoppex webhook rejected: invalid signature",
-                json.dumps(
-                    {
-                        "has_delivery_id": bool(delivery_id),
-                        "has_timestamp": bool(timestamp),
-                        "has_signature": bool(signature),
-                        "body_bytes": len(raw),
-                    },
-                ),
-                flush=True,
-            )
-            self.send_json(HTTPStatus.UNAUTHORIZED, {"detail": "Invalid Shoppex signature"})
-            return
-        try:
-            payload = shoppex.parse_json(raw)
-        except json.JSONDecodeError:
-            self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Invalid payload"})
-            return
-
-        event_type = str(payload.get("event") or payload.get("type") or "").strip()
-        print(f"Shoppex webhook received: {event_type}", flush=True)
-
-        result = shoppex.handle_event(payload)
-        if result["action"] == "fulfill":
-            fulfillment = self.fulfill_shoppex_purchase(payload)
-            if not shoppex.fulfillment_complete(fulfillment):
-                self.schedule_shoppex_fulfillment_retry(payload)
-        elif result["action"] == "revoke":
-            enriched = shoppex.enrich_shoppex_payload(payload)
-            invoice_id = shoppex.extract_invoice_id(enriched)
-            discord_id = shoppex.extract_discord_id(enriched)
-            if invoice_id:
-                with connect() as conn:
-                    site_store.revoke_shoppex_access(conn, db_execute, invoice_id)
-                db_changed()
-            if discord_id:
-                bot_fulfillment.notify_bot_shoppex_revoke(discord_id, invoice_id=invoice_id)
-        self.send_json(HTTPStatus.OK, {"received": True})
-
-    def handle_shoppex_dynamic_webhook(self) -> None:
-        raw = self.read_raw_body()
-        if not shoppex._dynamic_webhook_secrets():
-            self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"detail": "Shoppex dynamic webhook not configured"})
-            return
-        signature = self.headers.get("X-Shoppex-Signature-V2") or self.headers.get("X-Shoppex-Signature", "")
-        delivery_id = self.headers.get("X-Shoppex-Delivery") or self.headers.get("X-Shoppex-Delivery-Id", "")
-        timestamp = self.headers.get("X-Shoppex-Timestamp", "")
-        if not shoppex.verify_dynamic_webhook(
-            raw,
-            signature,
-            delivery_id=delivery_id,
-            timestamp_header=timestamp,
-        ):
-            print(
-                "Shoppex dynamic webhook rejected: invalid signature",
-                json.dumps(
-                    {
-                        "has_delivery_id": bool(delivery_id),
-                        "has_timestamp": bool(timestamp),
-                        "has_signature": bool(signature),
-                        "body_bytes": len(raw),
-                    },
-                ),
-                flush=True,
-            )
-            self.send_json(HTTPStatus.UNAUTHORIZED, {"detail": "Invalid Shoppex signature"})
-            return
-        try:
-            payload = shoppex.parse_json(raw)
-        except json.JSONDecodeError:
-            self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Invalid payload"})
-            return
-
-        plan_id = shoppex.extract_plan_id(payload)
-        plan = pricing.plan_by_id(plan_id) if plan_id else None
-        fulfillment = self.fulfill_shoppex_purchase(payload)
-        if not fulfillment.get("discord_id") and not fulfillment.get("bot", {}).get("ok"):
-            print("Shoppex dynamic webhook: fulfillment incomplete", json.dumps(fulfillment), flush=True)
-            self.schedule_shoppex_fulfillment_retry(payload)
-        self.send_json(HTTPStatus.OK, shoppex.dynamic_fulfillment_response(plan))
-
-    def handle_bot_license_webhook(self) -> None:
-        raw = self.read_raw_body()
-        secret = (
-            os.getenv("BOT_FULFILLMENT_SECRET", "").strip()
-            or os.getenv("SHOPPEX_FULFILLMENT_SECRET", "").strip()
-        )
-        if not secret:
-            self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"detail": "Bot license webhook not configured"})
-            return
-        header = self.headers.get("X-Virello-Fulfillment-Secret", "")
-        if not header or header != secret:
-            self.send_json(HTTPStatus.UNAUTHORIZED, {"detail": "Invalid fulfillment secret"})
-            return
-        try:
-            payload = json.loads(raw.decode("utf-8") or "{}")
-        except json.JSONDecodeError:
-            self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Invalid payload"})
-            return
-
-        action = str(payload.get("action") or "grant").strip().lower()
-        discord_id = str(payload.get("discord_id") or payload.get("discordId") or "").strip()
-        if not discord_id.isdigit():
-            self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "discord_id required"})
-            return
-
-        if action == "revoke":
-            with connect() as conn:
-                invoice_id = str(payload.get("invoice_id") or payload.get("invoiceId") or "").strip()
-                if invoice_id:
-                    site_store.revoke_shoppex_access(conn, db_execute, invoice_id)
-                else:
-                    site_store.revoke_discord_license(conn, db_execute, discord_id)
-            db_changed()
-            self.send_json(HTTPStatus.OK, {"ok": True, "action": "revoke", "discord_id": discord_id})
-            return
-
-        plan_id = str(payload.get("plan_id") or payload.get("planId") or "").strip()
-        if not plan_id:
-            self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "plan_id required"})
-            return
-
-        invoice_id = str(payload.get("invoice_id") or payload.get("invoiceId") or "").strip() or None
-        license_expires_at = pricing.license_expires_at_from_ms(
-            payload.get("expires_at_ms") or payload.get("expiresAt"),
-        )
-        if not license_expires_at:
-            license_expires_at = str(payload.get("license_expires_at") or payload.get("licenseExpiresAt") or "").strip() or None
-        amount_cents = int(payload.get("amount_cents") or 0)
-
-        with connect() as conn:
-            row = site_store.sync_bot_license_grant(
-                conn,
-                db_execute,
-                discord_id=discord_id,
-                plan_id=plan_id,
-                shoppex_invoice_id=invoice_id,
-                license_expires_at=license_expires_at,
-                expires_at_ms=payload.get("expires_at_ms") or payload.get("expiresAt"),
-                amount_cents=amount_cents,
-            )
-        db_changed()
-        self.send_json(
-            HTTPStatus.OK,
-            {
-                "ok": True,
-                "action": "grant",
-                "discord_id": discord_id,
-                "plan_id": plan_id,
-                "license_expires_at": row.get("license_expires_at") if isinstance(row, dict) else license_expires_at,
-            },
-        )
-
     def handle_post(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
-
-        if path == "/webhooks/stripe":
-            self.handle_stripe_webhook()
-            return
-
-        if path == "/webhooks/shoppex":
-            self.handle_shoppex_event_webhook()
-            return
-
-        if path == "/webhooks/shoppex/dynamic":
-            self.handle_shoppex_dynamic_webhook()
-            return
-
-        if path == "/webhooks/bot-license":
-            self.handle_bot_license_webhook()
-            return
+        query = parse_qs(parsed.query)
 
         try:
             payload = self.read_json()
@@ -1859,223 +1110,6 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         parts = [part for part in path.split("/") if part]
-
-        if path == "/checkout/create-session":
-            subject = self.require_auth_subject()
-            if not subject:
-                return
-            discord_id = discord_id_from_subject(subject)
-            if not discord_id:
-                self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Discord login required for checkout"})
-                return
-            plan_id = str(payload.get("plan_id") or "").strip()
-            plan = pricing.plan_by_id(plan_id)
-            if plan is None:
-                self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Unknown plan"})
-                return
-            if not stripe_checkout.stripe_configured():
-                self.send_json(
-                    HTTPStatus.SERVICE_UNAVAILABLE,
-                    {"detail": "stripe_unavailable", "message": "Card checkout is not configured. Use Discord for payment."},
-                )
-                return
-            price_id = pricing.stripe_price_id(plan_id)
-            if not price_id:
-                self.send_json(
-                    HTTPStatus.SERVICE_UNAVAILABLE,
-                    {"detail": "stripe_price_missing", "message": "This plan is not linked to Stripe yet. Use Discord."},
-                )
-                return
-            try:
-                session = stripe_checkout.create_checkout_session(
-                    price_id=price_id,
-                    plan_id=plan_id,
-                    discord_id=discord_id,
-                )
-            except Exception as error:
-                self.send_json(HTTPStatus.BAD_GATEWAY, {"detail": str(error)})
-                return
-            with connect() as conn:
-                site_store.record_order(
-                    conn,
-                    db_execute,
-                    stripe_session_id=session["id"],
-                    discord_id=discord_id,
-                    plan_id=plan_id,
-                    amount_cents=plan["price_cents"],
-                    status="pending",
-                )
-            db_changed()
-            self.send_json(HTTPStatus.OK, {"url": session.get("url")})
-            return
-
-        if path == "/admin/changelog":
-            if not self.require_super_admin():
-                return
-            subject = self.require_auth_subject()
-            with connect() as conn:
-                entry = site_store.create_changelog(conn, db_execute, payload, subject or "admin")
-            db_changed()
-            self.send_json(HTTPStatus.CREATED, entry)
-            return
-
-        if path == "/admin/alerts":
-            if not self.require_super_admin():
-                return
-            subject = self.require_auth_subject()
-            with connect() as conn:
-                alert = site_store.create_alert(conn, db_execute, payload, subject or "admin")
-            db_changed()
-            self.send_json(HTTPStatus.CREATED, alert)
-            return
-
-        if path == "/admin/site-settings":
-            if not self.require_super_admin():
-                return
-            demo_video_url = str(payload.get("demo_video_url") or "").strip()
-            with connect() as conn:
-                site_store.set_setting(conn, db_execute, "demo_video_url", demo_video_url)
-            db_changed()
-            self.send_json(HTTPStatus.OK, {"demo_video_url": demo_video_url})
-            return
-
-        if path == "/admin/shoppex/fulfill":
-            if not self.require_super_admin():
-                return
-            discord_id = str(payload.get("discord_id") or "").strip()
-            invoice_id = str(payload.get("invoice_id") or payload.get("invoice_uniqid") or "").strip()
-            synthetic: dict = {"event": "order:paid", "data": {}}
-            if invoice_id:
-                synthetic["data"]["uniqid"] = invoice_id
-            if discord_id:
-                synthetic["data"]["custom_fields"] = {"discord_user_id": discord_id}
-            result = self.fulfill_shoppex_purchase(synthetic)
-            self.send_json(HTTPStatus.OK, result)
-            return
-
-        if len(parts) == 4 and parts[0] == "admin" and parts[1] == "sessions" and parts[3] == "review":
-            if not self.require_super_admin():
-                return
-            try:
-                session_id = int(parts[2])
-            except ValueError:
-                self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Invalid session id"})
-                return
-            verdict = str(payload.get("verdict") or "").strip().lower()
-            note = str(payload.get("note") or "").strip()
-            allowed_verdicts = {"", "cleared", "suspicious", "ban", "follow-up"}
-            if verdict not in allowed_verdicts:
-                self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "Invalid verdict"})
-                return
-            subject = self.require_auth_subject()
-            with connect() as conn:
-                row = db_execute(conn, "SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
-                if row is None:
-                    self.send_json(HTTPStatus.NOT_FOUND, {"detail": "Session not found"})
-                    return
-                db_execute(
-                    conn,
-                    """
-                    UPDATE sessions
-                    SET reviewer_verdict = ?, reviewer_note = ?, reviewed_at = ?, reviewed_by = ?
-                    WHERE id = ?
-                    """,
-                    (
-                        verdict or None,
-                        note[:4000] if note else None,
-                        to_iso(utc_now()),
-                        subject,
-                        session_id,
-                    ),
-                )
-                row = db_execute(conn, "SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
-            db_changed()
-            self.send_json(HTTPStatus.OK, row_to_summary(row))
-            return
-
-        if path == "/admin/sessions/purge":
-            if not self.require_super_admin():
-                return
-            status = str(payload.get("status") or "expired").strip()
-            with connect() as conn:
-                cursor = db_execute(conn, "DELETE FROM sessions WHERE status = ?", (status,))
-                deleted = cursor.rowcount
-            db_changed()
-            self.send_json(HTTPStatus.OK, {"status": "purged", "deleted": deleted})
-            return
-
-        if path == "/admin/backup":
-            if not self.require_super_admin():
-                return
-            try:
-                if discord_sync.storage_mode() == "discord":
-                    discord_sync.persist_all()
-                else:
-                    backup.create_and_upload_backup()
-                self.send_json(
-                    HTTPStatus.OK,
-                    {
-                        "status": "backed_up",
-                        "file": discord_sync.SNAPSHOT_FILENAME,
-                        "storage": discord_sync.get_status(),
-                    },
-                )
-            except Exception as error:
-                self.send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"detail": str(error)})
-            return
-
-        if len(parts) == 3 and parts[0] == "admin" and parts[1] == "users":
-            if not self.require_super_admin():
-                return
-            discord_id = parts[2]
-            admin_banned = payload.get("admin_banned")
-            admin_notes = payload.get("admin_notes")
-            access_override = payload.get("access_override")
-            with connect() as conn:
-                row = db_execute(conn, "SELECT * FROM discord_users WHERE discord_id = ?", (discord_id,)).fetchone()
-                if row is None:
-                    self.send_json(HTTPStatus.NOT_FOUND, {"detail": "User not found"})
-                    return
-                updates = []
-                params: list = []
-                if admin_banned is not None:
-                    updates.append("admin_banned = ?")
-                    params.append(1 if admin_banned else 0)
-                if admin_notes is not None:
-                    updates.append("admin_notes = ?")
-                    params.append(str(admin_notes)[:2000] or None)
-                if "access_override" in payload:
-                    if access_override is None or access_override == "":
-                        updates.append("access_override = ?")
-                        params.append(None)
-                    else:
-                        updates.append("access_override = ?")
-                        params.append(int(access_override))
-                if not updates:
-                    self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "No fields to update"})
-                    return
-                params.append(discord_id)
-                db_execute(
-                    conn,
-                    f"UPDATE discord_users SET {', '.join(updates)} WHERE discord_id = ?",
-                    tuple(params),
-                )
-                row = db_execute(conn, "SELECT * FROM discord_users WHERE discord_id = ?", (discord_id,)).fetchone()
-            db_changed()
-            roles = json.loads(row["roles_json"] or "[]")
-            self.send_json(
-                HTTPStatus.OK,
-                {
-                    "discord_id": row["discord_id"],
-                    "username": row["username"],
-                    "admin_banned": bool(row["admin_banned"]),
-                    "admin_notes": row["admin_notes"],
-                    "access_override": row["access_override"],
-                    "has_access": DISCORD_ACCESS_ROLE_ID in roles and not row["admin_banned"],
-                },
-            )
-            return
-
         if len(parts) == 3 and parts[0] == "sessions" and parts[2] == "review":
             subject = self.require_checker()
             if not subject:
@@ -2115,7 +1149,6 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(HTTPStatus.NOT_FOUND, {"detail": "Session not found"})
                     return
                 row = db_execute(conn, "SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
-            db_changed()
             self.send_json(HTTPStatus.OK, row_to_summary(row))
             return
 
@@ -2127,17 +1160,6 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "user_ids must be a list"})
                 return
             profiles = fetch_roblox_profiles([str(item) for item in user_ids])
-            self.send_json(HTTPStatus.OK, {"profiles": profiles})
-            return
-
-        if path == "/discord/profiles":
-            if not self.require_checker():
-                return
-            user_ids = payload.get("user_ids") or []
-            if not isinstance(user_ids, list):
-                self.send_json(HTTPStatus.BAD_REQUEST, {"detail": "user_ids must be a list"})
-                return
-            profiles = fetch_discord_profiles([str(item) for item in user_ids])
             self.send_json(HTTPStatus.OK, {"profiles": profiles})
             return
 
@@ -2161,7 +1183,6 @@ class Handler(BaseHTTPRequestHandler):
                     (pin, "pending", to_iso(now), to_iso(expires_at), subject),
                 )
                 row = db_execute(conn, "SELECT * FROM sessions WHERE pin = ?", (pin,)).fetchone()
-            db_changed()
             self.send_json(HTTPStatus.OK, row_to_summary(row))
             return
 
@@ -2205,7 +1226,6 @@ class Handler(BaseHTTPRequestHandler):
                         row["id"],
                     ),
                 )
-            db_changed()
             self.send_json(HTTPStatus.OK, {"status": "submitted"})
             return
 
@@ -2216,20 +1236,15 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    discord_sync.configure(connect=connect, db_execute=db_execute, using_postgres=using_postgres)
     init_db()
-    if discord_sync.storage_mode() == "discord":
-        discord_sync.initialize()
-        print(f"Storage mode: Discord txt sync (channel {os.getenv('DISCORD_SYNC_CHANNEL_ID', '')})")
-    else:
-        backup.configure(
-            connect=connect,
-            db_execute=db_execute,
-            using_postgres=using_postgres,
-            to_iso=to_iso,
-            utc_now=utc_now,
-        )
-        backup.initialize_backup_system()
+    backup.configure(
+        connect=connect,
+        db_execute=db_execute,
+        using_postgres=using_postgres,
+        to_iso=to_iso,
+        utc_now=utc_now,
+    )
+    backup.initialize_backup_system()
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", "8000"))
     print(f"Virello Scanner backend running at http://{host}:{port}")

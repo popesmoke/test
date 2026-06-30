@@ -4,13 +4,12 @@ import "./styles.css";
 import "./desk.css";
 import { formatDisplayDate, normalizeIsoDateString } from "./dateFormat.js";
 import { sanitizeEventTimestamp } from "./activityTime.js";
-import { privacyPath, privacyAccountLabel, publicFindingDetail, publicFindingLabels, publicFindingTitle, redactProfilePrefix, shortActivityPath } from "./resultPrivacy.js";
+import { privacyPath, privacyAccountLabel, redactProfilePrefix, publicFindingLabels, shortActivityPath } from "./resultPrivacy.js";
 import { AdminPanel } from "./AdminPanel.jsx";
 import { defenderHasActionableSignal, defenderSummary } from "./defenderSignals.js";
 import { exportReportPdf } from "./exportReportPdf.js";
 import { SessionReview } from "./SessionReview.jsx";
 import { SimpleResults } from "./SimpleResults.jsx";
-import { BypassPanel } from "./components/BypassPanel.jsx";
 import { TutorialGuide } from "./TutorialGuide.jsx";
 import { AppRouter } from "./App.jsx";
 import { API_URL, BRAND_FULL, BRAND_LOGO, DISCORD_INVITE_URL } from "./config/brand.js";
@@ -1392,7 +1391,7 @@ function RobloxAccountsCard({ report, token }) {
                 )}
                 <span className="ws-account-card__body">
                   <span className="ws-account-card__name">{displayName}</span>
-                  <span className="ws-account-card__link">View profile</span>
+                  <span className="ws-account-card__link">roblox.com/users/{account.user_id}</span>
                 </span>
               </a>
             );
@@ -1414,62 +1413,10 @@ function discordAvatarUrl(account) {
   return `https://cdn.discordapp.com/embed/avatars/${avatarIndex}.png`;
 }
 
-function DiscordAccountsCard({ report, token }) {
-  const baseAccounts = useMemo(
-    () =>
-      collectDiscordAccountsFromReport(
-        report.application_diagnostics?.discord ?? {},
-        report,
-      ),
-    [report],
-  );
-  const [profiles, setProfiles] = useState({});
-
-  useEffect(() => {
-    const userIds = baseAccounts.map((account) => account.user_id).filter(Boolean);
-    if (!token || !userIds.length) {
-      setProfiles({});
-      return undefined;
-    }
-    let cancelled = false;
-    (async () => {
-      try {
-        const response = await fetch(`${API_URL}/discord/profiles`, {
-          method: "POST",
-          headers: authHeaders(token),
-          body: JSON.stringify({ user_ids: userIds }),
-        });
-        if (!response.ok || cancelled) return;
-        const payload = await response.json();
-        const next = {};
-        for (const profile of payload.profiles ?? []) {
-          if (profile?.user_id) next[String(profile.user_id)] = profile;
-        }
-        if (!cancelled) setProfiles(next);
-      } catch {
-        if (!cancelled) setProfiles({});
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [baseAccounts, token]);
-
-  const accounts = useMemo(
-    () =>
-      baseAccounts.map((account) => {
-        const resolved = profiles[account.user_id] ?? {};
-        return {
-          ...account,
-          display_name:
-            resolved.display_name
-            || account.display_name
-            || null,
-          avatar_hash: resolved.avatar_hash || account.avatar_hash || null,
-          avatar_url: resolved.avatar_url || account.avatar_url || null,
-        };
-      }),
-    [baseAccounts, profiles],
+function DiscordAccountsCard({ report }) {
+  const accounts = collectDiscordAccountsFromReport(
+    report.application_diagnostics?.discord ?? {},
+    report,
   );
 
   return (
@@ -1491,7 +1438,7 @@ function DiscordAccountsCard({ report, token }) {
                 )}
                 <span className="ws-account-card__body">
                   <span className="ws-account-card__name">{displayName}</span>
-                  <span className="ws-account-card__link">Discord account</span>
+                  <span className="ws-account-card__link">ID {userId}</span>
                 </span>
               </div>
             );
@@ -1506,7 +1453,7 @@ function AccountsSection({ report, token }) {
   return (
     <>
       <RobloxAccountsCard report={report} token={token} />
-      <DiscordAccountsCard report={report} token={token} />
+      <DiscordAccountsCard report={report} />
     </>
   );
 }
@@ -1718,43 +1665,65 @@ function BypassSection({ report, query }) {
   const logHits = sec.roblox_executor_indicators?.traceback_or_log_hits ?? [];
   const q = query.trim().toLowerCase();
 
+  const filteredFindings = findings.filter((row) => {
+    if (!q) return true;
+    return [row.title, row.detail, row.severity].join(" ").toLowerCase().includes(q);
+  });
+
+  const severityRank = { critical: 0, high: 1, medium: 2, low: 3 };
+  const sortedFindings = [...filteredFindings].sort(
+    (a, b) => (severityRank[a.severity] ?? 9) - (severityRank[b.severity] ?? 9),
+  );
+
   const filteredLogHits = logHits.filter((hit) => {
     if (!q) return true;
     return JSON.stringify(hit).toLowerCase().includes(q);
   });
 
-  if (!q) {
-    return (
-      <>
-        <BypassPanel report={report} />
-        {filteredLogHits.length ? (
-          <Card icon="search" title="Keyword matches in logs">
-            <div className="evidence-list">
-              {filteredLogHits.slice(0, 20).map((hit, index) => (
-                <div className="evidence-row evidence-row--static" key={`log-hit-${index}`}>
-                  <div className="evidence-row-main">
-                    <strong className="evidence-row-title">{privacyPath(hit.path || hit.file || "Log file")}</strong>
-                    <p className="evidence-row-path">
-                      {(hit.matched_lines ?? hit.matches ?? []).slice(0, 2).map((line) => redactProfilePrefix(String(line))).join(" · ") ||
-                        "Suspicious text pattern"}
-                    </p>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </Card>
-        ) : null}
-      </>
-    );
-  }
-
-  const filteredFindings = findings.filter((row) => {
-    return [row.title, row.detail, row.severity].join(" ").toLowerCase().includes(q);
-  });
-
   return (
     <>
-      <BypassPanel report={{ ...report, security_integrity_signals: { ...sec, bypass_resilience: { ...bypass, findings: filteredFindings } } }} />
+      <Card icon="shield" title="Cover-up signs">
+        {sortedFindings.length ? (
+          <div className="evidence-list">
+            {sortedFindings.map((row, index) => (
+              <div
+                className={`evidence-row evidence-row--static ws-finding ws-finding--${row.severity || "medium"}`}
+                key={`${row.title}-${index}`}
+              >
+                <div className="evidence-row-main">
+                  <strong className="evidence-row-title">{genericFindingTitle(row.title)}</strong>
+                  <p className="evidence-row-path">{genericReasonDetail(row.title, row.detail)}</p>
+                </div>
+                <span className={`ws-tag ws-tag--${row.severity === "high" || row.severity === "critical" ? "bad" : "warn"}`}>
+                  {row.severity || "medium"}
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="muted">No cover-up or hiding signals were flagged on this scan.</p>
+        )}
+        {bypass.risk_score != null ? (
+          <p className="muted panel-intro">Cover-up risk score: {bypass.risk_score}/100</p>
+        ) : null}
+      </Card>
+      {filteredLogHits.length ? (
+        <Card icon="search" title="Keyword matches in logs">
+          <div className="evidence-list">
+            {filteredLogHits.slice(0, 20).map((hit, index) => (
+              <div className="evidence-row evidence-row--static" key={`log-hit-${index}`}>
+                <div className="evidence-row-main">
+                  <strong className="evidence-row-title">{privacyPath(hit.path || hit.file || "Log file")}</strong>
+                  <p className="evidence-row-path">
+                    {(hit.matched_lines ?? hit.matches ?? []).slice(0, 2).map((line) => redactProfilePrefix(String(line))).join(" · ") ||
+                      "Suspicious text pattern"}
+                  </p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      ) : null}
     </>
   );
 }
@@ -1820,10 +1789,11 @@ function RegistrySection({ report, query }) {
             {shownBam.map((row, index) => (
               <div className="evidence-row evidence-row--static" key={`bam-${row.normalized_path}-${index}`}>
                 <div className="evidence-row-main">
-                    <strong className="evidence-row-title">
-                      {publicFindingTitle(row.executor_name_hits ?? row.cheat_filename_hints ?? [], row) || "Program"}
-                    </strong>
-                    <p className="evidence-row-path">{publicFindingDetail(row) || shortActivityPath(row.normalized_path || row.registry_path_value)}</p>
+                  <strong className="evidence-row-title">
+                    {publicFindingLabels(row.executor_name_hits ?? row.cheat_filename_hints ?? []).join(", ") ||
+                      "Program"}
+                  </strong>
+                  <p className="evidence-row-path">{shortActivityPath(row.normalized_path || row.registry_path_value)}</p>
                 </div>
                 <time className="evidence-row-time">
                   {row.last_execution_utc ? formatGmtPlus3(row.last_execution_utc) : "Time unknown"}
@@ -1869,9 +1839,10 @@ function FileAnalysisSection({ report, query }) {
             <div className="evidence-row evidence-row--static" key={`file-${row.path || row.name}-${index}`}>
               <div className="evidence-row-main">
                   <strong className="evidence-row-title">
-                    {publicFindingTitle(row.executor_name_hits ?? row.matched_indicator_names ?? [], row) || "File match"}
+                    {publicFindingLabels(row.executor_name_hits ?? row.matched_indicator_names ?? []).join(", ") ||
+                      "File match"}
                   </strong>
-                  <p className="evidence-row-path">{publicFindingDetail(row) || shortActivityPath(row.path || row.name)}</p>
+                  <p className="evidence-row-path">{shortActivityPath(row.path || row.name)}</p>
               </div>
               <time className="evidence-row-time">
                 {row.modified || row.last_run ? formatGmtPlus3(row.modified || row.last_run) : "Time unknown"}
@@ -1903,9 +1874,9 @@ function SuspiciousFilesSection({ report, query }) {
             <div className="evidence-row evidence-row--static" key={`recent-${row.path}-${index}`}>
               <div className="evidence-row-main">
                 <strong className="evidence-row-title">
-                  {publicFindingTitle(row.matched_indicator_names ?? [], row) || "Flagged file"}
+                  {publicFindingLabels(row.matched_indicator_names ?? []).join(", ") || "Flagged file"}
                 </strong>
-                <p className="evidence-row-path">{publicFindingDetail(row) || shortActivityPath(row.path)}</p>
+                <p className="evidence-row-path">{shortActivityPath(row.path)}</p>
               </div>
               <time className="evidence-row-time">
                 {row.modified ? formatGmtPlus3(row.modified) : "Time unknown"}
@@ -2494,7 +2465,7 @@ const resultSections = [
   { id: "roblox", label: "Roblox", icon: "sports_esports", component: RobloxSection },
   { id: "security", label: "Security & AV", icon: "shield", component: SecuritySection },
   { id: "system", label: "System info", icon: "memory", component: SystemSection },
-  { id: "bypass", label: "Bypass attempts", icon: "gpp_maybe", component: BypassSection },
+  { id: "bypass", label: "Cover-up signs", icon: "gpp_maybe", component: BypassSection },
   { id: "registry", label: "Execution traces", icon: "database", component: RegistrySection },
   { id: "file-analysis", label: "File traces", icon: "document_search", component: FileAnalysisSection },
   { id: "suspicious", label: "Flagged files", icon: "folder_off", component: SuspiciousFilesSection },
