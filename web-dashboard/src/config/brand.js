@@ -9,6 +9,7 @@ export const SCANNER_DOWNLOAD_URL = import.meta.env.VITE_SCANNER_DOWNLOAD_URL ||
 export const NAV_LINKS = [
   { to: "/", label: "Home" },
   { to: "/download", label: "Download" },
+  { to: "/purchase", label: "Pricing" },
   { to: "/about", label: "About" },
   { to: "/workspace", label: "Console" },
 ];
@@ -16,6 +17,7 @@ export const NAV_LINKS = [
 export const FOOTER_LINKS = [
   { to: "/privacy", label: "Privacy" },
   { to: "/tos", label: "Terms" },
+  { to: "/purchase", label: "Pricing" },
   { to: "/about", label: "About" },
   { to: "/download", label: "Download" },
 ];

@@ -1,8 +1,6 @@
 import React from "react";
 import { Link } from "react-router-dom";
-import { DISCORD_INVITE_URL } from "../config/brand.js";
 import { MaterialIcon } from "../components/MaterialIcon.jsx";
-import { IconDiscord } from "../components/VirelloIcons.jsx";
 
 export function LandingPage() {
   return (
@@ -18,13 +16,12 @@ export function LandingPage() {
             <Link to="/download" className="btn btn--primary btn--lg">
               Download scanner
             </Link>
-            <Link to="/workspace" className="btn btn--outline btn--lg">
+            <Link to="/purchase" className="btn btn--outline btn--lg">
+              View pricing
+            </Link>
+            <Link to="/workspace" className="btn btn--ghost btn--lg">
               Open console
             </Link>
-            <a className="btn btn--ghost btn--lg" href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer">
-              <IconDiscord size={18} />
-              Discord
-            </a>
           </div>
           <ul className="hero__trust">
             <li>Consent before upload</li>
