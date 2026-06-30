@@ -18,11 +18,10 @@ from urllib import error as urlerror
 from urllib import request as urlrequest
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
-import backup
+import discord_sync
 import rate_limit
 
 DB_PATH = Path(__file__).resolve().parent / "diagnostics.db"
-DATABASE_URL = os.getenv("DATABASE_URL", "")
 TOKEN_SECRET = os.getenv("API_TOKEN_SECRET", "local-dev-secret-change-me")
 CHECKER_EMAIL = os.getenv("CHECKER_EMAIL", "checker@example.com")
 CHECKER_PASSWORD = os.getenv("CHECKER_PASSWORD", "change-me")
@@ -82,45 +81,21 @@ def to_iso(value: datetime) -> str:
     return value.isoformat().replace("+00:00", "Z")
 
 
-def using_postgres() -> bool:
-    return bool(DATABASE_URL)
-
-
 def connect():
-    if using_postgres():
-        import psycopg
-        from psycopg.rows import dict_row
-
-        return psycopg.connect(DATABASE_URL, row_factory=dict_row)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
 
-def db_sql(sql: str) -> str:
-    return sql.replace("?", "%s") if using_postgres() else sql
-
-
 def db_execute(conn, sql: str, params: Sequence | None = None):
-    return conn.execute(db_sql(sql), params or ())
+    return conn.execute(sql, params or ())
 
 
 def is_unique_violation(error: Exception) -> bool:
-    return isinstance(error, sqlite3.IntegrityError) or error.__class__.__name__ == "UniqueViolation"
+    return isinstance(error, sqlite3.IntegrityError)
 
 
 def column_exists(conn, table: str, column: str) -> bool:
-    if using_postgres():
-        row = db_execute(
-            conn,
-            """
-            SELECT 1
-            FROM information_schema.columns
-            WHERE table_schema = 'public' AND table_name = ? AND column_name = ?
-            """,
-            (table, column),
-        ).fetchone()
-        return row is not None
     rows = db_execute(conn, f"PRAGMA table_info({table})").fetchall()
     return any(row["name"] == column for row in rows)
 
@@ -133,9 +108,7 @@ def ensure_column(conn, table: str, column: str, definition: str) -> None:
 
 def init_db() -> None:
     with connect() as conn:
-        if using_postgres():
-            conn.autocommit = True
-        id_column = "SERIAL PRIMARY KEY" if using_postgres() else "INTEGER PRIMARY KEY AUTOINCREMENT"
+        id_column = "INTEGER PRIMARY KEY AUTOINCREMENT"
         db_execute(
             conn,
             f"""
@@ -558,6 +531,10 @@ def exchange_discord_code(code: str) -> dict:
         return json.loads(response.read().decode("utf-8"))
 
 
+def db_changed() -> None:
+    discord_sync.notify_db_changed()
+
+
 def save_discord_user(user: dict, roles: list[str]) -> None:
     with connect() as conn:
         db_execute(
@@ -579,6 +556,7 @@ def save_discord_user(user: dict, roles: list[str]) -> None:
                 to_iso(utc_now()),
             ),
         )
+    db_changed()
 
 
 def save_user_discord_access(user_id: int, user: dict, roles: list[str]) -> bool:
@@ -601,7 +579,10 @@ def save_user_discord_access(user_id: int, user: dict, roles: list[str]) -> bool
                 user_id,
             ),
         )
-        return cursor.rowcount > 0
+        updated = cursor.rowcount > 0
+    if updated:
+        db_changed()
+    return updated
 
 
 def create_discord_auth_url(return_to: str, link_ticket: str = "") -> str:
@@ -697,8 +678,6 @@ def expire_stale_pending_sessions(conn) -> None:
         "UPDATE sessions SET status = ? WHERE status = ? AND expires_at < ?",
         ("expired", "pending", to_iso(utc_now())),
     )
-    if using_postgres():
-        conn.commit()
 
 
 def effective_session_status(row: sqlite3.Row) -> str:
@@ -873,6 +852,7 @@ class Handler(BaseHTTPRequestHandler):
         if deleted == 0:
             self.send_json(HTTPStatus.NOT_FOUND, {"detail": "Session not found"})
             return
+        db_changed()
         self.send_json(HTTPStatus.OK, {"status": "deleted"})
 
     def read_json(self) -> dict:
@@ -929,8 +909,28 @@ class Handler(BaseHTTPRequestHandler):
         query = parse_qs(parsed.query)
 
         if path == "/health":
-            status_code, payload = backup.get_health_status()
-            self.send_json(HTTPStatus(status_code), payload)
+            try:
+                with connect() as conn:
+                    db_execute(conn, "SELECT 1").fetchone()
+                db_ok = True
+            except Exception:
+                db_ok = False
+            sync_status = discord_sync.get_status()
+            payload = {
+                "status": "ok" if db_ok and sync_status.get("configured") else "degraded",
+                "service": "virello-scanner-backend",
+                "timestamp": to_iso(utc_now()),
+                "database": {
+                    "connected": db_ok,
+                    "engine": "discord-txt" if sync_status["mode"] == "discord" else "sqlite",
+                    "has_data": db_ok,
+                },
+                "storage": sync_status,
+            }
+            self.send_json(
+                HTTPStatus.OK if payload["status"] == "ok" else HTTPStatus.SERVICE_UNAVAILABLE,
+                payload,
+            )
             return
 
         if path == "/auth/me":
@@ -1057,6 +1057,23 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(HTTPStatus.OK, users)
             return
 
+        if path == "/admin/backup":
+            if not self.require_super_admin():
+                return
+            try:
+                discord_sync.persist_all()
+                self.send_json(
+                    HTTPStatus.OK,
+                    {
+                        "status": "backed_up",
+                        "file": discord_sync.SNAPSHOT_FILENAME,
+                        "storage": discord_sync.get_status(),
+                    },
+                )
+            except Exception as error:
+                self.send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"detail": str(error)})
+            return
+
         if path == "/sessions":
             subject = self.require_checker()
             if not subject:
@@ -1149,6 +1166,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(HTTPStatus.NOT_FOUND, {"detail": "Session not found"})
                     return
                 row = db_execute(conn, "SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            db_changed()
             self.send_json(HTTPStatus.OK, row_to_summary(row))
             return
 
@@ -1183,6 +1201,7 @@ class Handler(BaseHTTPRequestHandler):
                     (pin, "pending", to_iso(now), to_iso(expires_at), subject),
                 )
                 row = db_execute(conn, "SELECT * FROM sessions WHERE pin = ?", (pin,)).fetchone()
+            db_changed()
             self.send_json(HTTPStatus.OK, row_to_summary(row))
             return
 
@@ -1226,6 +1245,7 @@ class Handler(BaseHTTPRequestHandler):
                         row["id"],
                     ),
                 )
+            db_changed()
             self.send_json(HTTPStatus.OK, {"status": "submitted"})
             return
 
@@ -1236,15 +1256,13 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    discord_sync.configure(connect=connect, db_execute=db_execute)
     init_db()
-    backup.configure(
-        connect=connect,
-        db_execute=db_execute,
-        using_postgres=using_postgres,
-        to_iso=to_iso,
-        utc_now=utc_now,
-    )
-    backup.initialize_backup_system()
+    if discord_sync.storage_mode() == "discord":
+        discord_sync.initialize()
+        print(f"Storage mode: Discord txt sync (channel {discord_sync.get_status().get('channel_id', '')})")
+    else:
+        print("Storage mode: local SQLite (set DISCORD_BOT_TOKEN + DISCORD_BACKUP_CHANNEL_ID for Discord sync)")
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", "8000"))
     print(f"Virello Scanner backend running at http://{host}:{port}")

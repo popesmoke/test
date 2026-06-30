@@ -43,7 +43,7 @@ Default checker login:
 
 Set `CHECKER_EMAIL`, `CHECKER_PASSWORD`, and `API_TOKEN_SECRET` in the environment for non-demo use.
 
-For production, set `DATABASE_URL` to a PostgreSQL connection string. If `DATABASE_URL` is not set, the backend falls back to the local SQLite file at `backend/diagnostics.db`.
+For production, the backend uses local SQLite and syncs data to Discord as a plain-text backup file. Set `DISCORD_BOT_TOKEN` and `DISCORD_BACKUP_CHANNEL_ID` (or `DISCORD_SYNC_CHANNEL_ID`) so sessions survive redeploys. For local development without Discord, data stays in `backend/diagnostics.db`.
 
 ### Discord role-gated dashboard login
 
@@ -58,7 +58,8 @@ https://virello-secure.onrender.com/auth/discord/callback
 Set these backend environment variables:
 
 ```text
-DATABASE_URL=your Render PostgreSQL internal database URL
+DISCORD_BOT_TOKEN=your Discord bot token
+DISCORD_BACKUP_CHANNEL_ID=your sync channel ID
 DISCORD_CLIENT_ID=1510615702103392327
 DISCORD_CLIENT_SECRET=your Discord application client secret
 DISCORD_REDIRECT_URI=https://virello-secure.onrender.com/auth/discord/callback
@@ -73,36 +74,32 @@ The Discord OAuth scopes used are `identify` and `guilds.members.read`.
 
 The public Discord invite shown on the login page defaults to `https://discord.gg/wPZXKaPyWY`.
 
-### Automated database backup and recovery
+### Discord txt sync and recovery
 
-The backend can export the full database every 29 days and upload the backup to a Discord channel using a bot token. On startup, if the database is empty (for example after a Render PostgreSQL reset), the backend automatically downloads the latest Discord backup and restores all tables.
+The backend keeps a local SQLite database for fast reads/writes and syncs the full database to a Discord channel as a single plain-text file (`virello-scanner-backup.txt`) whenever data changes. On startup, if the local database is empty, the backend downloads the latest backup from Discord and restores all tables.
 
-Create a Discord bot in the Developer Portal, invite it to your server, and grant it permission to **Send Messages**, **Attach Files**, and **Read Message History** in the backup channel.
+Create a Discord bot in the Developer Portal, invite it to your server, and grant it permission to **Send Messages**, **Attach Files**, and **Read Message History** in the sync channel.
 
-You can reuse the same bot token as Virello Bot (`DISCORD_TOKEN` on the bot service). Both services upload to the same channel with different filenames (`virello-db-backup-*` for the scanner API, `virellobot-db-backup-*` for the bot).
+You can reuse the same bot token as Virello Bot (`DISCORD_TOKEN` on the bot service).
 
 Set these backend environment variables on Render:
 
 ```text
 DISCORD_BOT_TOKEN=your Discord bot token
-DISCORD_BACKUP_CHANNEL_ID=your backup channel ID
-BACKUP_INTERVAL_DAYS=29
-BACKUP_AUTO_RESTORE=true
-BACKUP_ENABLED=true
+DISCORD_BACKUP_CHANNEL_ID=your sync channel ID
 ```
 
-Optional tuning:
+Optional: force local-only storage during development:
 
 ```text
-BACKUP_CHECK_INTERVAL_SECONDS=3600
-BACKUP_AUTO_RESTORE=false
+STORAGE_MODE=sqlite
 ```
 
-Backups are stored as gzip-compressed JSON attachments named `virello-db-backup-<timestamp>.json.gz` in the configured channel.
+Backups are stored as plain-text JSON attachments named `virello-scanner-backup.txt` in the configured channel. Super admins can trigger a manual sync with `POST /admin/backup`.
 
 ### Health check and UptimeRobot
 
-The backend exposes `GET /health` for uptime monitoring. A healthy response returns HTTP 200 with `"status": "ok"` and includes database and backup metadata.
+The backend exposes `GET /health` for uptime monitoring. A healthy response returns HTTP 200 with `"status": "ok"` and includes database and Discord sync metadata.
 
 Example production monitor URL:
 
@@ -164,7 +161,7 @@ The desktop client:
 
 ## Implementation Note
 
-The backend uses PostgreSQL when `DATABASE_URL` is configured and SQLite as a local development fallback. It exposes the same API used by the dashboard and desktop client.
+The backend uses local SQLite with Discord txt sync for persistence across redeploys. It exposes the same API used by the dashboard and desktop client.
 
 ## Production Hardening Checklist
 
