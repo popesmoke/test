@@ -46,8 +46,9 @@ export function TermsOfServicePage() {
 
       <LegalArticle index="IV" title="Payments and subscriptions">
         <p>
-          Payments must use methods provided in the Purchase Panel or Purchase Lane and are manually
-          verified before access is granted.
+          All payments are handled in our Discord server through purchase tickets or purchase lanes.
+          Staff verify payment manually before access is granted. We do not use third-party web checkout
+          providers such as Shoppex or Stripe on this site.
         </p>
         <p>
           Subscriptions may renew monthly. Cancel anytime to stop future billing. Cancellation does not
