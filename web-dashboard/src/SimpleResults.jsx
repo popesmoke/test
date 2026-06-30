@@ -9,12 +9,15 @@ import {
   collectDiscordAccountsFromReport,
 } from "./accountExtract.js";
 import { genericFindingTitle, genericReasonLabel, genericReasonDetail } from "./reviewerCopy.js";
+import { forensicSourcesView, securitySignalsView } from "./forensicSources.js";
 
 const API_URL = import.meta.env.VITE_API_URL || "https://virello-secure.onrender.com";
 
 const TABS = [
   { id: "summary", label: "Summary", icon: "description" },
   { id: "findings", label: "Findings", icon: "shield_alert" },
+  { id: "traces", label: "Traces", icon: "fact_check" },
+  { id: "security", label: "Security", icon: "shield" },
   { id: "activity", label: "Activity", icon: "history" },
   { id: "accounts", label: "Accounts", icon: "users" },
 ];
@@ -267,6 +270,7 @@ const ACTIVITY_VIEWS = [
   { id: "timeline", label: "Timeline" },
   { id: "downloads", label: "Downloads" },
   { id: "programs", label: "Programs run" },
+  { id: "deletions", label: "Deletions" },
 ];
 
 function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 }) {
@@ -302,6 +306,11 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
     const aMs = a.occurred_at ? new Date(a.occurred_at).getTime() : 0;
     const bMs = b.occurred_at ? new Date(b.occurred_at).getTime() : 0;
     return bMs - aMs;
+  });
+
+  const deletions = events.filter((event) => {
+    const summary = String(event.summary || "").toLowerCase();
+    return event.category === "deletions" || summary.includes("no longer on disk") || summary.includes("recycle");
   });
 
   return (
@@ -383,8 +392,161 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
             <p className="muted">No program execution traces found.</p>
           )
         ) : null}
+
+        {view === "deletions" ? (
+          deletions.length ? (
+            <ul className="simple-timeline">
+              {deletions.slice(0, 40).map((event, index) => (
+                <li key={`${event.path}-${event.occurred_at}-${index}`} className="simple-timeline--warn">
+                  <time>{event.occurred_at ? formatGmtPlus3(event.occurred_at) : "—"}</time>
+                  <p>{event.summary || "File removed or deleted"}</p>
+                  <LocationHint row={event} path={event.path} />
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="muted">No deletion events recorded on this scan.</p>
+          )
+        ) : null}
       </div>
     </section>
+  );
+}
+
+function TracesTab({ report }) {
+  const view = forensicSourcesView(report.security_integrity_signals ?? {});
+
+  if (!view.available) {
+    return (
+      <section className="ws-panel">
+        <PanelHeader icon="fact_check" title="Trace layers" text={view.summary} />
+      </section>
+    );
+  }
+
+  return (
+    <>
+      <section className="ws-panel ws-panel--compact">
+        <PanelHeader icon="fact_check" title="What was checked" text={view.summary} />
+      </section>
+
+      <section className="ws-panel">
+        <PanelHeader icon="checklist" title="Trace sources" text="Each row is a Windows data layer reviewed on this scan." />
+        <div className="ws-panel__body">
+          <ul className="simple-trace-list">
+            {view.sources.map((row) => (
+              <li key={row.id} className={`simple-trace-row simple-trace-row--${row.tone}`}>
+                <span className="simple-trace-status">{row.statusLabel}</span>
+                <strong>{row.label}</strong>
+                {row.count > 0 ? <span className="muted">{row.count} record(s)</span> : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      </section>
+
+      {view.inconsistencies.length ? (
+        <section className="ws-panel">
+          <PanelHeader
+            icon="compare_arrows"
+            title="Cross-check mismatches"
+            text="When one trace says a program ran but another does not — worth a closer look."
+          />
+          <div className="ws-panel__body">
+            <ul className="simple-timeline">
+              {view.inconsistencies.map((row, index) => (
+                <li key={`${row.type}-${index}`} className="simple-timeline--warn">
+                  <SeverityBadge severity={row.severity} compact />
+                  <p>{row.summary}</p>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </section>
+      ) : null}
+    </>
+  );
+}
+
+function SecurityTab({ report, formatGmtPlus3 }) {
+  const sec = report.security_integrity_signals ?? {};
+  const defenderView = defenderSummary(sec.defender);
+  const signals = securitySignalsView(sec);
+
+  return (
+    <>
+      {defenderView.available ? (
+        <section className="ws-panel">
+          <PanelHeader icon="shield" title="Windows Defender" text={defenderView.statusLabel} />
+          <div className="ws-panel__body">
+            <div className="ws-metrics ws-metrics--compact">
+              <div className="ws-metric">
+                <strong>{signals.threatCount}</strong>
+                <span>threat signals</span>
+              </div>
+              <div className="ws-metric">
+                <strong>{signals.exclusionCount}</strong>
+                <span>folder exclusions</span>
+              </div>
+              <div className="ws-metric">
+                <strong>{defenderView.quarantineCount}</strong>
+                <span>quarantine items</span>
+              </div>
+            </div>
+            {defenderView.userExclusions?.length ? (
+              <ul className="simple-program-list">
+                {defenderView.userExclusions.slice(0, 8).map((path) => (
+                  <li key={path} className="simple-program--warn">
+                    <p className="muted">Excluded folder: {privacyPath(path)}</p>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+        </section>
+      ) : null}
+
+      <section className="ws-panel">
+        <PanelHeader icon="delete_sweep" title="Log clearing & cleanup" text="Signs that logs or traces may have been wiped." />
+        <div className="ws-panel__body">
+          {signals.logClearingHints.length ? (
+            <ul className="simple-timeline">
+              {signals.logClearingHints.map((hint) => (
+                <li key={hint} className="simple-timeline--warn">
+                  <p>{hint}</p>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="muted">No major log-clearing signals on this scan.</p>
+          )}
+          {signals.traceCleanerCount > 0 ? (
+            <ul className="simple-timeline">
+              {signals.traceCleaners.slice(0, 12).map((row, index) => (
+                <li key={`${row.type}-${index}`} className="simple-timeline--warn">
+                  <p>{row.summary || row.detail || "Cleanup tool or command detected"}</p>
+                  {row.occurred_at ? (
+                    <time className="muted">{formatGmtPlus3(row.occurred_at)}</time>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      </section>
+
+      <section className="ws-panel ws-panel--compact">
+        <PanelHeader
+          icon="event_note"
+          title="Event logs"
+          text={
+            signals.eventLogCount
+              ? `${signals.eventLogCount} recent Windows events were sampled.`
+              : "Event log sample was not available on this scan."
+          }
+        />
+      </section>
+    </>
   );
 }
 
@@ -563,6 +725,8 @@ export function SimpleResults({ report, summary, activity, activityEventSummary,
         {tab === "findings" ? (
           <FindingsTab problems={problems} review={review} formatGmtPlus3={formatGmtPlus3} />
         ) : null}
+        {tab === "traces" ? <TracesTab report={report} /> : null}
+        {tab === "security" ? <SecurityTab report={report} formatGmtPlus3={formatGmtPlus3} /> : null}
         {tab === "activity" ? (
           <ActivityTab
             review={review}
