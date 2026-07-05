@@ -30,7 +30,7 @@ export function LoginPage({ loginError }) {
 
   return (
     <div className="auth-page">
-      <div className="auth-card">
+      <div className="auth-card auth-card--enter">
         <div className="auth-card__brand">
           <img src={BRAND_LOGO} alt={BRAND_FULL} />
           <h1>Review Console</h1>
@@ -38,7 +38,7 @@ export function LoginPage({ loginError }) {
         </div>
 
         <div className="auth-card__body">
-          {error ? <p className="error">{error}</p> : null}
+          {error ? <p className="error" role="alert">{error}</p> : null}
           <div className="auth-card__notice">
             <p>
               You need the <strong>Access</strong> role in our Discord server to generate PINs and

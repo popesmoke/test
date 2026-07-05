@@ -1,5 +1,6 @@
 import React from "react";
 import { Link } from "react-router-dom";
+import { Reveal } from "../components/Reveal.jsx";
 import { BRAND_FULL, DISCORD_INVITE_URL, SCANNER_DOWNLOAD_URL } from "../config/brand.js";
 import { IconConsent, IconDiscord, IconDownload, IconTimer, IconWindows } from "../components/VirelloIcons.jsx";
 
@@ -23,7 +24,7 @@ export function DownloadPage() {
   return (
     <div className="download-page">
       <section className="download-hero">
-        <div className="download-hero__copy">
+        <Reveal className="download-hero__copy">
           <p className="download-hero__eyebrow">Desktop Scanner</p>
           <h1>Download {BRAND_FULL}</h1>
           <p>
@@ -39,11 +40,11 @@ export function DownloadPage() {
             ) : (
               <a href={DISCORD_INVITE_URL} className="btn btn--primary btn--lg" target="_blank" rel="noreferrer">
                 <IconDiscord size={20} />
-                Get Download from Discord
+                Get download from Discord
               </a>
             )}
             <Link to="/workspace" className="btn btn--ghost btn--lg">
-              Open Review Console
+              Open review console
             </Link>
           </div>
           {!hasDirectDownload ? (
@@ -51,8 +52,9 @@ export function DownloadPage() {
               The latest build is distributed through our Discord server. Join and open the download lane for the current release.
             </p>
           ) : null}
-        </div>
-        <aside className="download-hero__card">
+        </Reveal>
+
+        <Reveal className="download-hero__card" delay={100}>
           <div className="download-stat">
             <IconTimer size={22} />
             <div>
@@ -74,26 +76,26 @@ export function DownloadPage() {
               <span>64-bit desktop app</span>
             </div>
           </div>
-        </aside>
+        </Reveal>
       </section>
 
       <section className="download-grid">
-        <article className="download-panel">
+        <Reveal className="download-panel" delay={60}>
           <h2>Requirements</h2>
           <ul>
             {REQUIREMENTS.map((item) => (
               <li key={item}>{item}</li>
             ))}
           </ul>
-        </article>
-        <article className="download-panel">
+        </Reveal>
+        <Reveal className="download-panel" delay={120}>
           <h2>How scanning works</h2>
           <ol>
             {STEPS.map((item) => (
               <li key={item}>{item}</li>
             ))}
           </ol>
-        </article>
+        </Reveal>
       </section>
     </div>
   );
