@@ -81,7 +81,7 @@ const FAQ = [
   },
   {
     q: "How do I get console access?",
-    a: "Purchase a license through our Discord server. Staff verify payment and assign the Access role to your account.",
+    a: "Join our Discord server and open a purchase lane. Staff verify payment and assign the Access role to your account.",
   },
   {
     q: "Can I use this outside Roblox reviews?",

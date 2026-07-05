@@ -7,42 +7,42 @@ import { LegalDocument } from "../components/LegalPage.jsx";
 const PLANS = [
   {
     id: "monthly",
-    title: "Monthly",
-    blurb: "Full access on a monthly plan. Cancel anytime.",
+    title: "Monthly License",
+    blurb: "Full access on a simple monthly plan with no long commitment.",
     price: "4.99€",
     period: "/ month",
     features: [
-      "Full executor scan access",
+      "Full Executor scan access",
       "Unlimited scanner usage",
       "Ongoing scanner updates",
-      "Discord support",
+      "Discord full assistance",
     ],
   },
   {
     id: "quarterly",
-    title: "3 months",
-    blurb: "Better rate for teams that review regularly.",
+    title: "3 Month License",
+    blurb: "More time upfront and a better rate for steady users.",
     price: "12.99€",
     period: "/ 3 months",
     featured: true,
     features: [
-      "Full executor scan access",
+      "Full Executor scan access",
       "Unlimited scanner usage",
       "Ongoing scanner updates",
-      "Discord support",
+      "Discord full assistance",
     ],
   },
   {
     id: "yearly",
-    title: "Yearly",
-    blurb: "Best value for long-term access and updates.",
+    title: "Yearly License",
+    blurb: "Best value for long term protection, updates, and uninterrupted access.",
     price: "39.99€",
     period: "/ year",
     features: [
-      "Full executor scan access",
+      "Full Executor scan access",
       "Unlimited scanner usage",
       "Ongoing scanner updates",
-      "Discord support",
+      "Discord full assistance",
     ],
   },
 ];
@@ -51,7 +51,7 @@ export function PurchasePage() {
   return (
     <LegalDocument badge="Pricing" title="Choose your license" updated="June 2026">
       <p className="legal-doc__lead">
-        All purchases go through our Discord server. Join, open a purchase lane, and staff will verify
+        All purchases are handled through our Discord server. Join, open a purchase lane, and staff will verify
         payment and activate your license.
       </p>
 
@@ -64,7 +64,7 @@ export function PurchasePage() {
           >
             <div className="pricing-card__head">
               {plan.featured ? (
-                <span className="pricing-card__badge">Most popular</span>
+                <span className="pricing-card__badge">Popular</span>
               ) : (
                 <span className="pricing-card__badge pricing-card__badge--placeholder" aria-hidden="true" />
               )}
@@ -90,7 +90,8 @@ export function PurchasePage() {
         <h3>How to buy</h3>
         <p>
           Join the Virello Discord server and open a purchase ticket. Tell staff which plan you want, complete
-          payment when asked, and your scanner access will be activated after verification.
+          payment when asked (PayPal, crypto, or other methods shown in Discord), and your scanner access will be
+          activated after verification.
         </p>
         <a className="btn btn--discord" href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer">
           <IconDiscord size={18} />
