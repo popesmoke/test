@@ -12,7 +12,7 @@
   --accent: #ef233c;
   --accent-bright: #ff4d5f;
   --accent-soft: #ff8d9a;
-  --accent-glow: rgba(239, 35, 60, 0.28);
+  --accent-glow: rgba(239, 35, 60, 0.14);
   --accent-muted: rgba(239, 35, 60, 0.12);
   --discord: #5865f2;
   --success: #4ade80;
@@ -94,12 +94,12 @@ button.btn {
   background: linear-gradient(180deg, #e82235 0%, #b11220 100%);
   border-color: rgba(239, 35, 60, 0.5);
   color: #fff;
-  box-shadow: 0 4px 16px var(--accent-glow);
+  box-shadow: none;
 }
 
 .btn--primary:hover {
   background: linear-gradient(180deg, #f12b3d 0%, #c41e2a 100%);
-  box-shadow: 0 8px 28px var(--accent-glow);
+  box-shadow: 0 2px 12px var(--accent-glow);
 }
 
 .btn--outline {
@@ -444,6 +444,63 @@ button.primary {
   transform: translateY(0);
 }
 
+.reveal--visible .anim-fade-up {
+  animation: fade-up 0.55s var(--ease-out) both;
+}
+
+.reveal--visible .anim-fade-down {
+  animation: fade-down 0.5s var(--ease-out) both;
+}
+
+.reveal--visible .anim-delay-1 {
+  animation-delay: 0.08s;
+}
+
+.reveal--visible .anim-delay-2 {
+  animation-delay: 0.16s;
+}
+
+.reveal--visible .anim-delay-3 {
+  animation-delay: 0.24s;
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fade-down {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.page-enter {
+  animation: page-enter 0.4s var(--ease-out) both;
+}
+
+@keyframes page-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .reveal {
     opacity: 1;
@@ -451,8 +508,23 @@ button.primary {
     transition: none;
   }
 
+  .reveal--visible .anim-fade-up,
+  .reveal--visible .anim-fade-down {
+    animation: none;
+  }
+
+  .page-enter {
+    animation: none;
+  }
+
   .btn:hover {
     transform: none;
+  }
+
+  .step-card__icon,
+  .feature-card__icon,
+  .stat-block {
+    animation: none !important;
   }
 }
 
@@ -471,17 +543,6 @@ button.primary {
   gap: 48px;
   align-items: center;
   padding: 72px 0 64px;
-}
-
-.hero__glow {
-  position: absolute;
-  top: -120px;
-  left: -10%;
-  width: 60%;
-  height: 400px;
-  background: radial-gradient(ellipse at center, rgba(239, 35, 60, 0.08), transparent 70%);
-  pointer-events: none;
-  z-index: 0;
 }
 
 .hero__content,
@@ -586,9 +647,9 @@ button.primary {
   padding: 24px;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  background: linear-gradient(165deg, var(--surface) 0%, var(--bg-elevated) 100%);
-  box-shadow: var(--shadow-lg);
-  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  transition: border-color 0.3s ease;
 }
 
 .hero__panel-inner:hover {
@@ -645,10 +706,20 @@ button.primary {
 .stat-block {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
   padding: 24px 28px;
   background: var(--surface);
-  transition: background 0.25s ease;
+  transition: background 0.25s ease, transform 0.3s var(--ease-out);
+}
+
+.stat-block__icon {
+  margin-bottom: 4px;
+  opacity: 0.9;
+  transition: transform 0.3s var(--ease-spring);
+}
+
+.reveal--visible .stat-block:hover .stat-block__icon {
+  transform: scale(1.08);
 }
 
 .stat-block:hover {
@@ -780,10 +851,15 @@ button.primary {
   place-items: center;
   width: 48px;
   height: 48px;
-  border-radius: 14px;
+  border-radius: var(--radius-md);
   background: var(--accent-muted);
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--border);
   margin-bottom: 16px;
+  transition: transform 0.35s var(--ease-spring);
+}
+
+.feature-card:hover .feature-card__icon {
+  transform: scale(1.05) rotate(-2deg);
 }
 
 .feature-card h3 {
@@ -835,7 +911,12 @@ button.primary {
   border-radius: var(--radius-md);
   background: var(--accent-muted);
   border: 1px solid var(--border);
-  color: var(--accent-bright);
+  transition: transform 0.35s var(--ease-spring), border-color 0.25s ease;
+}
+
+.step-card:hover .step-card__icon {
+  transform: scale(1.06);
+  border-color: var(--border-strong);
 }
 
 .step-card__body {
@@ -870,10 +951,13 @@ button.primary {
   padding: 40px 44px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-lg);
-  background:
-    radial-gradient(ellipse 80% 60% at 100% 0%, rgba(239, 35, 60, 0.1), transparent 60%),
-    linear-gradient(135deg, var(--accent-muted), rgba(12, 10, 11, 0.95));
+  background: var(--surface);
   margin-top: 16px;
+  transition: border-color 0.3s ease, transform 0.3s var(--ease-out);
+}
+
+.reveal--visible.cta-band:hover {
+  border-color: rgba(239, 35, 60, 0.35);
 }
 
 .cta-band h2 {
@@ -974,6 +1058,18 @@ button.primary {
 
 .faq-item__panel {
   padding: 0 20px 18px;
+  animation: faq-open 0.3s var(--ease-out) both;
+}
+
+@keyframes faq-open {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .faq-item__panel p {
@@ -1243,7 +1339,6 @@ button.primary {
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-lg);
   background: var(--surface);
-  box-shadow: var(--shadow-md);
 }
 
 .download-stat {
@@ -1309,9 +1404,7 @@ button.primary {
   display: grid;
   place-items: center;
   padding: 24px;
-  background:
-    radial-gradient(ellipse 60% 40% at 50% 0%, rgba(239, 35, 60, 0.12), transparent 55%),
-    var(--bg);
+  background: var(--bg);
 }
 
 .auth-card {
@@ -1348,7 +1441,6 @@ button.primary {
   height: 72px;
   width: auto;
   margin-bottom: 16px;
-  filter: drop-shadow(0 8px 20px rgba(239, 35, 60, 0.25));
 }
 
 .auth-card__brand h1 {

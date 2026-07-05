@@ -12,7 +12,7 @@ const PLANS = [
     price: "4.99€",
     period: "/ month",
     features: [
-      "Full Executor scan access",
+      "Full scan access",
       "Unlimited scanner usage",
       "Ongoing scanner updates",
       "Discord full assistance",
@@ -26,7 +26,7 @@ const PLANS = [
     period: "/ 3 months",
     featured: true,
     features: [
-      "Full Executor scan access",
+      "Full scan access",
       "Unlimited scanner usage",
       "Ongoing scanner updates",
       "Discord full assistance",
@@ -39,7 +39,7 @@ const PLANS = [
     price: "39.99€",
     period: "/ year",
     features: [
-      "Full Executor scan access",
+      "Full scan access",
       "Unlimited scanner usage",
       "Ongoing scanner updates",
       "Discord full assistance",

@@ -1,6 +1,6 @@
 import React from "react";
 
-/** Icons8 Windows style slugs — https://icons8.com/icons */
+/** Icons8 slugs — https://icons8.com/icons */
 const ICONS8_SLUGS = {
   history: "activity-history",
   document_search: "search",
@@ -11,6 +11,7 @@ const ICONS8_SLUGS = {
   forum: "chat",
   shield: "shield",
   terminal: "console",
+  console: "console",
   memory: "chip",
   delete: "trash",
   search: "search",
@@ -41,6 +42,7 @@ const ICONS8_SLUGS = {
   help: "help",
   radar: "radar",
   verified_user: "verified-account",
+  verified: "verified-account",
   timer: "timer",
   policy: "privacy",
   dashboard: "dashboard",
@@ -70,13 +72,29 @@ const ICONS8_SLUGS = {
   recycle_bin: "trash",
   security: "shield",
   file_search: "search",
+  consent: "checked-checkbox",
+  report: "survey",
+  pin: "password",
+  cloud: "cloud-sync",
+  support: "headset",
+  pricing: "price-tag",
 };
 
-function icons8Url(slug, size) {
-  return `https://img.icons8.com/ios-glyphs/${size}/ffffff/${slug}.png`;
+function icons8Url(slug, size, color, variant) {
+  if (variant === "color") {
+    return `https://img.icons8.com/color/${size}/${slug}.png`;
+  }
+  const hex = (color || "ffffff").replace("#", "");
+  return `https://img.icons8.com/ios-glyphs/${size}/${hex}/${slug}.png`;
 }
 
-export function MaterialIcon({ name, size = 20, className = "" }) {
+export function MaterialIcon({
+  name,
+  size = 20,
+  className = "",
+  color = "ffffff",
+  variant = "ios-glyphs",
+}) {
   const slug = ICONS8_SLUGS[name];
   if (!slug) {
     return (
@@ -102,7 +120,7 @@ export function MaterialIcon({ name, size = 20, className = "" }) {
   }
   return (
     <img
-      src={icons8Url(slug, size)}
+      src={icons8Url(slug, size, color, variant)}
       alt=""
       width={size}
       height={size}
@@ -115,10 +133,10 @@ export function MaterialIcon({ name, size = 20, className = "" }) {
   );
 }
 
-export function renderIcon(icon, size = 20, className = "") {
+export function renderIcon(icon, size = 20, className = "", color) {
   if (!icon) return null;
   if (typeof icon === "string") {
-    return <MaterialIcon name={icon} size={size} className={className} />;
+    return <MaterialIcon name={icon} size={size} className={className} color={color} />;
   }
-  return <MaterialIcon name="help" size={size} className={className} />;
+  return <MaterialIcon name="help" size={size} className={className} color={color} />;
 }

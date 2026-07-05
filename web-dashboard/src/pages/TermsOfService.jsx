@@ -20,7 +20,7 @@ export function TermsOfServicePage() {
           this review platform. Features, pricing, and availability may change without prior notice.
         </p>
         <p className="legal-doc__callout">
-          Scan results are forensic indicators to assist human reviewers, not definitive proof of
+          Scan results are diagnostic indicators to assist human reviewers, not definitive proof of
           cheating. Interpret results in context.
         </p>
       </LegalArticle>

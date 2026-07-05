@@ -1,25 +1,27 @@
 import React from "react";
 import { DISCORD_INVITE_URL } from "../config/brand.js";
-import { Reveal } from "../components/Reveal.jsx";
 import { MaterialIcon } from "../components/MaterialIcon.jsx";
+import { Reveal } from "../components/Reveal.jsx";
 import { IconDiscord } from "../components/VirelloIcons.jsx";
 import { LegalArticle, LegalDocument } from "../components/LegalPage.jsx";
+
+const ICON_ACCENT = "ff4d5f";
 
 export function AboutPage() {
   return (
     <LegalDocument badge="About" title="Who we are" updated="June 2026">
       <p className="legal-doc__lead">
-        Virello helps reviewers run fast Roblox screenshare checks with clear results and steady
-        protection, without a messy setup or vague verdicts.
+        Virello helps reviewers run fast Roblox screenshare checks with clear results, without a messy
+        setup or vague verdicts.
       </p>
 
       <Reveal>
         <LegalArticle index="I" title="What we focus on">
           <ul>
-            <li>Scanning and checking Roblox executor risk on Windows PCs</li>
+            <li>PC checks for Roblox screenshare and support workflows</li>
             <li>License-based access tied to verified Discord roles</li>
-            <li>Regular detection updates through our community</li>
-            <li>Low false positive scoring with clear evidence tiers</li>
+            <li>Regular product updates through our community</li>
+            <li>Clear result summaries reviewers can explain live</li>
           </ul>
         </LegalArticle>
       </Reveal>
@@ -32,17 +34,17 @@ export function AboutPage() {
           </p>
           <div className="about-cards">
             <div className="about-card">
-              <MaterialIcon name="lock" size={22} />
+              <MaterialIcon name="lock" size={24} color={ICON_ACCENT} />
               <strong>Secure by design</strong>
-              <p>No passwords, .ROBLOSECURITY cookies, or message contents are collected.</p>
+              <p>Sensitive credentials and private messages are never collected.</p>
             </div>
             <div className="about-card">
-              <MaterialIcon name="track_changes" size={22} />
-              <strong>Accuracy first</strong>
-              <p>Strong calls only when multiple signals line up on the same scan.</p>
+              <MaterialIcon name="verified" size={24} color={ICON_ACCENT} />
+              <strong>Clear verdicts</strong>
+              <p>Results are structured so your team can review them together on a call.</p>
             </div>
             <div className="about-card">
-              <MaterialIcon name="groups" size={22} />
+              <MaterialIcon name="groups" size={24} color={ICON_ACCENT} />
               <strong>Community driven</strong>
               <p>Updates, support, and access verification flow through Discord.</p>
             </div>

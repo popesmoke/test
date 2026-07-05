@@ -18,7 +18,7 @@ export function PrivacyPolicyPage() {
         <ul>
           <li>Discord user ID, username, and avatar for authentication and access verification</li>
           <li>Diagnostic scan reports submitted with explicit user consent via PIN sessions</li>
-          <li>Device and application metadata disclosed at scan time for forensic review</li>
+          <li>Device and application metadata disclosed at scan time and shown in the consent summary</li>
           <li>Messages and files submitted in Discord support or ticket lanes</li>
           <li>Payment proof for verification (screenshots or transaction references)</li>
           <li>Server roles, access permissions, and whitelist status</li>
@@ -31,7 +31,7 @@ export function PrivacyPolicyPage() {
         <ul>
           <li>Passwords, authentication codes, or two-factor backups</li>
           <li>Banking credentials or credit card numbers</li>
-          <li>Roblox session cookies (.ROBLOSECURITY) or browser session tokens</li>
+          <li>Login session cookies or browser session tokens</li>
           <li>Government identification documents</li>
           <li>Private message contents unrelated to support cases</li>
         </ul>

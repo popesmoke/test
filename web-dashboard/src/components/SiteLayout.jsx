@@ -85,7 +85,7 @@ export function SiteLayout({ children, variant = "default" }) {
         </div>
       </header>
 
-      <main className="site-main">{content}</main>
+      <main className="site-main page-enter" key={location.pathname}>{content}</main>
 
       <footer className="site-footer">
         <div className="site-footer__inner">
@@ -94,7 +94,7 @@ export function SiteLayout({ children, variant = "default" }) {
               <img src={BRAND_LOGO} alt="" className="site-footer__logo" />
               <div>
                 <strong>{BRAND_FULL}</strong>
-                <p>Consent-first Roblox diagnostic scans for reviewers and support teams.</p>
+                <p>Consent-first PC scans for Roblox reviewer and support teams.</p>
               </div>
             </div>
 

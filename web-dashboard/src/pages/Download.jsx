@@ -1,8 +1,12 @@
 import React from "react";
 import { Link } from "react-router-dom";
+import { MaterialIcon } from "../components/MaterialIcon.jsx";
 import { Reveal } from "../components/Reveal.jsx";
 import { BRAND_FULL, DISCORD_INVITE_URL, SCANNER_DOWNLOAD_URL } from "../config/brand.js";
-import { IconConsent, IconDiscord, IconDownload, IconTimer, IconWindows } from "../components/VirelloIcons.jsx";
+import { IconDiscord } from "../components/VirelloIcons.jsx";
+
+const ICON_ACCENT = "ff4d5f";
+const ICON_SOFT = "ff8d9a";
 
 const REQUIREMENTS = [
   "Windows 10 or 11 (64-bit)",
@@ -14,7 +18,7 @@ const REQUIREMENTS = [
 const STEPS = [
   "Download and run the Virello scanner on the device being checked.",
   "Enter the PIN provided by your reviewer and read the consent summary.",
-  "Start the scan. Primary results are delivered within six minutes.",
+  "Start the scan and wait for it to finish.",
   "Your reviewer views the completed report in the Review Console.",
 ];
 
@@ -28,13 +32,13 @@ export function DownloadPage() {
           <p className="download-hero__eyebrow">Desktop Scanner</p>
           <h1>Download {BRAND_FULL}</h1>
           <p>
-            The Virello desktop scanner runs a full PC check with explicit user consent.
+            The Virello desktop app runs a PC check with explicit user consent.
             Reviewers generate a PIN in the console. Users run this app to complete the scan.
           </p>
           <div className="download-hero__actions">
             {hasDirectDownload ? (
               <a href={SCANNER_DOWNLOAD_URL} className="btn btn--primary btn--lg" download>
-                <IconDownload size={20} />
+                <MaterialIcon name="download" size={20} color="ffffff" />
                 Download for Windows
               </a>
             ) : (
@@ -56,21 +60,21 @@ export function DownloadPage() {
 
         <Reveal className="download-hero__card" delay={100}>
           <div className="download-stat">
-            <IconTimer size={22} />
+            <MaterialIcon name="timer" size={24} color={ICON_SOFT} />
             <div>
-              <strong>6 min</strong>
-              <span>Primary scan delivery</span>
+              <strong>Fast delivery</strong>
+              <span>Results upload when the scan finishes</span>
             </div>
           </div>
           <div className="download-stat">
-            <IconConsent size={22} />
+            <MaterialIcon name="consent" size={24} color={ICON_SOFT} />
             <div>
               <strong>Consent first</strong>
               <span>No hidden collection</span>
             </div>
           </div>
           <div className="download-stat">
-            <IconWindows size={22} />
+            <MaterialIcon name="windows" size={24} color={ICON_SOFT} />
             <div>
               <strong>Windows</strong>
               <span>64-bit desktop app</span>
@@ -89,7 +93,7 @@ export function DownloadPage() {
           </ul>
         </Reveal>
         <Reveal className="download-panel" delay={120}>
-          <h2>How scanning works</h2>
+          <h2>How it works</h2>
           <ol>
             {STEPS.map((item) => (
               <li key={item}>{item}</li>
