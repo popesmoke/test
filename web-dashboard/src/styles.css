@@ -47,6 +47,10 @@ body {
   background: var(--bg);
 }
 
+html {
+  scroll-behavior: smooth;
+}
+
 /* ─── Buttons (links + buttons share styles) ─── */
 
 .btn,
@@ -274,7 +278,27 @@ button.primary {
   text-decoration: none;
   font-size: 14px;
   font-weight: 500;
-  transition: color 0.15s, background 0.15s;
+  transition: color 0.2s ease, background 0.2s ease;
+  position: relative;
+}
+
+.site-nav__link::after {
+  content: "";
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: 4px;
+  height: 2px;
+  background: var(--accent);
+  border-radius: 1px;
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 0.25s var(--ease-out);
+}
+
+.site-nav__link:hover::after,
+.site-nav__link--active::after {
+  transform: scaleX(1);
 }
 
 .site-nav__link:hover {
@@ -843,7 +867,7 @@ button.primary {
 .feature-card:hover {
   border-color: var(--border-strong);
   transform: translateY(-2px);
-  box-shadow: var(--shadow-md);
+  box-shadow: var(--shadow-sm);
 }
 
 .feature-card__icon {
@@ -1097,12 +1121,10 @@ button.primary {
 .legal-doc__hero {
   margin-bottom: 36px;
   padding: 28px 28px 24px;
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  background:
-    linear-gradient(180deg, var(--accent-muted), transparent 70%),
-    var(--surface);
-  border-left: 4px solid var(--accent);
+  background: var(--surface);
+  border-left: 3px solid var(--accent);
 }
 
 .legal-doc__badge {
@@ -1258,14 +1280,18 @@ button.primary {
   transition: border-color 0.25s ease, transform 0.25s var(--ease-out);
 }
 
+.about-card .icons8-icon {
+  margin-bottom: 10px;
+  transition: transform 0.3s var(--ease-spring);
+}
+
 .about-card:hover {
   border-color: var(--border-strong);
   transform: translateY(-2px);
 }
 
-.about-card .v-icon,
-.about-card .icons8-icon {
-  margin-bottom: 10px;
+.about-card:hover .icons8-icon {
+  transform: scale(1.08);
 }
 
 .about-card strong {
@@ -1464,6 +1490,7 @@ button.primary {
 .auth-card__notice {
   display: flex;
   gap: 12px;
+  align-items: flex-start;
   padding: 14px;
   border-radius: var(--radius-sm);
   background: var(--accent-muted);
@@ -1471,6 +1498,10 @@ button.primary {
   font-size: 13px;
   line-height: 1.55;
   color: var(--text-muted);
+}
+
+.auth-card__notice p {
+  margin: 0;
 }
 
 .auth-card__notice svg {
@@ -4021,21 +4052,35 @@ input {
 .pricing-card:hover {
   border-color: var(--border-strong);
   transform: translateY(-2px);
-  box-shadow: var(--shadow-md);
+  box-shadow: var(--shadow-sm);
 }
 
 .pricing-card--featured {
-  border-color: rgba(239, 35, 60, 0.55);
-  box-shadow: 0 0 0 1px rgba(239, 35, 60, 0.15);
+  border-color: rgba(239, 35, 60, 0.4);
 }
 
 .pricing-card--featured:hover {
-  box-shadow: var(--shadow-md), 0 0 0 1px rgba(239, 35, 60, 0.2);
+  box-shadow: var(--shadow-sm);
 }
 
 .pricing-card__head {
   display: grid;
   gap: 10px;
+}
+
+.pricing-card__icon {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-md);
+  background: var(--accent-muted);
+  border: 1px solid var(--border);
+  transition: transform 0.3s var(--ease-spring);
+}
+
+.pricing-card:hover .pricing-card__icon {
+  transform: scale(1.06);
 }
 
 .pricing-card h2 {

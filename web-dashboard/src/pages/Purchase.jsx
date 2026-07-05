@@ -1,5 +1,6 @@
 import React from "react";
 import { DISCORD_INVITE_URL } from "../config/brand.js";
+import { MaterialIcon } from "../components/MaterialIcon.jsx";
 import { Reveal } from "../components/Reveal.jsx";
 import { IconDiscord } from "../components/VirelloIcons.jsx";
 import { LegalDocument } from "../components/LegalPage.jsx";
@@ -11,6 +12,7 @@ const PLANS = [
     blurb: "Full access on a simple monthly plan with no long commitment.",
     price: "4.99€",
     period: "/ month",
+    icon: "pricing",
     features: [
       "Full scan access",
       "Unlimited scanner usage",
@@ -24,6 +26,7 @@ const PLANS = [
     blurb: "More time upfront and a better rate for steady users.",
     price: "12.99€",
     period: "/ 3 months",
+    icon: "certificate",
     featured: true,
     features: [
       "Full scan access",
@@ -38,6 +41,7 @@ const PLANS = [
     blurb: "Best value for long term protection, updates, and uninterrupted access.",
     price: "39.99€",
     period: "/ year",
+    icon: "verified",
     features: [
       "Full scan access",
       "Unlimited scanner usage",
@@ -68,6 +72,9 @@ export function PurchasePage() {
               ) : (
                 <span className="pricing-card__badge pricing-card__badge--placeholder" aria-hidden="true" />
               )}
+              <div className="pricing-card__icon">
+                <MaterialIcon name={plan.icon} size={28} color="ff4d5f" />
+              </div>
               <h2>{plan.title}</h2>
               <p className="pricing-card__blurb">{plan.blurb}</p>
             </div>

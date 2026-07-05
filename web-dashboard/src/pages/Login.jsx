@@ -1,6 +1,7 @@
 import React from "react";
 import { Navigate } from "react-router-dom";
 import { BRAND_FULL, BRAND_LOGO, DISCORD_INVITE_URL } from "../config/brand.js";
+import { MaterialIcon } from "../components/MaterialIcon.jsx";
 import { IconDiscord } from "../components/VirelloIcons.jsx";
 import { getStoredToken, startDiscordLogin } from "../lib/auth.js";
 
@@ -40,6 +41,7 @@ export function LoginPage({ loginError }) {
         <div className="auth-card__body">
           {error ? <p className="error" role="alert">{error}</p> : null}
           <div className="auth-card__notice">
+            <MaterialIcon name="lock" size={18} color="ff4d5f" />
             <p>
               You need the <strong>Access</strong> role in our Discord server to generate PINs and
               view completed scans.
