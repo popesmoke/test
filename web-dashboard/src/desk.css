@@ -17,7 +17,7 @@
   --ws-warn: #eab308;
   --ws-bad: #dc2626;
   --ws-radius: 8px;
-  --ws-font-mono: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+  --ws-font-mono: "IBM Plex Mono", "Cascadia Mono", Consolas, monospace;
 }
 
 .ws-shell {

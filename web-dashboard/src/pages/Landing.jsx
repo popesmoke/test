@@ -1,11 +1,11 @@
 import React, { useState } from "react";
 import { Link } from "react-router-dom";
 import { MaterialIcon } from "../components/MaterialIcon.jsx";
+import { DashboardPreview } from "../components/DashboardPreview.jsx";
 import { Reveal } from "../components/Reveal.jsx";
-import { IconDiscord, IconDownload } from "../components/VirelloIcons.jsx";
 
-const ICON_ACCENT = "ff4d5f";
-const ICON_SOFT = "ff8d9a";
+const ICON_ACCENT = "ef4444";
+const ICON_SOFT = "f87171";
 
 const STEPS = [
   {
@@ -58,13 +58,6 @@ const CAPABILITIES = [
   },
 ];
 
-const STATS = [
-  { value: "~2 min", label: "Typical scan time", icon: "timer" },
-  { value: "PIN", label: "Links scan to your session", icon: "pin" },
-  { value: "Win 10+", label: "Desktop scanner", icon: "windows" },
-  { value: "0", label: "Accounts needed for scanned users", icon: "users" },
-];
-
 const FAQ = [
   {
     q: "Does the scanned user need an account?",
@@ -103,69 +96,44 @@ export function LandingPage() {
 
   return (
     <div className="landing">
-      <section className="hero hero--asymmetric">
+      <section className="hero hero--console">
         <Reveal className="hero__content">
           <p className="hero__eyebrow anim-fade-down">Windows screenshare reviews</p>
           <h1 className="anim-fade-up">
-            PC scans built for
-            <span className="hero__accent"> live reviews</span>
+            Virello
+            <span className="hero__accent"> Scanner</span>
           </h1>
           <p className="hero__lead anim-fade-up anim-delay-1">
-            The user approves the scan. You get a clear report in the review console.
+            Consent-first PC scans with a live review console. The user approves the scan — you get a clear threat report.
           </p>
           <div className="hero__actions anim-fade-up anim-delay-2">
             <Link to="/download" className="btn btn--primary btn--lg">
               <MaterialIcon name="download" size={18} color="ffffff" />
               Download scanner
             </Link>
-            <Link to="/purchase" className="btn btn--outline btn--lg">
-              View pricing
-            </Link>
-            <Link to="/workspace" className="btn btn--ghost btn--lg">
+            <Link to="/workspace" className="btn btn--outline btn--lg">
               Open console
             </Link>
           </div>
           <ul className="hero__trust anim-fade-up anim-delay-3">
-            <li>Consent before upload</li>
-            <li>Watch lists you control</li>
-            <li>Most scans take about 2 minutes</li>
+            <li>
+              <MaterialIcon name="consent" size={14} color={ICON_SOFT} />
+              Consent before upload
+            </li>
+            <li>
+              <MaterialIcon name="timer" size={14} color={ICON_SOFT} />
+              ~2 min typical scan
+            </li>
+            <li>
+              <MaterialIcon name="shield" size={14} color={ICON_SOFT} />
+              Discord-gated console
+            </li>
           </ul>
         </Reveal>
 
-        <Reveal className="hero__panel" delay={120}>
-          <div className="hero__panel-inner">
-            <div className="hero__stat hero__stat--highlight">
-              <MaterialIcon name="timer" size={22} color={ICON_SOFT} />
-              <span className="hero__stat-value">~2 min</span>
-              <span className="hero__stat-label">Typical scan time</span>
-            </div>
-            <div className="hero__stat">
-              <MaterialIcon name="pin" size={20} color={ICON_SOFT} />
-              <span className="hero__stat-value">PIN</span>
-              <span className="hero__stat-label">Links the scan to your console session</span>
-            </div>
-            <div className="hero__stat">
-              <MaterialIcon name="windows" size={20} color={ICON_SOFT} />
-              <span className="hero__stat-value">Win 10+</span>
-              <span className="hero__stat-label">Windows desktop scanner</span>
-            </div>
-          </div>
-          <p className="hero__panel-note muted">
-            Reviewers sign in with Discord. Scanned users do not need an account.
-          </p>
+        <Reveal className="hero__visual" delay={100}>
+          <DashboardPreview />
         </Reveal>
-      </section>
-
-      <section className="section section--stats" aria-label="Key metrics">
-        <div className="stats-row">
-          {STATS.map((stat, i) => (
-            <Reveal key={stat.label} className="stat-block" delay={i * 70}>
-              <MaterialIcon name={stat.icon} size={20} color={ICON_SOFT} className="stat-block__icon" />
-              <span className="stat-block__value">{stat.value}</span>
-              <span className="stat-block__label">{stat.label}</span>
-            </Reveal>
-          ))}
-        </div>
       </section>
 
       <section className="section" id="how-it-works">

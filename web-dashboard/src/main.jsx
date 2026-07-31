@@ -2,10 +2,12 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 import "./desk.css";
+import "./dashboard-ui.css";
 import { formatDisplayDate, normalizeIsoDateString } from "./dateFormat.js";
 import { sanitizeEventTimestamp } from "./activityTime.js";
 import { privacyPath, privacyAccountLabel, redactProfilePrefix, publicFindingLabels, shortActivityPath } from "./resultPrivacy.js";
 import { AdminPanel } from "./AdminPanel.jsx";
+import { OverviewDashboard } from "./OverviewDashboard.jsx";
 import { defenderHasActionableSignal, defenderSummary } from "./defenderSignals.js";
 import { exportReportPdf } from "./exportReportPdf.js";
 import { SessionReview } from "./SessionReview.jsx";
@@ -2700,7 +2702,7 @@ export function Dashboard({ token, onLogout }) {
 
   const hasAccess = Boolean(profile?.has_access);
   const isSuperAdmin = Boolean(profile?.is_super_admin);
-  const [showAdmin, setShowAdmin] = useState(false);
+  const [view, setView] = useState("dashboard");
 
   const loadProfile = useCallback(async () => {
     try {
@@ -2905,104 +2907,168 @@ export function Dashboard({ token, onLogout }) {
   }, [selectedId, selectedSessionStatus, token, loadSessions, hasAccess]);
 
   const greetingName = profile?.username || "there";
+  const pendingCount = sessions.filter((s) => s.status === "pending").length;
+  const activeView = hasAccess ? (view === "admin" && !isSuperAdmin ? "dashboard" : view) : "dashboard";
+
+  function openScan(id) {
+    setSelectedId(id);
+    setView("scans");
+  }
+
+  async function createPinAndOpen() {
+    await createPin();
+    setView("scans");
+  }
+
+  const sideNav = [
+    { id: "dashboard", label: "Dashboard", icon: "dashboard" },
+    { id: "scans", label: "Scans", icon: "radar", badge: pendingCount || undefined },
+    ...(isSuperAdmin ? [{ id: "admin", label: "Admin", icon: "admin_panel_settings" }] : []),
+  ];
 
   return (
-    <main className="ws-shell">
-      <header className="ws-topbar">
-        <div className="ws-topbar__brand">
-          <img src={BRAND_LOGO} alt="" className="ws-topbar__logo" />
-          <span className="ws-topbar__label">Review Console</span>
-        </div>
-        <div className="ws-topbar__spacer" />
-        <div className="ws-topbar__user">
-          {profile?.avatar_url ? <img src={profile.avatar_url} alt="" className="ws-topbar__avatar" /> : null}
-          <span>{greetingName}</span>
-        </div>
-        <div className="ws-topbar__actions">
-          <a className="ws-icon-btn" href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer" title="Discord">
-            <MaterialIcon name="forum" size={18} />
-          </a>
-          {hasAccess && selectedPin ? (
-            <button type="button" className="ws-icon-btn" onClick={() => navigator.clipboard?.writeText(selectedPin)} title="Copy PIN">
-              <MaterialIcon name="content_copy" size={18} />
+    <main className="ws-shell ws-shell--nav">
+      <aside className="ws-side" aria-label="Console navigation">
+        <a href="/" className="ws-side__brand">
+          <img src={BRAND_LOGO} alt="" className="ws-side__logo" />
+          <span className="ws-side__brand-text">
+            <strong>Virello</strong>
+            <span>Scanner</span>
+          </span>
+        </a>
+
+        <nav className="ws-side__nav">
+          {sideNav.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              className={`ws-side__link${activeView === item.id ? " is-active" : ""}`}
+              onClick={() => setView(item.id)}
+              disabled={!hasAccess && item.id !== "dashboard"}
+            >
+              <MaterialIcon name={item.icon} size={16} color={activeView === item.id ? "ffffff" : "9aa3b2"} />
+              <span>{item.label}</span>
+              {item.badge ? <em>{item.badge}</em> : null}
             </button>
-          ) : null}
-          {hasAccess ? (
-            <>
-              {isSuperAdmin ? (
-                <button
-                  type="button"
-                  className={`ws-icon-btn ${showAdmin ? "ws-icon-btn--active" : ""}`}
-                  onClick={() => setShowAdmin((v) => !v)}
-                  title={showAdmin ? "Back to cases" : "Admin"}
-                >
-                  <MaterialIcon name="admin_panel_settings" size={18} />
-                </button>
-              ) : null}
+          ))}
+        </nav>
+
+        <div className="ws-side__protect">
+          <MaterialIcon name="shield" size={16} color="22c55e" />
+          <div>
+            <strong>Protection</strong>
+            <span>{hasAccess ? "Active" : "Locked"}</span>
+          </div>
+        </div>
+
+        <div className="ws-side__user">
+          {profile?.avatar_url ? (
+            <img src={profile.avatar_url} alt="" className="ws-side__avatar" />
+          ) : (
+            <span className="ws-side__avatar ws-side__avatar--fallback">{greetingName.slice(0, 1).toUpperCase()}</span>
+          )}
+          <div>
+            <strong>{greetingName}</strong>
+            <span>{isSuperAdmin ? "Administrator" : hasAccess ? "Reviewer" : "Pending access"}</span>
+          </div>
+        </div>
+      </aside>
+
+      <div className="ws-shell__main">
+        <header className="ws-topbar">
+          <div className="ws-topbar__brand">
+            <span className="ws-topbar__label">
+              {activeView === "admin" ? "Admin Dashboard" : activeView === "scans" ? "Scan Review" : "Review Console"}
+            </span>
+          </div>
+          <div className="ws-topbar__spacer" />
+          <div className="ws-topbar__actions">
+            <a className="ws-icon-btn" href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer" title="Discord">
+              <MaterialIcon name="forum" size={18} />
+            </a>
+            {hasAccess && selectedPin && activeView === "scans" ? (
+              <button type="button" className="ws-icon-btn" onClick={() => navigator.clipboard?.writeText(selectedPin)} title="Copy PIN">
+                <MaterialIcon name="content_copy" size={18} />
+              </button>
+            ) : null}
+            {hasAccess ? (
               <button type="button" className="ws-icon-btn" onClick={loadSessions} title="Refresh">
                 <MaterialIcon name="refresh" size={18} />
               </button>
-            </>
-          ) : (
-            <button type="button" className="btn btn--primary btn--sm" onClick={verifyAccess} disabled={verifyBusy}>
-              {verifyBusy ? "Checking…" : "Verify access"}
-            </button>
-          )}
-          <button type="button" className="ws-icon-btn" onClick={onLogout} title="Log out">
-            <MaterialIcon name="logout" size={18} />
-          </button>
-        </div>
-      </header>
-
-      {!hasAccess ? (
-        <section className="access-gate">
-          <div className="access-gate-card">
-            <MaterialIcon name="shield" size={32} />
-            <div>
-              <h2>Access not verified yet</h2>
-              <p>
-                Join our Discord server and get the <strong>Access</strong> role. Then click{" "}
-                <strong>Verify access</strong> to unlock PIN generation and scan results.
-              </p>
-            </div>
-            <div className="access-gate-actions">
-              <a className="discord-invite inline-invite" href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer">
-                Open Discord server
-              </a>
-              <button className="btn btn--primary" type="button" onClick={verifyAccess} disabled={verifyBusy}>
-                {verifyBusy ? "Checking Discord…" : "Verify access"}
+            ) : (
+              <button type="button" className="btn btn--primary btn--sm" onClick={verifyAccess} disabled={verifyBusy}>
+                {verifyBusy ? "Checking…" : "Verify access"}
               </button>
+            )}
+            <button type="button" className="ws-icon-btn" onClick={onLogout} title="Log out">
+              <MaterialIcon name="logout" size={18} />
+            </button>
+          </div>
+        </header>
+
+        {!hasAccess ? (
+          <section className="access-gate">
+            <div className="access-gate-card">
+              <MaterialIcon name="shield" size={32} />
+              <div>
+                <h2>Access not verified yet</h2>
+                <p>
+                  Join our Discord server and get the <strong>Access</strong> role. Then click{" "}
+                  <strong>Verify access</strong> to unlock PIN generation and scan results.
+                </p>
+              </div>
+              <div className="access-gate-actions">
+                <a className="discord-invite inline-invite" href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer">
+                  Open Discord server
+                </a>
+                <button className="btn btn--primary" type="button" onClick={verifyAccess} disabled={verifyBusy}>
+                  {verifyBusy ? "Checking Discord…" : "Verify access"}
+                </button>
+              </div>
+            </div>
+          </section>
+        ) : null}
+
+        {error ? <div className="error-banner workspace-toast" role="alert">{error}</div> : null}
+
+        {hasAccess && activeView === "admin" && isSuperAdmin ? (
+          <div className="ws-shell__body">
+            <AdminPanel apiUrl={API_URL} token={token} authHeaders={authHeaders} />
+          </div>
+        ) : null}
+
+        {hasAccess && activeView === "dashboard" ? (
+          <div className="ws-shell__body">
+            <OverviewDashboard
+              sessions={sessions}
+              onOpenScan={openScan}
+              onNewScan={createPinAndOpen}
+            />
+          </div>
+        ) : null}
+
+        {hasAccess && activeView === "scans" ? (
+          <div className="ws-shell__body ws-shell__body--scans">
+            <div className="ws-frame">
+              <CaseRail
+                sessions={sessions}
+                selectedId={selectedId}
+                flashPinId={flashPinId}
+                onSelect={setSelectedId}
+                onDelete={requestDeleteSession}
+                onNewPin={createPin}
+              />
+              <Results
+                detail={detail}
+                token={token}
+                onSessionReviewSaved={(row) => {
+                  setSessions((prev) => prev.map((s) => (s.id === row.id ? { ...s, ...row } : s)));
+                  setDetail((prev) => (prev && prev.id === row.id ? { ...prev, ...row } : prev));
+                }}
+              />
             </div>
           </div>
-        </section>
-      ) : null}
-
-      {error ? <div className="error-banner workspace-toast" role="alert">{error}</div> : null}
-
-      {isSuperAdmin && showAdmin ? (
-        <AdminPanel apiUrl={API_URL} token={token} authHeaders={authHeaders} />
-      ) : (
-        <div className={`ws-frame ${hasAccess ? "" : "ws-frame--locked"}`}>
-          {hasAccess ? (
-            <CaseRail
-              sessions={sessions}
-              selectedId={selectedId}
-              flashPinId={flashPinId}
-              onSelect={setSelectedId}
-              onDelete={requestDeleteSession}
-              onNewPin={createPin}
-            />
-          ) : null}
-          <Results
-            detail={detail}
-            token={token}
-            onSessionReviewSaved={(row) => {
-              setSessions((prev) => prev.map((s) => (s.id === row.id ? { ...s, ...row } : s)));
-              setDetail((prev) => (prev && prev.id === row.id ? { ...prev, ...row } : prev));
-            }}
-          />
-        </div>
-      )}
+        ) : null}
 
       <ConfirmModal
         open={Boolean(deleteTarget)}
@@ -3015,6 +3081,7 @@ export function Dashboard({ token, onLogout }) {
         }}
         onConfirm={confirmDeleteSession}
       />
+      </div>
     </main>
   );
 }

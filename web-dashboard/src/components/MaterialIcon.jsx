@@ -53,7 +53,7 @@ const ICONS8_SLUGS = {
   windows: "windows-10",
   certificate: "certificate",
   folder: "folder-invoices",
-  event_log: "log",
+  event_log: "todo-list",
   person: "user-male-circle",
   gpp_maybe: "privacy",
   play: "play",
@@ -78,6 +78,13 @@ const ICONS8_SLUGS = {
   cloud: "cloud-sync",
   support: "headset",
   pricing: "price-tag",
+  integrations: "electrical",
+  settings: "settings",
+  alerts: "siren",
+  activity: "activity-history",
+  chart: "combo-chart",
+  trending_up: "combo-chart",
+  new_scan: "plus",
 };
 
 function icons8Url(slug, size, color, variant) {
@@ -125,10 +132,17 @@ export function MaterialIcon({
       width={size}
       height={size}
       className={`icons8-icon ${className}`.trim()}
-      loading="lazy"
+      loading="eager"
       decoding="async"
+      referrerPolicy="no-referrer"
       aria-hidden="true"
-      style={{ display: "inline-block", verticalAlign: "middle", flexShrink: 0 }}
+      onError={(event) => {
+        const img = event.currentTarget;
+        if (img.dataset.fallback === "1") return;
+        img.dataset.fallback = "1";
+        img.src = `https://img.icons8.com/ios-glyphs/${size}/${(color || "ffffff").replace("#", "")}/help.png`;
+      }}
+      style={{ display: "inline-block", verticalAlign: "middle", flexShrink: 0, objectFit: "contain" }}
     />
   );
 }
