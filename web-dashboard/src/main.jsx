@@ -2946,7 +2946,7 @@ export function Dashboard({ token, onLogout }) {
               onClick={() => setView(item.id)}
               disabled={!hasAccess && item.id !== "dashboard"}
             >
-              <MaterialIcon name={item.icon} size={16} color={activeView === item.id ? "ffffff" : "9aa3b2"} />
+              <MaterialIcon name={item.icon} size={16} color={activeView === item.id ? "ef4444" : "9aa3b2"} />
               <span>{item.label}</span>
               {item.badge ? <em>{item.badge}</em> : null}
             </button>

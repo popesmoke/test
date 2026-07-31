@@ -74,7 +74,7 @@ const ICONS8_SLUGS = {
   file_search: "search",
   consent: "checked-checkbox",
   report: "survey",
-  pin: "password",
+  pin: "key",
   cloud: "cloud-sync",
   support: "headset",
   pricing: "price-tag",

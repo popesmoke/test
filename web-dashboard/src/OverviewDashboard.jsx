@@ -25,36 +25,143 @@ function verdictTone(verdict) {
 }
 
 function statusLabel(status, verdict) {
-  if (status === "pending") return "Pending";
+  if (status === "pending") return "Waiting";
   if (status === "expired") return "Expired";
   const tone = verdictTone(verdict);
   if (tone === "clean") return "Clean";
-  if (tone === "threat") return "Threat Detected";
-  if (tone === "watch") return "Needs Review";
-  return "Completed";
+  if (tone === "threat") return "Threat";
+  if (tone === "watch") return "Needs review";
+  return "Unreviewed";
 }
 
-export function OverviewDashboard({ sessions = [], onOpenScan, onNewScan }) {
-  const [page, setPage] = useState(0);
-  const pageSize = 6;
+function copyPin(pin) {
+  return navigator.clipboard?.writeText(String(pin)).catch(() => {});
+}
 
-  const metrics = useMemo(() => {
-    const total = sessions.length;
+/** Demo sessions for the landing-page live preview */
+export const DEMO_SESSIONS = [
+  {
+    id: 1042,
+    pin: "841251",
+    status: "pending",
+    created_at: new Date(Date.now() - 4 * 60000).toISOString(),
+    reviewer_verdict: null,
+  },
+  {
+    id: 1041,
+    pin: "749369",
+    status: "completed",
+    created_at: new Date(Date.now() - 2 * 3600000).toISOString(),
+    completed_at: new Date(Date.now() - 110 * 60000).toISOString(),
+    reviewer_verdict: null,
+  },
+  {
+    id: 1040,
+    pin: "552018",
+    status: "completed",
+    created_at: new Date(Date.now() - 5 * 3600000).toISOString(),
+    completed_at: new Date(Date.now() - 4.5 * 3600000).toISOString(),
+    reviewed_at: new Date(Date.now() - 4 * 3600000).toISOString(),
+    reviewer_verdict: "Clean",
+  },
+  {
+    id: 1039,
+    pin: "330714",
+    status: "completed",
+    created_at: new Date(Date.now() - 26 * 3600000).toISOString(),
+    completed_at: new Date(Date.now() - 25 * 3600000).toISOString(),
+    reviewed_at: new Date(Date.now() - 24 * 3600000).toISOString(),
+    reviewer_verdict: "Threat — injector",
+  },
+  {
+    id: 1038,
+    pin: "918442",
+    status: "expired",
+    created_at: new Date(Date.now() - 30 * 3600000).toISOString(),
+    expires_at: new Date(Date.now() - 28 * 3600000).toISOString(),
+    reviewer_verdict: null,
+  },
+  {
+    id: 1037,
+    pin: "661203",
+    status: "completed",
+    created_at: new Date(Date.now() - 48 * 3600000).toISOString(),
+    completed_at: new Date(Date.now() - 47 * 3600000).toISOString(),
+    reviewed_at: new Date(Date.now() - 46 * 3600000).toISOString(),
+    reviewer_verdict: "Clean",
+  },
+];
+
+export function OverviewDashboard({
+  sessions = [],
+  onOpenScan,
+  onNewScan,
+  demo = false,
+  compact = false,
+}) {
+  const [page, setPage] = useState(0);
+  const [copiedId, setCopiedId] = useState(null);
+  const pageSize = compact ? 4 : 7;
+
+  const stats = useMemo(() => {
     const completed = sessions.filter((s) => s.status === "completed");
     const pending = sessions.filter((s) => s.status === "pending");
     const expired = sessions.filter((s) => s.status === "expired");
-    const threats = completed.filter((s) => verdictTone(s.reviewer_verdict) === "threat").length;
-    const clean = completed.filter((s) => verdictTone(s.reviewer_verdict) === "clean").length;
-    const reviewed = completed.filter((s) => s.reviewer_verdict).length;
-    const successRate = completed.length ? Math.round((reviewed / completed.length) * 1000) / 10 : 100;
-    return [
-      { label: "Total Scans", value: total.toLocaleString(), icon: "radar", hint: `${pending.length} pending` },
-      { label: "Threats Flagged", value: threats.toLocaleString(), icon: "shield_alert", hint: "From reviewer verdicts" },
-      { label: "Active PINs", value: pending.toLocaleString(), icon: "pin", hint: "Awaiting upload" },
-      { label: "Clean Verdicts", value: clean.toLocaleString(), icon: "check_circle", hint: "Marked clean", ok: true },
-      { label: "Review Rate", value: `${successRate}%`, icon: "speed", hint: "Completed with verdict", ok: true },
-    ];
+    const threats = completed.filter((s) => verdictTone(s.reviewer_verdict) === "threat");
+    const clean = completed.filter((s) => verdictTone(s.reviewer_verdict) === "clean");
+    const unreviewed = completed.filter((s) => !s.reviewer_verdict);
+    const reviewed = completed.filter((s) => s.reviewer_verdict);
+    const reviewRate = completed.length
+      ? Math.round((reviewed.length / completed.length) * 100)
+      : 0;
+    return {
+      total: sessions.length,
+      pending,
+      expired,
+      threats,
+      clean,
+      unreviewed,
+      completed,
+      reviewRate,
+    };
   }, [sessions]);
+
+  const metrics = [
+    {
+      label: "Total scans",
+      value: String(stats.total),
+      icon: "radar",
+      hint: `${stats.completed.length} completed`,
+    },
+    {
+      label: "Waiting PINs",
+      value: String(stats.pending.length),
+      icon: "pin",
+      hint: "Share during screenshare",
+      accent: "warn",
+    },
+    {
+      label: "Needs review",
+      value: String(stats.unreviewed.length),
+      icon: "report",
+      hint: "Completed, no verdict yet",
+      accent: "warn",
+    },
+    {
+      label: "Threats flagged",
+      value: String(stats.threats.length),
+      icon: "shield_alert",
+      hint: "Reviewer verdicts",
+      accent: "bad",
+    },
+    {
+      label: "Clean verdicts",
+      value: String(stats.clean.length),
+      icon: "check_circle",
+      hint: `${stats.reviewRate}% review rate`,
+      accent: "ok",
+    },
+  ];
 
   const chartPoints = useMemo(() => {
     const days = Array.from({ length: 7 }, (_, i) => {
@@ -75,90 +182,43 @@ export function OverviewDashboard({ sessions = [], onOpenScan, onNewScan }) {
     return counts.map((count, i) => ({
       label: days[i].toLocaleDateString(undefined, { weekday: "short" }),
       count,
-      y: 70 - (count / max) * 52,
+      y: 78 - (count / max) * 58,
     }));
   }, [sessions]);
-
-  const alerts = useMemo(() => {
-    const items = [];
-    sessions.slice(0, 40).forEach((s) => {
-      if (verdictTone(s.reviewer_verdict) === "threat") {
-        items.push({
-          id: `t-${s.id}`,
-          title: "Threat verdict recorded",
-          detail: `PIN ${s.pin} marked ${s.reviewer_verdict}`,
-          time: relativeTime(s.reviewed_at || s.completed_at),
-          tone: "bad",
-          icon: "shield_alert",
-        });
-      } else if (s.status === "expired") {
-        items.push({
-          id: `e-${s.id}`,
-          title: "Session expired",
-          detail: `PIN ${s.pin} timed out without results`,
-          time: relativeTime(s.expires_at || s.created_at),
-          tone: "warn",
-          icon: "alert_triangle",
-        });
-      } else if (s.status === "pending") {
-        items.push({
-          id: `p-${s.id}`,
-          title: "PIN waiting",
-          detail: `Session ${s.pin} ready for scanner`,
-          time: relativeTime(s.created_at),
-          tone: "info",
-          icon: "pin",
-        });
-      }
-    });
-    return items.slice(0, 6);
-  }, [sessions]);
-
-  const recent = sessions;
-  const pageCount = Math.max(1, Math.ceil(recent.length / pageSize));
-  const pageRows = recent.slice(page * pageSize, page * pageSize + pageSize);
 
   const linePath = chartPoints
     .map((p, i) => {
-      const x = (i / Math.max(chartPoints.length - 1, 1)) * 220;
-      return `${i === 0 ? "M" : "L"}${x},${p.y}`;
+      const x = (i / Math.max(chartPoints.length - 1, 1)) * 240;
+      return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${p.y.toFixed(1)}`;
     })
     .join(" ");
-  const areaPath = `${linePath} L220,80 L0,80 Z`;
+  const areaPath = `${linePath} L240,90 L0,90 Z`;
 
-  const threatBars = useMemo(() => {
-    const buckets = { Clean: 0, Threat: 0, Watch: 0, Pending: 0, Expired: 0 };
-    sessions.forEach((s) => {
-      if (s.status === "pending") buckets.Pending += 1;
-      else if (s.status === "expired") buckets.Expired += 1;
-      else {
-        const tone = verdictTone(s.reviewer_verdict);
-        if (tone === "clean") buckets.Clean += 1;
-        else if (tone === "threat") buckets.Threat += 1;
-        else buckets.Watch += 1;
-      }
-    });
-    const max = Math.max(...Object.values(buckets), 1);
-    return Object.entries(buckets).map(([name, count]) => ({
-      name,
-      count,
-      pct: Math.round((count / max) * 100),
-    }));
-  }, [sessions]);
+  const pageCount = Math.max(1, Math.ceil(sessions.length / pageSize));
+  const pageRows = sessions.slice(page * pageSize, page * pageSize + pageSize);
+
+  async function handleCopy(pin, id, event) {
+    event?.stopPropagation?.();
+    if (demo) return;
+    await copyPin(pin);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId((prev) => (prev === id ? null : prev)), 1400);
+  }
 
   return (
-    <section className="ov">
+    <section className={`ov${compact ? " ov--compact" : ""}${demo ? " ov--demo" : ""}`}>
       <header className="ov__header">
         <div>
           <h1>Dashboard</h1>
-          <p>Monitor scans and detect threats in real-time.</p>
+          <p>Your PIN sessions, review queue, and recent verdicts.</p>
         </div>
         <div className="ov__header-actions">
-          <span className="ov__range">
-            <MaterialIcon name="schedule" size={14} color="9aa3b2" />
-            Last 7 days
-          </span>
-          <button type="button" className="btn btn--primary btn--sm" onClick={onNewScan}>
+          <button
+            type="button"
+            className="btn btn--primary btn--sm"
+            onClick={onNewScan}
+            disabled={demo}
+          >
             <MaterialIcon name="add" size={14} color="ffffff" />
             New Scan
           </button>
@@ -167,14 +227,18 @@ export function OverviewDashboard({ sessions = [], onOpenScan, onNewScan }) {
 
       <div className="ov__metrics">
         {metrics.map((m) => (
-          <article key={m.label} className="ov__metric">
+          <article key={m.label} className={`ov__metric${m.accent ? ` ov__metric--${m.accent}` : ""}`}>
             <div className="ov__metric-icon">
-              <MaterialIcon name={m.icon} size={18} color={m.ok ? "22c55e" : "ef4444"} />
+              <MaterialIcon
+                name={m.icon}
+                size={18}
+                color={m.accent === "ok" ? "22c55e" : m.accent === "warn" ? "eab308" : "ef4444"}
+              />
             </div>
-            <div>
+            <div className="ov__metric-body">
               <span className="ov__metric-label">{m.label}</span>
               <strong>{m.value}</strong>
-              <em className={m.ok ? "is-ok" : ""}>{m.hint}</em>
+              <em>{m.hint}</em>
             </div>
           </article>
         ))}
@@ -183,32 +247,37 @@ export function OverviewDashboard({ sessions = [], onOpenScan, onNewScan }) {
       <div className="ov__layout">
         <div className="ov__panel ov__panel--table">
           <div className="ov__panel-head">
-            <h2>Recent Scans</h2>
-            <span className="muted">{sessions.length} total</span>
+            <h2>Recent scans</h2>
+            <span className="ov__chip">{sessions.length}</span>
           </div>
           <div className="ov__table-wrap">
             <table className="ov__table">
               <thead>
                 <tr>
-                  <th>PIN / User</th>
+                  <th>PIN</th>
                   <th>Result</th>
-                  <th>Status</th>
-                  <th>Time</th>
-                  <th>Type</th>
+                  <th>Updated</th>
+                  <th />
                 </tr>
               </thead>
               <tbody>
                 {pageRows.length ? (
                   pageRows.map((row) => {
-                    const tone = row.status === "completed" ? verdictTone(row.reviewer_verdict) : row.status;
+                    const tone =
+                      row.status === "completed" ? verdictTone(row.reviewer_verdict) : row.status;
                     return (
-                      <tr key={row.id} onClick={() => onOpenScan?.(row.id)}>
+                      <tr
+                        key={row.id}
+                        onClick={() => {
+                          if (!demo) onOpenScan?.(row.id);
+                        }}
+                      >
                         <td>
                           <span className="ov__user">
                             <span className="ov__avatar">{String(row.pin || "?").slice(0, 1)}</span>
                             <span>
                               <strong>{row.pin}</strong>
-                              <em>Session #{row.id}</em>
+                              <em>#{row.id}</em>
                             </span>
                           </span>
                         </td>
@@ -217,16 +286,29 @@ export function OverviewDashboard({ sessions = [], onOpenScan, onNewScan }) {
                             {statusLabel(row.status, row.reviewer_verdict)}
                           </span>
                         </td>
-                        <td>{row.status}</td>
                         <td>{relativeTime(row.completed_at || row.created_at)}</td>
-                        <td>Scanner</td>
+                        <td>
+                          <button
+                            type="button"
+                            className="ov__icon-btn"
+                            title="Copy PIN"
+                            onClick={(e) => handleCopy(row.pin, row.id, e)}
+                            disabled={demo}
+                          >
+                            <MaterialIcon
+                              name={copiedId === row.id ? "check_circle" : "content_copy"}
+                              size={14}
+                              color={copiedId === row.id ? "22c55e" : "9aa3b2"}
+                            />
+                          </button>
+                        </td>
                       </tr>
                     );
                   })
                 ) : (
                   <tr>
-                    <td colSpan={5} className="ov__empty">
-                      No scans yet. Create a PIN to start.
+                    <td colSpan={4} className="ov__empty">
+                      No scans yet — create a PIN to start a review.
                     </td>
                   </tr>
                 )}
@@ -235,12 +317,13 @@ export function OverviewDashboard({ sessions = [], onOpenScan, onNewScan }) {
           </div>
           {pageCount > 1 ? (
             <div className="ov__pager">
-              {Array.from({ length: pageCount }, (_, i) => (
+              {Array.from({ length: Math.min(pageCount, 8) }, (_, i) => (
                 <button
                   key={i}
                   type="button"
                   className={i === page ? "is-active" : ""}
                   onClick={() => setPage(i)}
+                  disabled={demo}
                 >
                   {i + 1}
                 </button>
@@ -252,113 +335,166 @@ export function OverviewDashboard({ sessions = [], onOpenScan, onNewScan }) {
         <div className="ov__rail">
           <div className="ov__panel">
             <div className="ov__panel-head">
-              <h2>Activity Over Time</h2>
+              <h2>Waiting for upload</h2>
+              <span className="ov__chip">{stats.pending.length}</span>
             </div>
-            <svg className="ov__chart" viewBox="0 0 220 90" preserveAspectRatio="none" aria-hidden="true">
-              <defs>
-                <linearGradient id="ovFill" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#ef4444" stopOpacity="0.4" />
-                  <stop offset="100%" stopColor="#ef4444" stopOpacity="0" />
-                </linearGradient>
-              </defs>
-              <path d={areaPath} fill="url(#ovFill)" />
-              <path d={linePath} fill="none" stroke="#ef4444" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-              {chartPoints.map((p, i) => (
-                <circle key={p.label} cx={(i / Math.max(chartPoints.length - 1, 1)) * 220} cy={p.y} r="3.2" fill="#ef4444" />
-              ))}
-            </svg>
-            <div className="ov__chart-labels">
-              {chartPoints.map((p) => (
-                <span key={p.label}>{p.label}</span>
-              ))}
-            </div>
+            {stats.pending.length ? (
+              <ul className="ov__queue">
+                {stats.pending.slice(0, 5).map((s) => (
+                  <li key={s.id}>
+                    <button
+                      type="button"
+                      className="ov__queue-main"
+                      onClick={() => {
+                        if (!demo) onOpenScan?.(s.id);
+                      }}
+                      disabled={demo}
+                    >
+                      <strong>{s.pin}</strong>
+                      <span>Created {relativeTime(s.created_at)}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="ov__queue-copy"
+                      onClick={(e) => handleCopy(s.pin, `p-${s.id}`, e)}
+                      disabled={demo}
+                    >
+                      {copiedId === `p-${s.id}` ? "Copied" : "Copy"}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="ov__blank">No active PINs. Start a new scan when you’re on a call.</p>
+            )}
           </div>
 
           <div className="ov__panel">
             <div className="ov__panel-head">
-              <h2>Session Mix</h2>
+              <h2>Review queue</h2>
+              <span className="ov__chip ov__chip--warn">{stats.unreviewed.length}</span>
             </div>
-            <ul className="ov__bars">
-              {threatBars.map((bar) => (
-                <li key={bar.name}>
-                  <div className="ov__bars-meta">
-                    <span>{bar.name}</span>
-                    <em>{bar.count}</em>
-                  </div>
-                  <div className="ov__bars-track">
-                    <i style={{ width: `${bar.pct}%` }} />
-                  </div>
-                </li>
-              ))}
-            </ul>
+            {stats.unreviewed.length ? (
+              <ul className="ov__queue">
+                {stats.unreviewed.slice(0, 5).map((s) => (
+                  <li key={s.id}>
+                    <button
+                      type="button"
+                      className="ov__queue-main"
+                      onClick={() => {
+                        if (!demo) onOpenScan?.(s.id);
+                      }}
+                      disabled={demo}
+                    >
+                      <strong>{s.pin}</strong>
+                      <span>Completed {relativeTime(s.completed_at)}</span>
+                    </button>
+                    <span className="ov__pill ov__pill--watch">Open</span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="ov__blank">You’re caught up — no unreviewed reports.</p>
+            )}
           </div>
         </div>
       </div>
 
       <div className="ov__bottom">
-        <div className="ov__panel">
+        <div className="ov__panel ov__panel--chart">
           <div className="ov__panel-head">
-            <h2>System Status</h2>
+            <h2>Scan activity</h2>
+            <span className="muted">Last 7 days</span>
           </div>
-          <ul className="ov__status">
-            {[
-              ["Real-time Scanning", "Active"],
-              ["PIN Sessions", "Operational"],
-              ["Result Storage", "Operational"],
-              ["API Service", "Operational"],
-            ].map(([label, state]) => (
-              <li key={label}>
-                <i />
-                <span>{label}</span>
-                <em>{state}</em>
-              </li>
+          <svg className="ov__chart" viewBox="0 0 240 90" preserveAspectRatio="none" aria-hidden="true">
+            <defs>
+              <linearGradient id="ovFill" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#ef4444" stopOpacity="0.35" />
+                <stop offset="100%" stopColor="#ef4444" stopOpacity="0" />
+              </linearGradient>
+            </defs>
+            <path d={areaPath} fill="url(#ovFill)" />
+            <path
+              d={linePath}
+              fill="none"
+              stroke="#ef4444"
+              strokeWidth="2.4"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+            {chartPoints.map((p, i) => (
+              <circle
+                key={p.label}
+                cx={(i / Math.max(chartPoints.length - 1, 1)) * 240}
+                cy={p.y}
+                r="3"
+                fill="#ef4444"
+              />
             ))}
-          </ul>
-        </div>
-
-        <div className="ov__panel ov__panel--alerts">
-          <div className="ov__panel-head">
-            <h2>Recent Alerts</h2>
+          </svg>
+          <div className="ov__chart-labels">
+            {chartPoints.map((p) => (
+              <span key={p.label}>
+                {p.label}
+                <em>{p.count}</em>
+              </span>
+            ))}
           </div>
-          <ul className="ov__alerts">
-            {alerts.length ? (
-              alerts.map((alert) => (
-                <li key={alert.id} className={`tone-${alert.tone}`}>
-                  <MaterialIcon
-                    name={alert.icon}
-                    size={16}
-                    color={alert.tone === "warn" ? "eab308" : alert.tone === "info" ? "60a5fa" : "ef4444"}
-                  />
-                  <div>
-                    <strong>{alert.title}</strong>
-                    <span>{alert.detail}</span>
-                  </div>
-                  <em>{alert.time}</em>
-                </li>
-              ))
-            ) : (
-              <li className="ov__alerts-empty">No alerts from recent sessions.</li>
-            )}
-          </ul>
         </div>
 
         <div className="ov__panel">
           <div className="ov__panel-head">
-            <h2>Latest Completions</h2>
+            <h2>Threat verdicts</h2>
+          </div>
+          {stats.threats.length ? (
+            <ul className="ov__threats">
+              {stats.threats.slice(0, 5).map((s) => (
+                <li key={s.id}>
+                  <MaterialIcon name="shield_alert" size={16} color="ef4444" />
+                  <div>
+                    <strong
+                      role={demo ? undefined : "button"}
+                      tabIndex={demo ? undefined : 0}
+                      onClick={() => {
+                        if (!demo) onOpenScan?.(s.id);
+                      }}
+                      onKeyDown={(e) => {
+                        if (!demo && (e.key === "Enter" || e.key === " ")) onOpenScan?.(s.id);
+                      }}
+                    >
+                      {s.pin}
+                    </strong>
+                    <span>{s.reviewer_verdict}</span>
+                  </div>
+                  <em>{relativeTime(s.reviewed_at || s.completed_at)}</em>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="ov__blank">No threat verdicts yet. Flagged cases will show up here.</p>
+          )}
+        </div>
+
+        <div className="ov__panel">
+          <div className="ov__panel-head">
+            <h2>Latest verdicts</h2>
           </div>
           <ul className="ov__completions">
-            {sessions
-              .filter((s) => s.status === "completed")
+            {stats.completed
+              .filter((s) => s.reviewer_verdict)
               .slice(0, 5)
               .map((s) => (
                 <li key={s.id}>
-                  <strong>{s.pin}</strong>
-                  <span>{s.reviewer_verdict || "Unreviewed"}</span>
-                  <em>{formatDisplayDate(s.completed_at) || relativeTime(s.completed_at)}</em>
+                  <span className={`ov__dot ov__dot--${verdictTone(s.reviewer_verdict)}`} />
+                  <div>
+                    <strong>{s.pin}</strong>
+                    <span>{s.reviewer_verdict}</span>
+                  </div>
+                  <em>{formatDisplayDate(s.reviewed_at || s.completed_at) || relativeTime(s.completed_at)}</em>
                 </li>
               ))}
-            {!sessions.some((s) => s.status === "completed") ? (
-              <li className="ov__alerts-empty">No completed scans yet.</li>
+            {!stats.completed.some((s) => s.reviewer_verdict) ? (
+              <li className="ov__blank-row">No verdicts recorded yet.</li>
             ) : null}
           </ul>
         </div>
