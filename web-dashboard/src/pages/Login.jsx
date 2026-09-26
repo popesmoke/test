@@ -31,31 +31,48 @@ export function LoginPage({ loginError }) {
 
   return (
     <div className="auth-page">
-      <div className="auth-card auth-card--enter">
-        <div className="auth-card__brand">
-          <Link to="/">
-            <img src={BRAND_LOGO} alt={BRAND_FULL} />
+      <div className="auth-layout auth-layout--enter">
+        <section className="auth-story" aria-labelledby="auth-story-title">
+          <Link to="/" className="auth-story__brand">
+            <img src={BRAND_LOGO} alt="" />
+            <span>{BRAND_FULL}</span>
           </Link>
-          <h1>Review Console</h1>
-          <p>Sign in with Discord to create PIN sessions and review completed scans.</p>
-        </div>
+          <p className="auth-story__eyebrow">REVIEWER WORKSPACE</p>
+          <h2 id="auth-story-title">A clear path from scan to review.</h2>
+          <p className="auth-story__lead">Keep the session, evidence, and reviewer notes together in one case.</p>
+          <ol className="auth-story__steps">
+            <li><span>01</span><div><strong>Create a session PIN</strong><p>Share one code with the person running the scan.</p></div></li>
+            <li><span>02</span><div><strong>Review the submitted evidence</strong><p>See why each item was included and where it came from.</p></div></li>
+            <li><span>03</span><div><strong>Record your decision</strong><p>Make the final call with the context in front of you.</p></div></li>
+          </ol>
+          <Link className="auth-story__back" to="/">Back to Virello</Link>
+        </section>
 
-        <div className="auth-card__body">
-          {error ? <p className="error" role="alert">{error}</p> : null}
-          <div className="auth-card__notice">
-            <p>
-              You need the <strong>Access</strong> role in our Discord server to generate PINs and view reports.
-            </p>
+        <section className="auth-card auth-card--enter" aria-labelledby="login-title">
+          <div className="auth-card__brand">
+            <img src={BRAND_LOGO} alt="" />
+            <p className="auth-card__eyebrow">SECURE SIGN IN</p>
+            <h1 id="login-title">Reviewer console</h1>
+            <p>Continue with the Discord account that has reviewer access.</p>
           </div>
-          <a className="auth-discord-link" href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer">
-            <IconDiscord size={16} />
-            Need access? Join Discord
-          </a>
-          <button className="btn btn--discord btn--lg" type="button" onClick={handleDiscordLogin} disabled={busy}>
-            <IconDiscord size={18} />
-            {busy ? "Connecting…" : "Continue with Discord"}
-          </button>
-        </div>
+
+          <div className="auth-card__body">
+            {error ? <p className="error" role="alert">{error}</p> : null}
+            <div className="auth-card__notice">
+              <p>
+                Your account needs the <strong>Access</strong> role in the Virello Discord server. This role is checked when you sign in.
+              </p>
+            </div>
+            <button className="btn btn--discord btn--lg" type="button" onClick={handleDiscordLogin} disabled={busy}>
+              <IconDiscord size={18} />
+              {busy ? "Connecting to Discord…" : "Continue with Discord"}
+            </button>
+            <a className="auth-discord-link" href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer">
+              Need reviewer access? Join the server
+            </a>
+            <p className="auth-card__privacy">The scanned user does not need to create an account.</p>
+          </div>
+        </section>
       </div>
     </div>
   );

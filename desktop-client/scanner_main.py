@@ -42,32 +42,22 @@ from roblox_runtime import roblox_runtime_provenance_scan
 API_URL = get_api_url()
 CONSENT_VERSION = "2026-06-02.virello-scanner"
 
-# Professional forensic stages — progress is driven by real collector milestones, not faked.
+# Progress updates correspond to collector milestones reported by build_report().
 SCAN_STAGES = [
-    "Preparing",
-    "Environment analysis",
-    "Process analysis",
-    "File & artifact analysis",
-    "Signature matching",
-    "Correlation & risk",
+    "Preparing scan",
+    "Collecting evidence",
+    "Matching indicators",
+    "Correlating findings",
+    "Building report",
     "Report upload",
 ]
 
-# Progress bar: real milestones from build_report() plus a light animation between updates.
-PROGRESS_TICK_SEC = 0.22
-PROGRESS_STEP = 0.55
-PROGRESS_CAP_DURING_SCAN = 92.0
-PRE_SCAN_STAGE_DELAY_SEC = 0.08
-PRE_SCAN_STAGE_PROGRESS = {
-    "Preparing": 6.0,
-    "Environment analysis": 12.0,
-    "Process analysis": 18.0,
-}
-
 COLLECTED_CATEGORIES = [
-    "Device and app diagnostic metadata needed for review.",
-    "Recent activity and security signals relevant to the support case.",
-    "No passwords, browser session cookies (.ROBLOSECURITY), or message contents are collected.",
+    "Windows and Roblox logs, execution records, and security events.",
+    "Running process names, installed app names, and basic device details.",
+    "Relevant file paths, timestamps, hashes, and signature details.",
+    "Targeted browser download and cache indicators related to the scan.",
+    "No saved passwords, browser cookies or sessions, account profiles, or private messages.",
 ]
 
 DISCORD_URL = "https://discord.gg/wPZXKaPyWY"
@@ -17317,7 +17307,7 @@ def build_report() -> dict:
     scan_mode = str(os.environ.get("VIRELLO_SCAN_MODE") or "deep").strip().lower()
     if scan_mode not in {"quick", "deep", "custom"}:
         scan_mode = "deep"
-    _report_scan_progress(24.0, SCAN_STAGES[3])
+    _report_scan_progress(24.0, SCAN_STAGES[1])
     _collect_started = _time.perf_counter()
     memory = psutil.virtual_memory()
     disk = psutil.disk_usage(str(Path.home().anchor or Path.home()))
@@ -17384,8 +17374,8 @@ def build_report() -> dict:
         deletion_signals = fut_deletion.result()
         designated, sha_blocklist = fut_folders.result()
         forensic_core = fut_forensic_core.result()
-        _report_scan_progress(48.0, SCAN_STAGES[3])
-        _report_scan_progress(52.0, SCAN_STAGES[4])
+        _report_scan_progress(48.0, SCAN_STAGES[1])
+        _report_scan_progress(52.0, SCAN_STAGES[2])
         fut_disk_exe = pool.submit(recent_disk_executable_scan)
 
         fut_forensic = pool.submit(
@@ -17434,9 +17424,9 @@ def build_report() -> dict:
             wait(_barrier_two, timeout=max(0.0, scan_seconds_remaining()))
 
         _mark_phase("collectors", _collect_started)
-        _report_scan_progress(64.0, SCAN_STAGES[4])
+        _report_scan_progress(64.0, SCAN_STAGES[2])
         _correlate_started = _time.perf_counter()
-        _report_scan_progress(68.0, SCAN_STAGES[5])
+        _report_scan_progress(68.0, SCAN_STAGES[3])
         prefetched_artifact_scans = _resolve_prefetched_artifact_scans(artifact_scan_futures)
         roblox_surface = build_roblox_exploit_surface_report(prefetched_artifact_scans)
         forensic_bundle = fut_forensic.result()
@@ -17709,7 +17699,7 @@ def build_report() -> dict:
         )
 
     _mark_phase("correlation", _correlate_started)
-    _report_scan_progress(86.0, SCAN_STAGES[5])
+    _report_scan_progress(86.0, SCAN_STAGES[4])
     _phase_times["total_seconds"] = round(_time.perf_counter() - _phase_started, 2)
     _scan_budget = {
         "max_seconds": SCAN_MAX_SECONDS,
@@ -18083,19 +18073,19 @@ class RectButton(Frame):
 
 
 class DiagnosticApp:
-    UI_BG = "#0a0a0c"
-    UI_SURFACE = "#121214"
-    UI_BORDER = "#252528"
-    UI_ACCENT = "#dc2626"
-    UI_ACCENT_HOVER = "#ef4444"
-    UI_TEXT = "#fafafa"
-    UI_MUTED = "#71717a"
-    UI_SUCCESS = "#16a34a"
-    WIN_WIDTH = 720
-    WIN_HEIGHT = 400
-    TEXT_WRAP = 320
+    UI_BG = "#0e1113"
+    UI_SURFACE = "#15191c"
+    UI_BORDER = "#2c343a"
+    UI_ACCENT = "#c95055"
+    UI_ACCENT_HOVER = "#dc6468"
+    UI_TEXT = "#edf0f2"
+    UI_MUTED = "#a0aab1"
+    UI_SUCCESS = "#72b899"
+    WIN_WIDTH = 800
+    WIN_HEIGHT = 500
+    TEXT_WRAP = 390
     BTN_WIDTH = 164
-    RIGHT_COL_WIDTH = 272
+    RIGHT_COL_WIDTH = 300
     WELCOME_BTN_WIDTH = 248
 
     def __init__(self) -> None:
@@ -18341,7 +18331,7 @@ class DiagnosticApp:
         self._fade_label(left_inner, "Virello Scanner", "Title.TLabel", delay=0.04).pack(anchor="w", pady=(6, 0))
         self._fade_label(
             left_inner,
-            "Secure remote system diagnostics. Run a one-time scan with your session PIN and submit results to your reviewer.",
+            "Run a one-time, consent-based scan and send its report to your reviewer using a session PIN.",
             "Muted.TLabel",
             delay=0.08,
             wraplength=self.TEXT_WRAP,
@@ -18368,9 +18358,9 @@ class DiagnosticApp:
 
     def _build_pin_content(self) -> None:
         left, right = self._split_columns()
-        self._fade_label(left, "SESSION", "Eyebrow.TLabel", delay=0.0).pack(anchor="w")
-        self._fade_label(left, "Enter PIN", "Title.TLabel", delay=0.04).pack(anchor="w", pady=(6, 0))
-        self._fade_label(left, "Use the code provided by your reviewer.", "Muted.TLabel", delay=0.08).pack(
+        self._fade_label(left, "BEFORE YOU CONTINUE", "Eyebrow.TLabel", delay=0.0).pack(anchor="w")
+        self._fade_label(left, "Enter session PIN", "Title.TLabel", delay=0.04).pack(anchor="w", pady=(6, 0))
+        self._fade_label(left, "Use the code provided by your reviewer. Your report is uploaded after the scan.", "Muted.TLabel", delay=0.08, wraplength=self.TEXT_WRAP).pack(
             anchor="w", pady=(10, 14)
         )
         entry = ttk.Entry(left, textvariable=self.pin, font=("Consolas", 18), justify="center")
@@ -18378,7 +18368,7 @@ class DiagnosticApp:
         entry.focus()
         ttk.Checkbutton(
             left,
-            text="I agree to run this scan and submit results for review.",
+            text="I have read the summary and agree to scan and submit this report.",
             variable=self.consent,
         ).pack(anchor="w", pady=(16, 0))
         btn_row = Frame(left, bg=self.UI_BG)
@@ -18387,15 +18377,17 @@ class DiagnosticApp:
         self._rect_btn(btn_row, "Back", lambda: self._show_screen(self._build_welcome_content), primary=False, width=100).pack(
             side="left"
         )
-        self._fade_label(right, "COLLECTION SUMMARY", "Eyebrow.TLabel", delay=0.1).pack(anchor="w")
-        for idx, item in enumerate(COLLECTED_CATEGORIES):
+        self._fade_label(right, "WHAT THE REPORT INCLUDES", "Eyebrow.TLabel", delay=0.1).pack(anchor="w")
+        for idx, item in enumerate(COLLECTED_CATEGORIES[:-1]):
             self._fade_label(
                 right,
                 f"•  {item}",
                 "Muted.TLabel",
                 delay=0.12 + idx * 0.03,
-                wraplength=260,
+                wraplength=285,
             ).pack(anchor="w", pady=(10, 0))
+        self._fade_label(right, "WHAT IT EXCLUDES", "Eyebrow.TLabel", delay=0.25).pack(anchor="w", pady=(18, 0))
+        self._fade_label(right, COLLECTED_CATEGORIES[-1], "Muted.TLabel", delay=0.28, wraplength=285).pack(anchor="w", pady=(8, 0))
 
     def _build_progress_content(self) -> None:
         left, right = self._split_columns()
@@ -18476,88 +18468,47 @@ class DiagnosticApp:
 
     def scan_and_upload(self) -> None:
         try:
-            stop_anim = threading.Event()
-            progress_value = {"v": 5.0}
+            progress_value = {"v": 0.0}
             progress_lock = threading.Lock()
             stage_state = {"current": SCAN_STAGES[0]}
 
             def on_scan_progress(percent: float, stage: str | None = None) -> None:
                 with progress_lock:
+                    previous_stage = stage_state["current"]
                     progress_value["v"] = max(progress_value["v"], float(percent))
                     if stage:
                         stage_state["current"] = stage
-                self.root.after(0, self.set_progress_percent, progress_value["v"])
-                if stage:
+                    current_percent = progress_value["v"]
+                self.root.after(0, self.set_progress_percent, current_percent)
+                if stage and stage != previous_stage:
+                    self.root.after(0, self.set_stage, previous_stage, "complete")
                     self.root.after(0, self.set_stage, stage, "running")
-
-            def animate_progress() -> None:
-                while not stop_anim.is_set():
-                    with progress_lock:
-                        current = progress_value["v"]
-                        if current < PROGRESS_CAP_DURING_SCAN:
-                            progress_value["v"] = min(PROGRESS_CAP_DURING_SCAN, current + PROGRESS_STEP)
-                            pct = progress_value["v"]
-                        else:
-                            pct = current
-                    self.root.after(0, self.set_progress_percent, pct)
-                    time.sleep(PROGRESS_TICK_SEC)
-
-            anim_thread = threading.Thread(target=animate_progress, daemon=True)
 
             set_scan_progress_callback(on_scan_progress)
             try:
-                with ThreadPoolExecutor(max_workers=1) as pool:
-                    report_future = pool.submit(build_report)
-
-                    self.root.after(0, self.set_progress_percent, progress_value["v"])
-                    for stage in SCAN_STAGES[:3]:
-                        self.root.after(0, self.set_stage, stage, "running")
-                        time.sleep(PRE_SCAN_STAGE_DELAY_SEC)
-                        progress_value["v"] = max(
-                            progress_value["v"],
-                            PRE_SCAN_STAGE_PROGRESS.get(stage, progress_value["v"]),
-                        )
-                        self.root.after(0, self.set_progress_percent, progress_value["v"])
-                        self.root.after(0, self.set_stage, stage, "complete")
-
-                    collect_stage = SCAN_STAGES[3]
-                    self.root.after(0, self.set_stage, collect_stage, "running")
-                    anim_thread.start()
-
-                    while not report_future.done():
-                        time.sleep(0.3)
-
-                    stop_anim.set()
-                    anim_thread.join(timeout=2.0)
-                    report = report_future.result(timeout=15)
-                    self.root.after(0, self.set_stage, collect_stage, "complete")
-                    self.root.after(0, self.set_stage, SCAN_STAGES[4], "complete")
-
-                    finalize_stage = SCAN_STAGES[5]
-                    self.root.after(0, self.set_stage, finalize_stage, "running")
-                    progress_value["v"] = max(progress_value["v"], 90.0)
-                    self.root.after(0, self.set_progress_percent, progress_value["v"])
-                    time.sleep(0.04)
-                    self.root.after(0, self.set_stage, finalize_stage, "complete")
-
-                    upload_stage = SCAN_STAGES[6]
-                    self.root.after(0, self.set_stage, upload_stage, "running")
-                    payload = {
-                        "pin": self.pin.get().strip(),
-                        "consent_version": CONSENT_VERSION,
-                        "collected_categories": COLLECTED_CATEGORIES,
-                        "report": report,
-                    }
-                    response = requests.post(f"{API_URL}/reports", json=payload, timeout=20)
-                    if response.status_code == 410:
-                        raise RuntimeError("This PIN has expired. Ask your reviewer for a new PIN.")
-                    if response.status_code == 404:
-                        raise RuntimeError("PIN not found. Check the code and try again.")
-                    if response.status_code == 409:
-                        raise RuntimeError("This PIN was already used or is no longer valid.")
-                    response.raise_for_status()
-                    self.root.after(0, self.set_progress_percent, 100)
-                    self.root.after(0, self.set_stage, upload_stage, "complete")
+                self.root.after(0, self.set_stage, SCAN_STAGES[0], "running")
+                report = build_report()
+                with progress_lock:
+                    finished_stage = stage_state["current"]
+                self.root.after(0, self.set_stage, finished_stage, "complete")
+                self.root.after(0, self.set_stage, SCAN_STAGES[4], "complete")
+                self.root.after(0, self.set_stage, SCAN_STAGES[5], "running")
+                payload = {
+                    "pin": self.pin.get().strip(),
+                    "consent_version": CONSENT_VERSION,
+                    "collected_categories": COLLECTED_CATEGORIES,
+                    "report": report,
+                }
+                response = requests.post(f"{API_URL}/reports", json=payload, timeout=20)
+                if response.status_code == 410:
+                    raise RuntimeError("This PIN has expired. Ask your reviewer for a new PIN.")
+                if response.status_code == 404:
+                    raise RuntimeError("PIN not found. Check the code and try again.")
+                if response.status_code == 409:
+                    raise RuntimeError("This PIN was already used or is no longer valid.")
+                response.raise_for_status()
+                self.root.after(0, self.set_progress_percent, 100)
+                self.root.after(0, self.set_stage, SCAN_STAGES[5], "complete")
             finally:
                 set_scan_progress_callback(None)
 

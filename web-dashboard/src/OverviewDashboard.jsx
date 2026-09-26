@@ -55,13 +55,13 @@ function queueStatus(session) {
   return { key: "review", label: "In review" };
 }
 
-function riskLabel(session) {
+function reviewOutcome(session) {
   if (session.status !== "completed") return "—";
   const tone = verdictTone(session.reviewer_verdict);
-  if (tone === "threat") return { key: "high", label: "High" };
-  if (tone === "watch") return { key: "elevated", label: "Elevated" };
-  if (tone === "clean") return { key: "low", label: "Low" };
-  return { key: "unknown", label: "Unscored" };
+  if (tone === "threat") return { key: "flagged", label: "Flagged by reviewer" };
+  if (tone === "watch") return { key: "follow-up", label: "Follow-up" };
+  if (tone === "clean") return { key: "cleared", label: "Cleared" };
+  return { key: "pending", label: "Awaiting review" };
 }
 
 function findingsCount(session) {
@@ -77,66 +77,6 @@ function findingsCount(session) {
 function copyPin(pin) {
   return navigator.clipboard?.writeText(String(pin)).catch(() => {});
 }
-
-/** Demo sessions for the landing-page live preview */
-export const DEMO_SESSIONS = [
-  {
-    id: 1042,
-    pin: "841251",
-    status: "pending",
-    created_at: new Date(Date.now() - 4 * 60000).toISOString(),
-    reviewer_verdict: null,
-    findings_count: null,
-  },
-  {
-    id: 1041,
-    pin: "749369",
-    status: "completed",
-    created_at: new Date(Date.now() - 2 * 3600000).toISOString(),
-    completed_at: new Date(Date.now() - 110 * 60000).toISOString(),
-    reviewer_verdict: null,
-    findings_count: 7,
-  },
-  {
-    id: 1040,
-    pin: "552018",
-    status: "completed",
-    created_at: new Date(Date.now() - 5 * 3600000).toISOString(),
-    completed_at: new Date(Date.now() - 4.5 * 3600000).toISOString(),
-    reviewed_at: new Date(Date.now() - 4 * 3600000).toISOString(),
-    reviewer_verdict: "cleared",
-    findings_count: 0,
-  },
-  {
-    id: 1039,
-    pin: "330714",
-    status: "completed",
-    created_at: new Date(Date.now() - 26 * 3600000).toISOString(),
-    completed_at: new Date(Date.now() - 25 * 3600000).toISOString(),
-    reviewed_at: new Date(Date.now() - 24 * 3600000).toISOString(),
-    reviewer_verdict: "ban",
-    findings_count: 12,
-  },
-  {
-    id: 1038,
-    pin: "918442",
-    status: "expired",
-    created_at: new Date(Date.now() - 30 * 3600000).toISOString(),
-    expires_at: new Date(Date.now() - 28 * 3600000).toISOString(),
-    reviewer_verdict: null,
-    findings_count: null,
-  },
-  {
-    id: 1037,
-    pin: "661203",
-    status: "completed",
-    created_at: new Date(Date.now() - 48 * 3600000).toISOString(),
-    completed_at: new Date(Date.now() - 47 * 3600000).toISOString(),
-    reviewed_at: new Date(Date.now() - 46 * 3600000).toISOString(),
-    reviewer_verdict: "cleared",
-    findings_count: 1,
-  },
-];
 
 export function OverviewDashboard({
   sessions = [],
@@ -185,7 +125,7 @@ export function OverviewDashboard({
         <div>
           <p className="ov__eyebrow">Investigation queue</p>
           <h1>Case desk</h1>
-          <p>PIN sessions awaiting upload, review, or clearance.</p>
+          <p>Track each PIN from first upload through reviewer decision.</p>
         </div>
         <div className="ov__header-actions">
           <button
@@ -202,7 +142,7 @@ export function OverviewDashboard({
 
       <div className="ov__metrics">
         <article className="ov__metric">
-          <span className="ov__metric-label">Open cases</span>
+          <span className="ov__metric-label">All cases</span>
           <strong>{stats.total}</strong>
           <em>{stats.completed.length} completed</em>
         </article>
@@ -214,23 +154,23 @@ export function OverviewDashboard({
         <article className="ov__metric ov__metric--warn">
           <span className="ov__metric-label">In review</span>
           <strong>{stats.inReview.length}</strong>
-          <em>Needs a verdict</em>
+          <em>Submitted reports, no decision yet</em>
         </article>
         <article className="ov__metric ov__metric--bad">
           <span className="ov__metric-label">Flagged</span>
           <strong>{stats.flagged.length}</strong>
-          <em>Reviewer threat call</em>
+          <em>Marked by a reviewer</em>
         </article>
         <article className="ov__metric ov__metric--ok">
           <span className="ov__metric-label">Cleared</span>
           <strong>{stats.cleared.length}</strong>
-          <em>Clean verdicts</em>
+          <em>Marked cleared by a reviewer</em>
         </article>
       </div>
 
       <div className="ov__panel ov__panel--table">
         <div className="ov__panel-head">
-          <h2>Investigation queue</h2>
+          <h2>Cases in your queue</h2>
           <span className="ov__chip">{sessions.length}</span>
         </div>
         <div className="ov__table-wrap">
@@ -239,9 +179,9 @@ export function OverviewDashboard({
               <tr>
                 <th>PIN</th>
                 <th>Status</th>
-                <th>Risk</th>
-                <th>Findings</th>
-                <th>Age</th>
+                <th>Reviewer outcome</th>
+                <th>Evidence items</th>
+                <th>Updated</th>
                 <th>Actions</th>
               </tr>
             </thead>
@@ -249,7 +189,7 @@ export function OverviewDashboard({
               {pageRows.length ? (
                 pageRows.map((row) => {
                   const status = queueStatus(row);
-                  const risk = riskLabel(row);
+                  const outcome = reviewOutcome(row);
                   return (
                     <tr
                       key={row.id}
@@ -267,8 +207,8 @@ export function OverviewDashboard({
                         <span className={`ov__pill ov__pill--${status.key}`}>{status.label}</span>
                       </td>
                       <td>
-                        {typeof risk === "object" ? (
-                          <span className={`ov__risk ov__risk--${risk.key}`}>{risk.label}</span>
+                        {typeof outcome === "object" ? (
+                          <span className={`ov__risk ov__risk--${outcome.key}`}>{outcome.label}</span>
                         ) : (
                           "—"
                         )}

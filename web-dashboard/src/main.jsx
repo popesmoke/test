@@ -2567,7 +2567,7 @@ function WorkspaceInspector({
           </div>
           {concernScore != null ? (
             <div className="ws-inspector__field">
-              <dt>Concern level</dt>
+              <dt title="A triage aid based on collected signals, not an automated verdict.">Signal score · triage aid</dt>
               <dd>
                 <span className="ws-inspector__score">{concernScore}/100</span>
               </dd>
@@ -2957,10 +2957,10 @@ export function Dashboard({ token, onLogout }) {
         </nav>
 
         <div className="ws-side__protect">
-          <MaterialIcon name="shield" size={16} color="22c55e" />
+          <MaterialIcon name="verified_user" size={16} color={hasAccess ? "7fc2a2" : "9aa3b2"} />
           <div>
-            <strong>Protection</strong>
-            <span>{hasAccess ? "Active" : "Locked"}</span>
+            <strong>Reviewer access</strong>
+            <span>{hasAccess ? "Verified" : "Verification required"}</span>
           </div>
         </div>
 

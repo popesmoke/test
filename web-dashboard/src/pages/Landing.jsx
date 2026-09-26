@@ -1,7 +1,6 @@
 import React, { useState } from "react";
 import { Link } from "react-router-dom";
 import { MaterialIcon } from "../components/MaterialIcon.jsx";
-import { DashboardPreview } from "../components/DashboardPreview.jsx";
 import { Reveal } from "../components/Reveal.jsx";
 
 const ICON_SOFT = "9b9ba3";
@@ -15,17 +14,17 @@ const STEPS = [
   {
     num: "02",
     title: "User runs the scanner",
-    body: "They download the Windows app, enter your PIN, and approve the consent summary before anything is collected.",
+    body: "They enter the PIN, review what the scan checks, and choose whether to continue.",
   },
   {
     num: "03",
     title: "Scan finishes",
-    body: "The scanner runs locally and uploads results to your session. Most checks complete in about two minutes.",
+    body: "The app examines selected local artifacts, then submits its report to the matching case.",
   },
   {
     num: "04",
     title: "Review the report",
-    body: "Open the session in your console. Findings are ranked so you can walk through them live.",
+    body: "Review each signal with its source and context. The report supports your judgment; it does not decide for you.",
   },
 ];
 
@@ -56,7 +55,7 @@ const FAQ = [
   },
   {
     q: "What data does the scanner collect?",
-    a: "Only what is listed on the consent screen before the scan starts. Passwords, cookies, and private messages are never collected.",
+    a: "The consent screen summarizes the collection. The scanner does not read saved passwords, browser cookies, or private messages, and it does not close browsers.",
   },
   {
     q: "How do I get console access?",
@@ -82,6 +81,43 @@ function FaqItem({ item, open, onToggle }) {
   );
 }
 
+function ReviewFlowPanel() {
+  const steps = [
+    { number: "01", title: "Review the request", detail: "The user sees the collection summary first.", icon: "fact_check", tag: "User controlled" },
+    { number: "02", title: "Scan on the device", detail: "Selected system and Roblox artifacts are checked locally.", icon: "computer", tag: "Local analysis" },
+    { number: "03", title: "Walk through evidence", detail: "The reviewer sees findings, sources, and context in one case.", icon: "manage_search", tag: "Human review" },
+  ];
+
+  return (
+    <div className="review-flow" aria-label="How a review works">
+      <div className="review-flow__head">
+        <div>
+          <p className="review-flow__eyebrow">A clear review process</p>
+          <h2>From consent to context</h2>
+        </div>
+        <span className="review-flow__mark" aria-hidden="true"><MaterialIcon name="shield" size={18} /></span>
+      </div>
+      <ol className="review-flow__steps">
+        {steps.map((step, index) => (
+          <li className="review-flow__step" key={step.number} style={{ "--flow-order": index }}>
+            <span className="review-flow__number">{step.number}</span>
+            <span className="review-flow__icon" aria-hidden="true"><MaterialIcon name={step.icon} size={18} /></span>
+            <span className="review-flow__copy">
+              <strong>{step.title}</strong>
+              <span>{step.detail}</span>
+            </span>
+            <span className="review-flow__tag">{step.tag}</span>
+          </li>
+        ))}
+      </ol>
+      <p className="review-flow__footnote">
+        <MaterialIcon name="info" size={15} />
+        A scan is evidence for a reviewer—not an automatic verdict.
+      </p>
+    </div>
+  );
+}
+
 export function LandingPage() {
   const [openFaq, setOpenFaq] = useState(null);
 
@@ -89,39 +125,37 @@ export function LandingPage() {
     <div className="landing">
       <section className="hero hero--console" aria-label="Virello">
         <Reveal className="hero__content">
-          <h1>
-            Virello
-            <span className="hero__accent"> Scanner</span>
-          </h1>
+          <p className="hero__eyebrow">LOCAL-FIRST ROBLOX PC SCANNER</p>
+          <h1>Evidence you can explain.</h1>
           <p className="hero__lead">
-            Consent-first PC checks for Roblox screenshare reviews — clear reports your team can trust.
+            Virello helps reviewer teams inspect Roblox-related PC evidence during a screenshare, with consent and context built into the process.
           </p>
           <div className="hero__actions">
             <Link to="/download" className="btn btn--primary btn--lg">
-              Download scanner
+              Get the scanner
             </Link>
             <Link to="/workspace" className="btn btn--outline btn--lg">
-              Open console
+              Reviewer console
             </Link>
           </div>
           <ul className="hero__trust">
             <li>
-              <MaterialIcon name="consent" size={14} color={ICON_SOFT} />
-              Consent before upload
+              <MaterialIcon name="check_circle" size={14} color={ICON_SOFT} />
+              User approval before scanning
             </li>
             <li>
-              <MaterialIcon name="timer" size={14} color={ICON_SOFT} />
-              ~2 min typical scan
+              <MaterialIcon name="visibility_off" size={14} color={ICON_SOFT} />
+              No browser cookies or messages
             </li>
             <li>
-              <MaterialIcon name="shield" size={14} color={ICON_SOFT} />
-              Discord-gated console
+              <MaterialIcon name="person_search" size={14} color={ICON_SOFT} />
+              Human-reviewed findings
             </li>
           </ul>
         </Reveal>
 
         <Reveal className="hero__visual" delay={80}>
-          <DashboardPreview />
+          <ReviewFlowPanel />
         </Reveal>
       </section>
 
