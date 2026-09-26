@@ -1,6 +1,21 @@
-﻿import React, { useEffect, useMemo, useState } from "react";
-import { MaterialIcon } from "./components/MaterialIcon.jsx";
-import { SeverityBadge, severityRank } from "./components/SeverityBadge.jsx";
+﻿import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  AlertTriangle,
+  ChevronRight,
+  Clock,
+  Download,
+  FileJson,
+  FileSpreadsheet,
+  FileText,
+  FolderSearch,
+  Link2,
+  Printer,
+  Search,
+  Shield,
+  Users,
+  X,
+} from "lucide-react";
+import { SeverityBadge } from "./components/SeverityBadge.jsx";
 import { defenderSummary } from "./defenderSignals.js";
 import { scanReviewFromReport } from "./reportDigest.js";
 import { formatDisplayLocation, privacyPath, publicFindingLabels } from "./resultPrivacy.js";
@@ -8,273 +23,529 @@ import {
   collectRobloxAccountsFromReport,
   collectDiscordAccountsFromReport,
 } from "./accountExtract.js";
-import { genericFindingTitle, genericReasonLabel, genericReasonDetail } from "./reviewerCopy.js";
-import { forensicSourcesView, securitySignalsView } from "./forensicSources.js";
+import { forensicSourcesView } from "./forensicSources.js";
+import {
+  buildInvestigationFindings,
+  engineVerdictPlain,
+  filterFindings,
+  METHODOLOGY_BLURB,
+  severityCounts,
+  sortFindings,
+} from "./findingsModel.js";
+import { compareSessions } from "./scanCompare.js";
+import { exportReportPdf, findingsToCsv } from "./exportReportPdf.js";
 
 const API_URL = import.meta.env.VITE_API_URL || "https://virello-secure.onrender.com";
 
 const TABS = [
-  { id: "summary", label: "Summary", icon: "description" },
-  { id: "findings", label: "Findings", icon: "shield_alert" },
-  { id: "traces", label: "Traces", icon: "fact_check" },
-  { id: "security", label: "Security", icon: "shield" },
-  { id: "activity", label: "Activity", icon: "history" },
-  { id: "accounts", label: "Accounts", icon: "users" },
+  { id: "overview", label: "Overview", icon: Shield },
+  { id: "findings", label: "Findings", icon: AlertTriangle },
+  { id: "timeline", label: "Timeline", icon: Clock },
+  { id: "evidence", label: "Evidence", icon: Link2 },
+  { id: "accounts", label: "Accounts", icon: Users },
+  { id: "export", label: "Export", icon: Download },
 ];
 
-const VERDICT_META = {
-  clean: { label: "Looks clear", tone: "clean", blurb: "Nothing major stood out on this scan." },
-  watch: { label: "Review recommended", tone: "watch", blurb: "Some warning signs need a closer look." },
-  bad: { label: "High concern", tone: "bad", blurb: "Multiple warning signs — review carefully." },
-};
+const SEVERITY_OPTIONS = ["critical", "high", "medium", "low"];
+const CONFIDENCE_OPTIONS = ["high", "medium", "low"];
+const STATUS_OPTIONS = ["confirmed", "suspicious", "informational", "inconclusive"];
 
-function simpleVerdict(score, bypassRisk) {
-  const combined = Math.min(100, Math.round(score * 0.75 + (bypassRisk || 0) * 0.35));
-  if (combined >= 70) return { ...VERDICT_META.bad, combined };
-  if (combined >= 35) return { ...VERDICT_META.watch, combined };
-  return { ...VERDICT_META.clean, combined };
+function confidencePct(finding) {
+  if (finding.confidence == null) return "—";
+  return `${Math.round(finding.confidence * 100)}%`;
 }
 
-function buildProblems(report, summary) {
-  const sec = report.security_integrity_signals ?? {};
-  const bypass = sec.bypass_resilience ?? {};
-  const problems = [];
-
-  for (const row of bypass.findings ?? []) {
-    problems.push({
-      id: `bypass-${row.title}`,
-      severity: row.severity || "medium",
-      title: genericFindingTitle(row.title),
-      detail: genericReasonDetail(row.title, row.detail),
-    });
-  }
-
-  for (const reason of summary.reasons ?? []) {
-    if (!reason.points) continue;
-    problems.push({
-      id: `score-${reason.label}`,
-      severity: reason.points >= 20 ? "high" : reason.points >= 10 ? "medium" : "low",
-      title: genericReasonLabel(reason.label),
-      detail: genericReasonDetail(reason.label, reason.detail),
-    });
-  }
-
-  const seen = new Set();
-  return problems
-    .filter((p) => {
-      if (seen.has(p.title)) return false;
-      seen.add(p.title);
-      return true;
-    })
-    .sort((a, b) => severityRank(a.severity) - severityRank(b.severity));
-}
-
-function PanelHeader({ icon, title, text }) {
+function Panel({ icon: Icon, title, text, children, compact = false }) {
   return (
-    <header className="ws-panel__head">
-      <MaterialIcon name={icon} size={20} />
-      <div>
-        <h4>{title}</h4>
-        {text ? <p>{text}</p> : null}
-      </div>
-    </header>
-  );
-}
-
-function FindingRow({ problem, defaultOpen = false }) {
-  const [open, setOpen] = useState(defaultOpen);
-  return (
-    <article className={`ws-finding ws-finding--${problem.severity}`}>
-      <button type="button" className="ws-finding__toggle" onClick={() => setOpen((v) => !v)}>
-        <SeverityBadge severity={problem.severity} />
-        <strong>{problem.title}</strong>
-        <MaterialIcon name="chevron_right" size={16} className={open ? "open" : ""} />
-      </button>
-      {open ? <p className="ws-finding__detail">{problem.detail}</p> : null}
-    </article>
+    <section className={`ws-panel${compact ? " ws-panel--compact" : ""}`}>
+      <header className="ws-panel__head">
+        {Icon ? <Icon size={18} strokeWidth={1.75} aria-hidden /> : null}
+        <div>
+          <h4>{title}</h4>
+          {text ? <p>{text}</p> : null}
+        </div>
+      </header>
+      {children ? <div className="ws-panel__body">{children}</div> : null}
+    </section>
   );
 }
 
 function LocationHint({ row, path }) {
   const text = formatDisplayLocation(row) || privacyPath(path);
   if (!text) return null;
-  return <span className="simple-location-hint muted">{text}</span>;
+  return <span className="ws-mono muted">{text}</span>;
 }
 
-function SummaryTab({ verdict, problems, review, report, formatGmtPlus3 }) {
-  const activity = review.last_computer_activity ?? {};
-  const deletionCount = (activity.events ?? []).filter((event) => {
-    const summary = String(event.summary || "").toLowerCase();
-    return event.category === "deletions" || summary.includes("no longer on disk");
-  }).length;
+function StatusChip({ status }) {
+  return <span className={`ws-status-chip ws-status-chip--${status}`}>{status}</span>;
+}
+
+function ConfidenceChip({ tier }) {
+  return <span className={`ws-conf-chip ws-conf-chip--${tier}`}>{tier}</span>;
+}
+
+function OverviewTab({ verdict, findings, counts, report, formatGmtPlus3, onOpenFinding }) {
+  const top = findings.slice(0, 6);
+  const sources = forensicSourcesView(report.security_integrity_signals ?? {});
   const defenderView = defenderSummary(report.security_integrity_signals?.defender);
+  const env = report.performance_environment ?? {};
 
   return (
     <>
-      <div className="ws-bento">
-        <section className={`ws-bento__verdict ws-bento__verdict--${verdict.tone}`}>
-          <p className="ws-bento__verdict-label">Assessment</p>
+      <div className="ws-risk-model" aria-label="Risk and confidence model">
+        <section className={`ws-risk-model__verdict ws-risk-model__verdict--${verdict.tone}`}>
+          <p className="ws-eyebrow">Engine verdict</p>
           <h3>{verdict.label}</h3>
           <p>{verdict.blurb}</p>
+          {verdict.incomplete ? (
+            <p className="ws-risk-model__warn">Scan incomplete — treat weaker signals as inconclusive.</p>
+          ) : null}
         </section>
-        <section className="ws-bento__meter" aria-label={`Concern level ${verdict.combined} out of 100`}>
-          <strong>{verdict.combined}</strong>
-          <span>concern level</span>
+
+        <section className="ws-risk-model__axis" aria-label="Severity summary">
+          <p className="ws-eyebrow">Severity</p>
+          <div className="ws-risk-bars">
+            {["critical", "high", "medium", "low"].map((sev) => (
+              <div key={sev} className={`ws-risk-bar ws-risk-bar--${sev}`}>
+                <span>{sev}</span>
+                <strong>{counts[sev] || 0}</strong>
+              </div>
+            ))}
+          </div>
+          <p className="ws-risk-model__hint">Impact if the indicator is genuine.</p>
+        </section>
+
+        <section className="ws-risk-model__axis" aria-label="Confidence summary">
+          <p className="ws-eyebrow">Confidence</p>
+          <div className="ws-risk-bars">
+            <div className="ws-risk-bar ws-risk-bar--conf-high">
+              <span>high</span>
+              <strong>{counts.confidenceHigh}</strong>
+            </div>
+            <div className="ws-risk-bar ws-risk-bar--conf-medium">
+              <span>medium</span>
+              <strong>{counts.confidenceMedium}</strong>
+            </div>
+            <div className="ws-risk-bar ws-risk-bar--conf-low">
+              <span>low</span>
+              <strong>{counts.confidenceLow}</strong>
+            </div>
+          </div>
+          <p className="ws-risk-model__hint">How strongly evidence supports each indicator.</p>
         </section>
       </div>
 
-      <section className="ws-metrics">
-        <div className="ws-metric">
-          <strong>{problems.length}</strong>
-          <span>warning signs</span>
-        </div>
-        <div className="ws-metric">
-          <strong>{review.evidence_chains?.chain_count ?? 0}</strong>
-          <span>linked traces</span>
-        </div>
-        <div className="ws-metric">
-          <strong>{deletionCount}</strong>
-          <span>deletions logged</span>
-        </div>
-        <div className="ws-metric">
-          <strong>{review.download_history?.suspicious_count ?? 0}</strong>
-          <span>flagged downloads</span>
-        </div>
+      <section className="ws-panel ws-panel--compact">
+        <header className="ws-panel__head">
+          <FolderSearch size={18} strokeWidth={1.75} aria-hidden />
+          <div>
+            <h4>Methodology</h4>
+            <p>{METHODOLOGY_BLURB}</p>
+          </div>
+        </header>
       </section>
 
-      {problems.length ? (
-        <section className="ws-panel">
-          <PanelHeader icon="priority_high" title="Top concerns" text="Most important items first." />
-          <div className="ws-panel__body">
-            {problems.slice(0, 5).map((problem, index) => (
-              <FindingRow key={problem.id} problem={problem} defaultOpen={index === 0} />
-            ))}
-          </div>
-        </section>
-      ) : (
-        <div className="ws-empty-state">
-          <MaterialIcon name="check_circle" size={28} />
-          <p>Nothing concerning stood out on this scan.</p>
+      <div className="ws-metrics">
+        <div className="ws-metric">
+          <strong>{counts.total}</strong>
+          <span>findings</span>
         </div>
-      )}
+        <div className="ws-metric">
+          <strong>{counts.confirmed + counts.suspicious}</strong>
+          <span>actionable</span>
+        </div>
+        <div className="ws-metric">
+          <strong>{sources.collectedCount ?? "—"}</strong>
+          <span>layers checked</span>
+        </div>
+        <div className="ws-metric">
+          <strong>{verdict.engineScore}</strong>
+          <span>engine score</span>
+        </div>
+      </div>
 
-      {defenderView.available ? (
-        <section className="ws-panel ws-panel--compact">
-          <PanelHeader icon="shield" title="Windows security" text={defenderView.statusLabel} />
-        </section>
-      ) : null}
+      <Panel
+        icon={AlertTriangle}
+        title="Top findings"
+        text="Highest severity first — open a row for full investigative detail."
+      >
+        {top.length ? (
+          <ul className="ws-findings-preview">
+            {top.map((finding) => (
+              <li key={finding.id}>
+                <button type="button" className="ws-findings-preview__row" onClick={() => onOpenFinding(finding.id)}>
+                  <SeverityBadge severity={finding.severity} compact />
+                  <span className="ws-findings-preview__title">{finding.title}</span>
+                  <ConfidenceChip tier={finding.confidenceTier} />
+                  <StatusChip status={finding.status} />
+                  <ChevronRight size={14} aria-hidden />
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <div className="ws-empty-state">
+            <p>No investigative findings on this scan.</p>
+          </div>
+        )}
+      </Panel>
+
+      {(env.os || env.boot_time || defenderView.available) && (
+        <Panel icon={Shield} title="Environment" text="Host context collected with the report." compact>
+          <dl className="ws-env-grid">
+            {env.os ? (
+              <>
+                <dt>OS</dt>
+                <dd>{env.os}</dd>
+              </>
+            ) : null}
+            {env.boot_time ? (
+              <>
+                <dt>Last boot</dt>
+                <dd>{formatGmtPlus3(env.boot_time)}</dd>
+              </>
+            ) : null}
+            {report.generated_at ? (
+              <>
+                <dt>Scan time</dt>
+                <dd>{formatGmtPlus3(report.generated_at)}</dd>
+              </>
+            ) : null}
+            {defenderView.available ? (
+              <>
+                <dt>Defender</dt>
+                <dd>{defenderView.statusLabel}</dd>
+              </>
+            ) : null}
+          </dl>
+        </Panel>
+      )}
     </>
   );
 }
 
-const CHAIN_ACTION_LABELS = {
-  executed: "Ran",
-  ran: "Ran",
-  downloaded: "Downloaded",
-  deleted: "Deleted",
-  on_disk: "On disk",
-  known_hash: "Known match",
-  removed_trace: "Trace remains",
-  filesystem: "File system",
-  correlated: "Linked",
-  traced: "Traced",
-};
+function FindingDetail({ finding, formatGmtPlus3, onClose }) {
+  if (!finding) return null;
+  return (
+    <aside className="ws-finding-detail" aria-label="Finding detail">
+      <header className="ws-finding-detail__head">
+        <div>
+          <div className="ws-finding-detail__meta">
+            <SeverityBadge severity={finding.severity} />
+            <ConfidenceChip tier={finding.confidenceTier} />
+            <StatusChip status={finding.status} />
+          </div>
+          <h3>{finding.title}</h3>
+          <p className="ws-mono muted">{finding.category} · {finding.detectionMethod}</p>
+        </div>
+        <button type="button" className="ws-icon-btn" onClick={onClose} aria-label="Close detail">
+          <X size={16} />
+        </button>
+      </header>
 
-function FindingsTab({ problems, review, formatGmtPlus3 }) {
-  const chains = review.evidence_chains?.chains ?? [];
-  const programs = (review.executable_inventory?.items ?? []).filter((row) => row.suspicious);
-  const sortedChains = [...chains].sort((a, b) => {
-    const aHigh = a.confidence === "high" ? 0 : 1;
-    const bHigh = b.confidence === "high" ? 0 : 1;
-    return aHigh - bHigh;
-  });
+      <section>
+        <h4>Why flagged</h4>
+        <p>{finding.whyFlagged}</p>
+      </section>
+
+      <section>
+        <h4>Evidence</h4>
+        {finding.evidence?.length ? (
+          <ul className="ws-evidence-list">
+            {finding.evidence.map((item, index) => (
+              <li key={`${item.label}-${index}`}>
+                <span className="ws-eyebrow">{item.label}</span>
+                <p className={item.kind === "hash" || item.kind === "path" ? "ws-mono" : ""}>{item.value}</p>
+                {item.timestamp ? <time>{formatGmtPlus3(item.timestamp)}</time> : null}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="muted">No structured evidence excerpts.</p>
+        )}
+      </section>
+
+      <section>
+        <h4>Assessment</h4>
+        <dl className="ws-env-grid">
+          <dt>Severity</dt>
+          <dd>{finding.severity}</dd>
+          <dt>Confidence</dt>
+          <dd>
+            {finding.confidenceTier}
+            {finding.confidence != null ? ` (${confidencePct(finding)})` : ""}
+          </dd>
+          <dt>Status</dt>
+          <dd>{finding.status}</dd>
+          {finding.location ? (
+            <>
+              <dt>Location</dt>
+              <dd className="ws-mono">{finding.location}</dd>
+            </>
+          ) : null}
+          {finding.timestamp ? (
+            <>
+              <dt>Timestamp</dt>
+              <dd>{formatGmtPlus3(finding.timestamp)}</dd>
+            </>
+          ) : null}
+          {finding.hashes?.length ? (
+            <>
+              <dt>Hashes</dt>
+              <dd className="ws-mono">{finding.hashes.join("\n")}</dd>
+            </>
+          ) : null}
+          {finding.relatedIds?.length ? (
+            <>
+              <dt>Related</dt>
+              <dd>{finding.relatedIds.length} linked finding(s)</dd>
+            </>
+          ) : null}
+        </dl>
+      </section>
+
+      <section>
+        <h4>Recommended action</h4>
+        <p>{finding.recommendedAction}</p>
+      </section>
+    </aside>
+  );
+}
+
+function FindingsTab({
+  findings,
+  formatGmtPlus3,
+  selectedId,
+  setSelectedId,
+  searchRef,
+}) {
+  const [query, setQuery] = useState("");
+  const [severity, setSeverity] = useState([]);
+  const [confidence, setConfidence] = useState([]);
+  const [category, setCategory] = useState([]);
+  const [status, setStatus] = useState([]);
+  const [sortKey, setSortKey] = useState("severity");
+  const listRef = useRef(null);
+
+  const categories = useMemo(() => {
+    const set = new Set(findings.map((f) => f.category).filter(Boolean));
+    return [...set].sort();
+  }, [findings]);
+
+  const filtered = useMemo(
+    () =>
+      sortFindings(
+        filterFindings(findings, { query, severity, confidence, category, status }),
+        sortKey,
+      ),
+    [findings, query, severity, confidence, category, status, sortKey],
+  );
+
+  const selected = filtered.find((f) => f.id === selectedId) || findings.find((f) => f.id === selectedId) || null;
+  const selectedIndex = filtered.findIndex((f) => f.id === selectedId);
+
+  const toggleFilter = (list, setList, value) => {
+    setList((prev) => (prev.includes(value) ? prev.filter((v) => v !== value) : [...prev, value]));
+  };
+
+  useEffect(() => {
+    if (!filtered.length) return;
+    if (selectedId === undefined) {
+      setSelectedId(filtered[0].id);
+      return;
+    }
+    if (selectedId === null) return;
+    if (!filtered.some((f) => f.id === selectedId)) {
+      setSelectedId(filtered[0].id);
+    }
+  }, [filtered, selectedId, setSelectedId]);
+
+  const onListKeyDown = useCallback(
+    (event) => {
+      if (!filtered.length) return;
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        const next = Math.min(filtered.length - 1, Math.max(0, selectedIndex) + 1);
+        setSelectedId(filtered[next].id);
+      } else if (event.key === "ArrowUp") {
+        event.preventDefault();
+        const next = Math.max(0, (selectedIndex < 0 ? 0 : selectedIndex) - 1);
+        setSelectedId(filtered[next].id);
+      } else if (event.key === "Escape") {
+        setSelectedId(null);
+      }
+    },
+    [filtered, selectedIndex, setSelectedId],
+  );
 
   return (
-    <>
-      <section className="ws-panel">
-        <PanelHeader icon="list_checks" title="Warning signs" text="Sorted by importance." />
-        <div className="ws-panel__body">
-          {problems.length ? (
-            problems.map((problem) => <FindingRow key={problem.id} problem={problem} />)
-          ) : (
-            <p className="muted">No warning signs on this scan.</p>
-          )}
+    <div className="ws-findings-layout">
+      <div className="ws-findings-main">
+        <div className="ws-findings-toolbar">
+          <label className="ws-search">
+            <Search size={14} aria-hidden />
+            <input
+              ref={searchRef}
+              type="search"
+              placeholder="Search findings… (/)"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+          </label>
+          <select value={sortKey} onChange={(e) => setSortKey(e.target.value)} aria-label="Sort findings">
+            <option value="severity">Sort: severity</option>
+            <option value="confidence">Sort: confidence</option>
+            <option value="time">Sort: time</option>
+            <option value="title">Sort: title</option>
+            <option value="status">Sort: status</option>
+            <option value="category">Sort: category</option>
+          </select>
+          {(query || severity.length || confidence.length || category.length || status.length) ? (
+            <button
+              type="button"
+              className="btn btn--ghost btn--sm"
+              onClick={() => {
+                setQuery("");
+                setSeverity([]);
+                setConfidence([]);
+                setCategory([]);
+                setStatus([]);
+              }}
+            >
+              Clear filters
+            </button>
+          ) : null}
         </div>
-      </section>
 
-      {sortedChains.length ? (
-        <section className="ws-panel">
-          <PanelHeader icon="git_branch" title="Linked traces" text="Related activity grouped together." />
-          <div className="ws-panel__body">
-            <ul className="simple-chain-list">
-              {sortedChains.map((chain) => (
-                <li key={chain.stem} className={`simple-chain-card simple-chain-card--${chain.confidence || "medium"}`}>
-                  <div className="simple-chain-head">
-                    <strong>{chain.labels?.length ? chain.labels.join(", ") : "Related activity"}</strong>
-                    <SeverityBadge
-                      severity={chain.confidence === "high" ? "high" : "medium"}
-                      compact
-                    />
-                  </div>
-                  <p>{chain.summary}</p>
-                  <ol className="simple-chain-steps">
-                    {(chain.steps ?? []).map((step, index) => (
-                      <li key={`${step.source}-${step.path}-${index}`}>
-                        <div className="simple-chain-step-meta">
-                          <span className="simple-chain-step-action">
-                            {CHAIN_ACTION_LABELS[step.action] || step.action}
-                          </span>
-                          <time>{step.occurred_at ? formatGmtPlus3(step.occurred_at) : "Time unknown"}</time>
+        <div className="ws-filter-groups">
+          <FilterGroup
+            label="Severity"
+            options={SEVERITY_OPTIONS}
+            selected={severity}
+            onToggle={(v) => toggleFilter(severity, setSeverity, v)}
+          />
+          <FilterGroup
+            label="Confidence"
+            options={CONFIDENCE_OPTIONS}
+            selected={confidence}
+            onToggle={(v) => toggleFilter(confidence, setConfidence, v)}
+          />
+          <FilterGroup
+            label="Status"
+            options={STATUS_OPTIONS}
+            selected={status}
+            onToggle={(v) => toggleFilter(status, setStatus, v)}
+          />
+          {categories.length ? (
+            <FilterGroup
+              label="Category"
+              options={categories}
+              selected={category}
+              onToggle={(v) => toggleFilter(category, setCategory, v)}
+            />
+          ) : null}
+        </div>
+
+        <div
+          className="ws-findings-table-wrap"
+          ref={listRef}
+          tabIndex={0}
+          onKeyDown={onListKeyDown}
+          role="listbox"
+          aria-label="Findings list"
+        >
+          <table className="ws-findings-table">
+            <thead>
+              <tr>
+                <th>Severity</th>
+                <th>Finding</th>
+                <th>Confidence</th>
+                <th>Status</th>
+                <th>When</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.length ? (
+                filtered.map((finding) => {
+                  const active = finding.id === selectedId;
+                  return (
+                    <tr
+                      key={finding.id}
+                      role="option"
+                      aria-selected={active}
+                      className={active ? "is-active" : ""}
+                      onClick={() => setSelectedId(finding.id)}
+                    >
+                      <td>
+                        <SeverityBadge severity={finding.severity} compact />
+                      </td>
+                      <td>
+                        <strong>{finding.title}</strong>
+                        <span className="ws-findings-table__sub">{finding.category}</span>
+                      </td>
+                      <td>
+                        <div className="ws-conf-cell">
+                          <ConfidenceChip tier={finding.confidenceTier} />
+                          <span className="ws-mono muted">{confidencePct(finding)}</span>
                         </div>
-                        <p>{step.detail}</p>
-                        <LocationHint row={step} path={step.path} />
-                      </li>
-                    ))}
-                  </ol>
-                </li>
-              ))}
-            </ul>
-          </div>
-        </section>
-      ) : null}
+                      </td>
+                      <td>
+                        <StatusChip status={finding.status} />
+                      </td>
+                      <td className="ws-mono">
+                        {finding.timestamp ? formatGmtPlus3(finding.timestamp) : "—"}
+                      </td>
+                    </tr>
+                  );
+                })
+              ) : (
+                <tr>
+                  <td colSpan={5} className="ws-empty">
+                    No findings match the current filters.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
 
-      {programs.length ? (
-        <section className="ws-panel">
-          <PanelHeader icon="file_code" title="Flagged programs" text="Files that matched review rules." />
-          <div className="ws-panel__body">
-            <ul className="simple-program-list">
-              {programs.slice(0, 30).map((row, index) => (
-                <li key={`${row.path}-${index}`} className="simple-program--warn">
-                  <div>
-                    <strong>{row.name || row.file_name || "File"}</strong>
-                    {row.labels?.length ? (
-                      <span className="simple-tag">{publicFindingLabels(row.labels).join(", ")}</span>
-                    ) : null}
-                    <p className="muted">
-                      {row.file_exists === false ? "Removed from disk · " : ""}
-                      Last seen {row.last_seen ? formatGmtPlus3(row.last_seen) : "unknown"}
-                    </p>
-                  </div>
-                  <LocationHint row={row} path={row.path} />
-                </li>
-              ))}
-            </ul>
-          </div>
-        </section>
-      ) : null}
-    </>
+      {selected ? (
+        <FindingDetail
+          finding={selected}
+          formatGmtPlus3={formatGmtPlus3}
+          onClose={() => setSelectedId(null)}
+        />
+      ) : (
+        <aside className="ws-finding-detail ws-finding-detail--empty" aria-label="Finding detail">
+          <p className="muted">Select a finding to inspect severity, confidence, and evidence separately.</p>
+        </aside>
+      )}
+    </div>
   );
 }
 
-const ACTIVITY_VIEWS = [
-  { id: "timeline", label: "Timeline" },
-  { id: "downloads", label: "Downloads" },
-  { id: "programs", label: "Programs run" },
-  { id: "deletions", label: "Deletions" },
-];
+function FilterGroup({ label, options, selected, onToggle }) {
+  return (
+    <div className="ws-filter-group">
+      <span className="ws-eyebrow">{label}</span>
+      <div className="ws-filter-row">
+        {options.map((option) => (
+          <button
+            key={option}
+            type="button"
+            className={selected.includes(option) ? "active" : ""}
+            onClick={() => onToggle(option)}
+          >
+            {option}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
 
-function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 }) {
-  const [view, setView] = useState("timeline");
+function TimelineTab({ review, activity, activityEventSummary, formatGmtPlus3 }) {
   const block = review.last_computer_activity ?? {};
   let events = block.events ?? [];
   if (!events.length && (activity?.events ?? []).length) {
@@ -282,10 +553,12 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
       .filter((e) => e.occurred_at || e.category === "execution" || e.time_unknown)
       .map((e) => ({
         occurred_at: e.occurred_at,
-        summary: activityEventSummary(e),
+        summary: activityEventSummary ? activityEventSummary(e) : e.summary || e.label,
         path: e.path,
         category: e.category,
         time_unknown: e.time_unknown,
+        name: e.name,
+        location_hint: e.location_hint,
       }));
   }
   events = [...events].sort((a, b) => {
@@ -294,258 +567,88 @@ function ActivityTab({ review, activity, activityEventSummary, formatGmtPlus3 })
     return bMs - aMs;
   });
 
-  const downloads = [...(review.download_history?.items ?? [])].sort((a, b) => {
-    if (a.suspicious !== b.suspicious) return a.suspicious ? -1 : 1;
-    const aMs = a.started_at ? new Date(a.started_at).getTime() : 0;
-    const bMs = b.started_at ? new Date(b.started_at).getTime() : 0;
-    return bMs - aMs;
-  });
-
-  const executions = [...(review.execution_activity?.items ?? [])].sort((a, b) => {
-    if (a.suspicious !== b.suspicious) return a.suspicious ? -1 : 1;
-    const aMs = a.occurred_at ? new Date(a.occurred_at).getTime() : 0;
-    const bMs = b.occurred_at ? new Date(b.occurred_at).getTime() : 0;
-    return bMs - aMs;
-  });
-
-  const deletions = events.filter((event) => {
-    const summary = String(event.summary || "").toLowerCase();
-    return event.category === "deletions" || summary.includes("no longer on disk") || summary.includes("recycle");
-  });
-
   return (
-    <section className="ws-panel">
-      <PanelHeader icon="history" title="Activity" text="Recent events on this PC." />
-      <div className="ws-panel__body">
-        <div className="ws-filter-row">
-          {ACTIVITY_VIEWS.map((row) => (
-            <button
-              key={row.id}
-              type="button"
-              className={view === row.id ? "active" : ""}
-              onClick={() => setView(row.id)}
-            >
-              {row.label}
-            </button>
+    <Panel icon={Clock} title="Activity timeline" text="Chronological events from scan review.">
+      {events.length ? (
+        <ul className="ws-timeline">
+          {events.slice(0, 80).map((event, index) => (
+            <li key={`${event.path}-${event.occurred_at}-${index}`}>
+              <time>{event.occurred_at ? formatGmtPlus3(event.occurred_at) : "—"}</time>
+              <div>
+                <p>{event.summary || "Activity recorded"}</p>
+                <LocationHint row={event} path={event.path} />
+              </div>
+            </li>
           ))}
-        </div>
-
-        {view === "timeline" ? (
-          events.length ? (
-            <ul className="ws-timeline">
-              {events.slice(0, 40).map((event, index) => (
-                <li key={`${event.path}-${event.occurred_at}-${index}`}>
-                  <time>{event.occurred_at ? formatGmtPlus3(event.occurred_at) : "—"}</time>
-                  <div>
-                    <p>{event.summary || "Activity recorded"}</p>
-                    <LocationHint row={event} path={event.path} />
-                  </div>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="muted">No timeline events on this scan.</p>
-          )
-        ) : null}
-
-        {view === "downloads" ? (
-          downloads.length ? (
-            <ul className="simple-timeline">
-              {downloads.slice(0, 40).map((row, index) => (
-                <li
-                  key={`${row.target_path}-${row.started_at}-${index}`}
-                  className={row.suspicious ? "simple-timeline--warn" : ""}
-                >
-                  <time>{row.started_at ? formatGmtPlus3(row.started_at) : "—"}</time>
-                  <p>
-                    <strong>{row.file_name || "Download"}</strong> via {row.browser || "browser"}
-                  </p>
-                  {row.matched_labels?.length ? (
-                    <p className="muted">{publicFindingLabels(row.matched_labels).join(", ")}</p>
-                  ) : null}
-                  <LocationHint row={row} path={row.target_path} />
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="muted">No download history found.</p>
-          )
-        ) : null}
-
-        {view === "programs" ? (
-          executions.length ? (
-            <ul className="simple-timeline">
-              {executions.slice(0, 40).map((row, index) => (
-                <li
-                  key={`${row.path}-${row.occurred_at}-${index}`}
-                  className={row.suspicious ? "simple-timeline--warn" : ""}
-                >
-                  <time>{row.occurred_at ? formatGmtPlus3(row.occurred_at) : "—"}</time>
-                  <p>
-                    <strong>{row.name || row.file_name || "Program"}</strong> {row.summary}
-                  </p>
-                  <LocationHint row={row} path={row.path} />
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="muted">No program execution traces found.</p>
-          )
-        ) : null}
-
-        {view === "deletions" ? (
-          deletions.length ? (
-            <ul className="simple-timeline">
-              {deletions.slice(0, 40).map((event, index) => (
-                <li key={`${event.path}-${event.occurred_at}-${index}`} className="simple-timeline--warn">
-                  <time>{event.occurred_at ? formatGmtPlus3(event.occurred_at) : "—"}</time>
-                  <p>{event.summary || "File removed or deleted"}</p>
-                  <LocationHint row={event} path={event.path} />
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="muted">No deletion events recorded on this scan.</p>
-          )
-        ) : null}
-      </div>
-    </section>
+        </ul>
+      ) : (
+        <p className="muted">No timeline events on this scan.</p>
+      )}
+    </Panel>
   );
 }
 
-function TracesTab({ report }) {
-  const view = forensicSourcesView(report.security_integrity_signals ?? {});
-
-  if (!view.available) {
-    return (
-      <section className="ws-panel">
-        <PanelHeader icon="fact_check" title="Trace layers" text={view.summary} />
-      </section>
-    );
-  }
+function EvidenceTab({ review, report, formatGmtPlus3 }) {
+  const sec = report.security_integrity_signals ?? {};
+  const verdictChains = sec.evidence_verdict?.provenance_chains ?? [];
+  const chains = verdictChains.length ? verdictChains : review.evidence_chains?.chains ?? [];
+  const sources = forensicSourcesView(sec);
 
   return (
     <>
-      <section className="ws-panel ws-panel--compact">
-        <PanelHeader icon="fact_check" title="What was checked" text={view.summary} />
-      </section>
-
-      <section className="ws-panel">
-        <PanelHeader icon="checklist" title="Trace sources" text="Each row is a Windows data layer reviewed on this scan." />
-        <div className="ws-panel__body">
-          <ul className="simple-trace-list">
-            {view.sources.map((row) => (
-              <li key={row.id} className={`simple-trace-row simple-trace-row--${row.tone}`}>
-                <span className="simple-trace-status">{row.statusLabel}</span>
-                <strong>{row.label}</strong>
-                {row.count > 0 ? <span className="muted">{row.count} record(s)</span> : null}
+      <Panel
+        icon={Link2}
+        title="Provenance chains"
+        text="Related traces grouped when multiple sources agree."
+      >
+        {chains.length ? (
+          <ul className="ws-chain-list">
+            {chains.map((chain, index) => (
+              <li key={`${chain.stem}-${index}`} className="ws-chain-card">
+                <div className="ws-chain-card__head">
+                  <strong>
+                    {publicFindingLabels(chain.labels ?? []).join(", ") ||
+                      chain.stem ||
+                      "Related activity"}
+                  </strong>
+                  <ConfidenceChip tier={chain.confidence_tier || chain.confidence || "medium"} />
+                </div>
+                <p>{chain.summary}</p>
+                <ol className="ws-chain-steps">
+                  {(chain.steps ?? []).map((step, stepIndex) => (
+                    <li key={`${step.source}-${step.path}-${stepIndex}`}>
+                      <div className="ws-chain-step-meta">
+                        <span>{step.action || step.source || "trace"}</span>
+                        <time>
+                          {step.occurred_at ? formatGmtPlus3(step.occurred_at) : "Time unknown"}
+                        </time>
+                      </div>
+                      <p>{step.detail || step.summary || privacyPath(step.path) || "Related trace"}</p>
+                      <LocationHint row={step} path={step.path} />
+                    </li>
+                  ))}
+                </ol>
               </li>
             ))}
           </ul>
-        </div>
-      </section>
+        ) : (
+          <p className="muted">No provenance chains on this scan.</p>
+        )}
+      </Panel>
 
-      {view.inconsistencies.length ? (
-        <section className="ws-panel">
-          <PanelHeader
-            icon="compare_arrows"
-            title="Cross-check mismatches"
-            text="When one trace says a program ran but another does not — worth a closer look."
-          />
-          <div className="ws-panel__body">
-            <ul className="simple-timeline">
-              {view.inconsistencies.map((row, index) => (
-                <li key={`${row.type}-${index}`} className="simple-timeline--warn">
-                  <SeverityBadge severity={row.severity} compact />
-                  <p>{row.summary}</p>
-                </li>
-              ))}
-            </ul>
-          </div>
-        </section>
+      {sources.available ? (
+        <Panel icon={FolderSearch} title="Trace layers checked" text={sources.summary}>
+          <ul className="ws-trace-list">
+            {sources.sources.map((row) => (
+              <li key={row.id} className={`ws-trace-row ws-trace-row--${row.tone}`}>
+                <span>{row.statusLabel}</span>
+                <strong>{row.label}</strong>
+                {row.count > 0 ? <em className="muted">{row.count}</em> : null}
+              </li>
+            ))}
+          </ul>
+        </Panel>
       ) : null}
-    </>
-  );
-}
-
-function SecurityTab({ report, formatGmtPlus3 }) {
-  const sec = report.security_integrity_signals ?? {};
-  const defenderView = defenderSummary(sec.defender);
-  const signals = securitySignalsView(sec);
-
-  return (
-    <>
-      {defenderView.available ? (
-        <section className="ws-panel">
-          <PanelHeader icon="shield" title="Windows Defender" text={defenderView.statusLabel} />
-          <div className="ws-panel__body">
-            <div className="ws-metrics ws-metrics--compact">
-              <div className="ws-metric">
-                <strong>{signals.threatCount}</strong>
-                <span>threat signals</span>
-              </div>
-              <div className="ws-metric">
-                <strong>{signals.exclusionCount}</strong>
-                <span>folder exclusions</span>
-              </div>
-              <div className="ws-metric">
-                <strong>{defenderView.quarantineCount}</strong>
-                <span>quarantine items</span>
-              </div>
-            </div>
-            {defenderView.userExclusions?.length ? (
-              <ul className="simple-program-list">
-                {defenderView.userExclusions.slice(0, 8).map((path) => (
-                  <li key={path} className="simple-program--warn">
-                    <p className="muted">Excluded folder: {privacyPath(path)}</p>
-                  </li>
-                ))}
-              </ul>
-            ) : null}
-          </div>
-        </section>
-      ) : null}
-
-      <section className="ws-panel">
-        <PanelHeader icon="delete_sweep" title="Log clearing & cleanup" text="Signs that logs or traces may have been wiped." />
-        <div className="ws-panel__body">
-          {signals.logClearingHints.length ? (
-            <ul className="simple-timeline">
-              {signals.logClearingHints.map((hint) => (
-                <li key={hint} className="simple-timeline--warn">
-                  <p>{hint}</p>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="muted">No major log-clearing signals on this scan.</p>
-          )}
-          {signals.traceCleanerCount > 0 ? (
-            <ul className="simple-timeline">
-              {signals.traceCleaners.slice(0, 12).map((row, index) => (
-                <li key={`${row.type}-${index}`} className="simple-timeline--warn">
-                  <p>{row.summary || row.detail || "Cleanup tool or command detected"}</p>
-                  {row.occurred_at ? (
-                    <time className="muted">{formatGmtPlus3(row.occurred_at)}</time>
-                  ) : null}
-                </li>
-              ))}
-            </ul>
-          ) : null}
-        </div>
-      </section>
-
-      <section className="ws-panel ws-panel--compact">
-        <PanelHeader
-          icon="event_note"
-          title="Event logs"
-          text={
-            signals.eventLogCount
-              ? `${signals.eventLogCount} recent Windows events were sampled.`
-              : "Event log sample was not available on this scan."
-          }
-        />
-      </section>
     </>
   );
 }
@@ -559,8 +662,12 @@ function discordAvatarUrl(account) {
   if (!userId) return null;
   const hash = account.avatar_hash;
   if (hash) return `https://cdn.discordapp.com/avatars/${userId}/${hash}.png?size=128`;
-  const avatarIndex = (BigInt(userId) >> 22n) % 6n;
-  return `https://cdn.discordapp.com/embed/avatars/${avatarIndex}.png`;
+  try {
+    const avatarIndex = Number((BigInt(userId) >> 22n) % 6n);
+    return `https://cdn.discordapp.com/embed/avatars/${avatarIndex}.png`;
+  } catch {
+    return null;
+  }
 }
 
 function AccountsTab({ report, token }) {
@@ -608,134 +715,403 @@ function AccountsTab({ report, token }) {
 
   return (
     <>
-      <section className="ws-panel">
-        <PanelHeader
-          icon="sports_esports"
-          title="Roblox accounts"
-          text="Found in the game client, browser, or local storage."
-        />
-        <div className="ws-panel__body">
-          {robloxAccounts.length ? (
-            <div className="ws-account-grid">
-              {robloxAccounts.slice(0, 24).map((account) => {
-                const resolved = profiles[account.user_id] ?? {};
-                const displayName = account.username || resolved.username || `Account ${account.user_id}`;
-                const avatar = robloxHeadshotUrl({ ...account, headshot_url: resolved.headshot_url });
-                return (
-                  <a
-                    key={account.user_id}
-                    href={`https://www.roblox.com/users/${encodeURIComponent(account.user_id)}/profile`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="ws-account-card"
-                  >
-                    {avatar ? (
-                      <img src={avatar} alt="" className="ws-account-card__avatar" loading="lazy" />
-                    ) : (
-                      <span className="ws-account-card__avatar" aria-hidden />
-                    )}
-                    <span className="ws-account-card__body">
-                      <span className="ws-account-card__name">{displayName}</span>
-                      <span className="ws-account-card__link">View profile</span>
-                    </span>
-                  </a>
-                );
-              })}
-            </div>
-          ) : (
-            <p className="muted">No Roblox accounts found on this device.</p>
-          )}
-        </div>
-      </section>
+      <Panel icon={Users} title="Roblox accounts" text="Detected in client, browser, or local storage.">
+        {robloxAccounts.length ? (
+          <div className="ws-account-grid">
+            {robloxAccounts.slice(0, 24).map((account) => {
+              const resolved = profiles[account.user_id] ?? {};
+              const displayName = account.username || resolved.username || `Account ${account.user_id}`;
+              const avatar = robloxHeadshotUrl({ ...account, headshot_url: resolved.headshot_url });
+              return (
+                <a
+                  key={account.user_id}
+                  href={`https://www.roblox.com/users/${encodeURIComponent(account.user_id)}/profile`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="ws-account-card"
+                >
+                  {avatar ? (
+                    <img src={avatar} alt="" className="ws-account-card__avatar" loading="lazy" />
+                  ) : (
+                    <span className="ws-account-card__avatar" aria-hidden />
+                  )}
+                  <span className="ws-account-card__body">
+                    <span className="ws-account-card__name">{displayName}</span>
+                    <span className="ws-account-card__link">View profile</span>
+                  </span>
+                </a>
+              );
+            })}
+          </div>
+        ) : (
+          <p className="muted">No Roblox accounts found on this device.</p>
+        )}
+      </Panel>
 
-      <section className="ws-panel">
-        <PanelHeader
-          icon="forum"
-          title="Discord accounts"
-          text="Found in the Discord app or browser login."
-        />
-        <div className="ws-panel__body">
-          {discordAccounts.length ? (
-            <div className="ws-account-grid">
-              {discordAccounts.slice(0, 24).map((account) => {
-                const userId = String(account.user_id || "");
-                const displayName = account.display_name || `User ${userId}`;
-                const avatar = account.avatar_url || discordAvatarUrl(account);
-                return (
-                  <div key={userId} className="ws-account-card ws-account-card--static">
-                    {avatar ? (
-                      <img src={avatar} alt="" className="ws-account-card__avatar" loading="lazy" />
-                    ) : (
-                      <span className="ws-account-card__avatar" aria-hidden />
-                    )}
-                    <span className="ws-account-card__body">
-                      <span className="ws-account-card__name">{displayName}</span>
-                      <span className="ws-account-card__link">Discord account</span>
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          ) : (
-            <p className="muted">No Discord accounts found on this device.</p>
-          )}
-        </div>
-      </section>
+      <Panel icon={Users} title="Discord accounts" text="Detected in Discord app or browser login.">
+        {discordAccounts.length ? (
+          <div className="ws-account-grid">
+            {discordAccounts.slice(0, 24).map((account) => {
+              const userId = String(account.user_id || "");
+              const displayName = account.display_name || `User ${userId}`;
+              const avatar = account.avatar_url || discordAvatarUrl(account);
+              return (
+                <div key={userId} className="ws-account-card ws-account-card--static">
+                  {avatar ? (
+                    <img src={avatar} alt="" className="ws-account-card__avatar" loading="lazy" />
+                  ) : (
+                    <span className="ws-account-card__avatar" aria-hidden />
+                  )}
+                  <span className="ws-account-card__body">
+                    <span className="ws-account-card__name">{displayName}</span>
+                    <span className="ws-account-card__link">Discord account</span>
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <p className="muted">No Discord accounts found on this device.</p>
+        )}
+      </Panel>
     </>
   );
 }
 
-export function SimpleResults({ report, summary, activity, activityEventSummary, formatGmtPlus3, token }) {
-  const [tab, setTab] = useState("summary");
-  const sec = report.security_integrity_signals ?? {};
-  const bypass = sec.bypass_resilience ?? {};
-  const review = useMemo(() => scanReviewFromReport(report), [report]);
-  const verdict = useMemo(
-    () => simpleVerdict(summary.score, bypass.risk_score ?? 0),
-    [summary.score, bypass.risk_score],
+function downloadBlob(filename, content, type) {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function ExportTab({ detail, report, summary, findings, brandName }) {
+  const pin = detail?.pin || "scan";
+
+  return (
+    <Panel icon={Download} title="Export" text="Download or print a professional investigation package.">
+      <div className="ws-export-actions">
+        <button
+          type="button"
+          className="btn btn--primary btn--sm"
+          onClick={() =>
+            downloadBlob(
+              `virello-findings-${pin}.json`,
+              JSON.stringify({ pin, generated_at: new Date().toISOString(), findings }, null, 2),
+              "application/json",
+            )
+          }
+        >
+          <FileJson size={14} />
+          Findings JSON
+        </button>
+        <button
+          type="button"
+          className="btn btn--ghost btn--sm"
+          onClick={() =>
+            downloadBlob(`virello-findings-${pin}.csv`, findingsToCsv(findings), "text/csv;charset=utf-8")
+          }
+        >
+          <FileSpreadsheet size={14} />
+          Findings CSV
+        </button>
+        <button
+          type="button"
+          className="btn btn--ghost btn--sm"
+          onClick={() =>
+            downloadBlob(
+              `virello-report-${pin}.json`,
+              JSON.stringify(detail ?? { report, summary }, null, 2),
+              "application/json",
+            )
+          }
+        >
+          <FileText size={14} />
+          Full report JSON
+        </button>
+        <button
+          type="button"
+          className="btn btn--ghost btn--sm"
+          onClick={() => exportReportPdf({ detail, report, summary, findings, brandName })}
+        >
+          <Printer size={14} />
+          Print / HTML report
+        </button>
+      </div>
+      <p className="muted ws-export-note">
+        Exported findings keep path privacy redaction. Indicators assist review and are not automatic guilt.
+      </p>
+    </Panel>
   );
-  const problems = useMemo(() => buildProblems(report, summary), [report, summary]);
+}
+
+function CompareControl({ sessions, detail, report, summary, token }) {
+  const candidates = useMemo(() => {
+    if (!sessions?.length || !detail?.id) return [];
+    return sessions.filter((s) => s.status === "completed" && s.id !== detail.id);
+  }, [sessions, detail?.id]);
+
+  const [compareId, setCompareId] = useState("");
+  const [prevPayload, setPrevPayload] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!compareId || !token) {
+      setPrevPayload(null);
+      setError("");
+      setLoading(false);
+      return undefined;
+    }
+    const cached = candidates.find((s) => String(s.id) === String(compareId));
+    if (cached?.report) {
+      setPrevPayload({ report: cached.report, summary: null });
+      setError("");
+      setLoading(false);
+      return undefined;
+    }
+
+    let cancelled = false;
+    setLoading(true);
+    setError("");
+    setPrevPayload(null);
+    (async () => {
+      try {
+        const response = await fetch(`${API_URL}/sessions/${compareId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!response.ok) throw new Error(`Compare load failed (${response.status})`);
+        const data = await response.json();
+        if (cancelled) return;
+        if (!data?.report) throw new Error("Selected scan has no report payload");
+        setPrevPayload({ report: data.report, summary: null });
+      } catch (caught) {
+        if (!cancelled) {
+          setPrevPayload(null);
+          setError(caught.message || "Could not load comparison scan");
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [candidates, compareId, token]);
+
+  const comparison = useMemo(() => {
+    if (!prevPayload?.report) return null;
+    return compareSessions(prevPayload.report, report, prevPayload.summary, summary);
+  }, [prevPayload, report, summary]);
+
+  if (!candidates.length) return null;
+
+  return (
+    <div className="ws-compare">
+      <div className="ws-compare__controls">
+        <label>
+          <span className="ws-eyebrow">Compare scans</span>
+          <select value={compareId} onChange={(e) => setCompareId(e.target.value)}>
+            <option value="">Compare with previous completed scan…</option>
+            {candidates.map((s) => (
+              <option key={s.id} value={s.id}>
+                PIN {s.pin} · #{s.id}
+                {s.completed_at ? ` · ${String(s.completed_at).slice(0, 10)}` : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+        {loading ? <span className="muted">Loading prior scan…</span> : null}
+        {error ? <span className="ws-compare__error">{error}</span> : null}
+        {comparison ? (
+          <div className="ws-compare__summary">
+            <span>+{comparison.summary.addedCount} added</span>
+            <span>−{comparison.summary.removedCount} removed</span>
+            <span>~{comparison.summary.changedCount} changed</span>
+            <span>
+              {comparison.summary.previousCount} → {comparison.summary.currentCount}
+            </span>
+          </div>
+        ) : null}
+      </div>
+
+      {comparison ? (
+        <div className="ws-compare__diff">
+          <CompareDiffColumn
+            title="Added"
+            empty="No new findings versus prior scan."
+            items={comparison.added}
+          />
+          <CompareDiffColumn
+            title="Removed"
+            empty="Nothing dropped versus prior scan."
+            items={comparison.removed}
+          />
+          <CompareDiffColumn
+            title="Changed"
+            empty="No severity/confidence/status shifts."
+            items={comparison.changed.map((row) => ({
+              id: row.current.id,
+              title: row.current.title,
+              severity: row.current.severity,
+              confidenceTier: row.current.confidenceTier,
+              status: row.current.status,
+              note: `${row.previous.severity}/${row.previous.confidenceTier}/${row.previous.status} → ${row.current.severity}/${row.current.confidenceTier}/${row.current.status}`,
+            }))}
+          />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function CompareDiffColumn({ title, empty, items }) {
+  return (
+    <section className="ws-compare__col">
+      <h4>
+        {title} <em>{items.length}</em>
+      </h4>
+      {items.length ? (
+        <ul>
+          {items.slice(0, 12).map((item) => (
+            <li key={item.id}>
+              <SeverityBadge severity={item.severity} compact />
+              <div>
+                <strong>{item.title}</strong>
+                <span>
+                  {item.confidenceTier} conf · {item.status}
+                  {item.note ? ` · ${item.note}` : ""}
+                </span>
+              </div>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="muted">{empty}</p>
+      )}
+    </section>
+  );
+}
+
+/**
+ * Professional investigation console.
+ * Compatible props: report, summary, activity, activityEventSummary, formatGmtPlus3, token
+ * Optional: detail, sessions, brandName
+ */
+export function SimpleResults({
+  report,
+  summary,
+  activity,
+  activityEventSummary,
+  formatGmtPlus3,
+  token,
+  detail = null,
+  sessions = null,
+  brandName = "Virello Scanner",
+}) {
+  const [tab, setTab] = useState("overview");
+  // undefined = auto-select first; null = user closed detail panel
+  const [selectedFindingId, setSelectedFindingId] = useState(undefined);
+  const searchRef = useRef(null);
+
+  const review = useMemo(() => scanReviewFromReport(report), [report]);
+  const findings = useMemo(() => buildInvestigationFindings(report, summary), [report, summary]);
+  const counts = useMemo(() => severityCounts(findings), [findings]);
+  const verdict = useMemo(() => engineVerdictPlain(report, summary), [report, summary]);
+
+  const openFinding = useCallback((id) => {
+    setSelectedFindingId(id);
+    setTab("findings");
+  }, []);
+
+  useEffect(() => {
+    function onKey(event) {
+      const tag = event.target?.tagName;
+      const typing = tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || event.target?.isContentEditable;
+      if (event.key === "/" && !typing && !event.metaKey && !event.ctrlKey && !event.altKey) {
+        event.preventDefault();
+        setTab("findings");
+        requestAnimationFrame(() => searchRef.current?.focus());
+      }
+      if (event.key === "Escape" && selectedFindingId) {
+        setSelectedFindingId(null);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectedFindingId]);
 
   return (
     <div className="ws-simple">
-      <nav className="ws-review-nav" aria-label="Review sections">
-        {TABS.map(({ id, label, icon }) => (
+      <nav className="ws-review-nav" aria-label="Investigation sections">
+        {TABS.map(({ id, label, icon: Icon }) => (
           <button
             key={id}
             type="button"
             className={`ws-review-nav__tab ${tab === id ? "ws-review-nav__tab--active" : ""}`}
             onClick={() => setTab(id)}
           >
-            <MaterialIcon name={icon} size={16} />
+            <Icon size={15} strokeWidth={1.75} aria-hidden />
             {label}
+            {id === "findings" && counts.total ? <em>{counts.total}</em> : null}
           </button>
         ))}
       </nav>
 
+      {sessions?.length ? (
+        <CompareControl
+          sessions={sessions}
+          detail={detail}
+          report={report}
+          summary={summary}
+          token={token}
+        />
+      ) : null}
+
       <div className="ws-simple__content">
-        {tab === "summary" ? (
-          <SummaryTab
+        {tab === "overview" ? (
+          <OverviewTab
             verdict={verdict}
-            problems={problems}
-            review={review}
+            findings={findings}
+            counts={counts}
             report={report}
             formatGmtPlus3={formatGmtPlus3}
+            onOpenFinding={openFinding}
           />
         ) : null}
         {tab === "findings" ? (
-          <FindingsTab problems={problems} review={review} formatGmtPlus3={formatGmtPlus3} />
+          <FindingsTab
+            findings={findings}
+            formatGmtPlus3={formatGmtPlus3}
+            selectedId={selectedFindingId}
+            setSelectedId={setSelectedFindingId}
+            searchRef={searchRef}
+          />
         ) : null}
-        {tab === "traces" ? <TracesTab report={report} /> : null}
-        {tab === "security" ? <SecurityTab report={report} formatGmtPlus3={formatGmtPlus3} /> : null}
-        {tab === "activity" ? (
-          <ActivityTab
+        {tab === "timeline" ? (
+          <TimelineTab
             review={review}
             activity={activity}
             activityEventSummary={activityEventSummary}
             formatGmtPlus3={formatGmtPlus3}
           />
         ) : null}
+        {tab === "evidence" ? (
+          <EvidenceTab review={review} report={report} formatGmtPlus3={formatGmtPlus3} />
+        ) : null}
         {tab === "accounts" ? <AccountsTab report={report} token={token} /> : null}
+        {tab === "export" ? (
+          <ExportTab
+            detail={detail}
+            report={report}
+            summary={summary}
+            findings={findings}
+            brandName={brandName}
+          />
+        ) : null}
       </div>
     </div>
   );

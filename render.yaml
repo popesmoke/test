@@ -1,0 +1,30 @@
+# Render Blueprint — Virello Secure API
+# Connect this repo on Render and apply the blueprint, or keep the existing
+# service start command: python server.py (rootDir: backend).
+services:
+  - type: web
+    name: virello-secure
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: python server.py
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.0"
+      - key: FRONTEND_ORIGIN
+        sync: false
+      - key: DISCORD_CLIENT_ID
+        sync: false
+      - key: DISCORD_CLIENT_SECRET
+        sync: false
+      - key: DISCORD_REDIRECT_URI
+        sync: false
+      - key: DISCORD_BOT_TOKEN
+        sync: false
+      - key: DISCORD_GUILD_ID
+        sync: false
+      - key: DISCORD_REQUIRED_ROLE_ID
+        sync: false
+      - key: SESSION_SECRET
+        generateValue: true

@@ -17,21 +17,61 @@ function relativeTime(iso) {
 }
 
 function verdictTone(verdict) {
-  const v = String(verdict || "").toLowerCase();
+  const v = String(verdict || "").toLowerCase().trim();
   if (!v || v === "n/a" || v === "pending") return "pending";
-  if (v.includes("clean") || v.includes("clear") || v.includes("pass")) return "clean";
-  if (v.includes("threat") || v.includes("fail") || v.includes("cheat") || v.includes("ban")) return "threat";
+  if (
+    v === "cleared" ||
+    v.includes("clean") ||
+    v.includes("clear") ||
+    v.includes("pass")
+  ) {
+    return "clean";
+  }
+  if (
+    v === "ban" ||
+    v === "suspicious" ||
+    v.includes("threat") ||
+    v.includes("fail") ||
+    v.includes("cheat") ||
+    v.includes("flag") ||
+    v.includes("injector")
+  ) {
+    return "threat";
+  }
+  if (v === "follow-up" || v.includes("follow")) return "watch";
   return "watch";
 }
 
-function statusLabel(status, verdict) {
-  if (status === "pending") return "Waiting";
-  if (status === "expired") return "Expired";
-  const tone = verdictTone(verdict);
-  if (tone === "clean") return "Clean";
-  if (tone === "threat") return "Threat";
-  if (tone === "watch") return "Needs review";
-  return "Unreviewed";
+/** Queue status pills: Waiting / In review / Cleared / Flagged / Expired */
+function queueStatus(session) {
+  if (session.status === "pending") return { key: "waiting", label: "Waiting" };
+  if (session.status === "expired") return { key: "expired", label: "Expired" };
+  if (session.status !== "completed") return { key: "waiting", label: session.status || "Unknown" };
+
+  const tone = verdictTone(session.reviewer_verdict);
+  if (tone === "clean") return { key: "cleared", label: "Cleared" };
+  if (tone === "threat") return { key: "flagged", label: "Flagged" };
+  if (session.reviewer_verdict) return { key: "review", label: "In review" };
+  return { key: "review", label: "In review" };
+}
+
+function riskLabel(session) {
+  if (session.status !== "completed") return "—";
+  const tone = verdictTone(session.reviewer_verdict);
+  if (tone === "threat") return { key: "high", label: "High" };
+  if (tone === "watch") return { key: "elevated", label: "Elevated" };
+  if (tone === "clean") return { key: "low", label: "Low" };
+  return { key: "unknown", label: "Unscored" };
+}
+
+function findingsCount(session) {
+  const n =
+    session.findings_count ??
+    session.finding_count ??
+    session.report_summary?.findings_count ??
+    null;
+  if (n == null || Number.isNaN(Number(n))) return "—";
+  return String(n);
 }
 
 function copyPin(pin) {
@@ -46,6 +86,7 @@ export const DEMO_SESSIONS = [
     status: "pending",
     created_at: new Date(Date.now() - 4 * 60000).toISOString(),
     reviewer_verdict: null,
+    findings_count: null,
   },
   {
     id: 1041,
@@ -54,6 +95,7 @@ export const DEMO_SESSIONS = [
     created_at: new Date(Date.now() - 2 * 3600000).toISOString(),
     completed_at: new Date(Date.now() - 110 * 60000).toISOString(),
     reviewer_verdict: null,
+    findings_count: 7,
   },
   {
     id: 1040,
@@ -62,7 +104,8 @@ export const DEMO_SESSIONS = [
     created_at: new Date(Date.now() - 5 * 3600000).toISOString(),
     completed_at: new Date(Date.now() - 4.5 * 3600000).toISOString(),
     reviewed_at: new Date(Date.now() - 4 * 3600000).toISOString(),
-    reviewer_verdict: "Clean",
+    reviewer_verdict: "cleared",
+    findings_count: 0,
   },
   {
     id: 1039,
@@ -71,7 +114,8 @@ export const DEMO_SESSIONS = [
     created_at: new Date(Date.now() - 26 * 3600000).toISOString(),
     completed_at: new Date(Date.now() - 25 * 3600000).toISOString(),
     reviewed_at: new Date(Date.now() - 24 * 3600000).toISOString(),
-    reviewer_verdict: "Threat — injector",
+    reviewer_verdict: "ban",
+    findings_count: 12,
   },
   {
     id: 1038,
@@ -80,6 +124,7 @@ export const DEMO_SESSIONS = [
     created_at: new Date(Date.now() - 30 * 3600000).toISOString(),
     expires_at: new Date(Date.now() - 28 * 3600000).toISOString(),
     reviewer_verdict: null,
+    findings_count: null,
   },
   {
     id: 1037,
@@ -88,7 +133,8 @@ export const DEMO_SESSIONS = [
     created_at: new Date(Date.now() - 48 * 3600000).toISOString(),
     completed_at: new Date(Date.now() - 47 * 3600000).toISOString(),
     reviewed_at: new Date(Date.now() - 46 * 3600000).toISOString(),
-    reviewer_verdict: "Clean",
+    reviewer_verdict: "cleared",
+    findings_count: 1,
   },
 ];
 
@@ -101,101 +147,29 @@ export function OverviewDashboard({
 }) {
   const [page, setPage] = useState(0);
   const [copiedId, setCopiedId] = useState(null);
-  const pageSize = compact ? 4 : 7;
+  const pageSize = compact ? 5 : 8;
 
   const stats = useMemo(() => {
     const completed = sessions.filter((s) => s.status === "completed");
     const pending = sessions.filter((s) => s.status === "pending");
     const expired = sessions.filter((s) => s.status === "expired");
-    const threats = completed.filter((s) => verdictTone(s.reviewer_verdict) === "threat");
-    const clean = completed.filter((s) => verdictTone(s.reviewer_verdict) === "clean");
-    const unreviewed = completed.filter((s) => !s.reviewer_verdict);
-    const reviewed = completed.filter((s) => s.reviewer_verdict);
-    const reviewRate = completed.length
-      ? Math.round((reviewed.length / completed.length) * 100)
-      : 0;
+    const flagged = completed.filter((s) => verdictTone(s.reviewer_verdict) === "threat");
+    const cleared = completed.filter((s) => verdictTone(s.reviewer_verdict) === "clean");
+    const inReview = completed.filter((s) => !s.reviewer_verdict || verdictTone(s.reviewer_verdict) === "watch");
     return {
       total: sessions.length,
       pending,
       expired,
-      threats,
-      clean,
-      unreviewed,
+      flagged,
+      cleared,
+      inReview,
       completed,
-      reviewRate,
     };
   }, [sessions]);
 
-  const metrics = [
-    {
-      label: "Total scans",
-      value: String(stats.total),
-      icon: "radar",
-      hint: `${stats.completed.length} completed`,
-    },
-    {
-      label: "Waiting PINs",
-      value: String(stats.pending.length),
-      icon: "pin",
-      hint: "Share during screenshare",
-      accent: "warn",
-    },
-    {
-      label: "Needs review",
-      value: String(stats.unreviewed.length),
-      icon: "report",
-      hint: "Completed, no verdict yet",
-      accent: "warn",
-    },
-    {
-      label: "Threats flagged",
-      value: String(stats.threats.length),
-      icon: "shield_alert",
-      hint: "Reviewer verdicts",
-      accent: "bad",
-    },
-    {
-      label: "Clean verdicts",
-      value: String(stats.clean.length),
-      icon: "check_circle",
-      hint: `${stats.reviewRate}% review rate`,
-      accent: "ok",
-    },
-  ];
-
-  const chartPoints = useMemo(() => {
-    const days = Array.from({ length: 7 }, (_, i) => {
-      const d = new Date();
-      d.setHours(0, 0, 0, 0);
-      d.setDate(d.getDate() - (6 - i));
-      return d;
-    });
-    const counts = days.map((day) => {
-      const next = new Date(day);
-      next.setDate(next.getDate() + 1);
-      return sessions.filter((s) => {
-        const t = Date.parse(s.completed_at || s.created_at || "");
-        return !Number.isNaN(t) && t >= day.getTime() && t < next.getTime();
-      }).length;
-    });
-    const max = Math.max(...counts, 1);
-    return counts.map((count, i) => ({
-      label: days[i].toLocaleDateString(undefined, { weekday: "short" }),
-      count,
-      y: 78 - (count / max) * 58,
-    }));
-  }, [sessions]);
-
-  const linePath = chartPoints
-    .map((p, i) => {
-      const x = (i / Math.max(chartPoints.length - 1, 1)) * 240;
-      return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${p.y.toFixed(1)}`;
-    })
-    .join(" ");
-  const areaPath = `${linePath} L240,90 L0,90 Z`;
-
   const pageCount = Math.max(1, Math.ceil(sessions.length / pageSize));
-  const pageRows = sessions.slice(page * pageSize, page * pageSize + pageSize);
+  const safePage = Math.min(page, pageCount - 1);
+  const pageRows = sessions.slice(safePage * pageSize, safePage * pageSize + pageSize);
 
   async function handleCopy(pin, id, event) {
     event?.stopPropagation?.();
@@ -209,85 +183,100 @@ export function OverviewDashboard({
     <section className={`ov${compact ? " ov--compact" : ""}${demo ? " ov--demo" : ""}`}>
       <header className="ov__header">
         <div>
-          <h1>Dashboard</h1>
-          <p>Your PIN sessions, review queue, and recent verdicts.</p>
+          <p className="ov__eyebrow">Investigation queue</p>
+          <h1>Case desk</h1>
+          <p>PIN sessions awaiting upload, review, or clearance.</p>
         </div>
         <div className="ov__header-actions">
           <button
             type="button"
-            className="btn btn--primary btn--sm"
+            className="btn btn--primary ov__cta"
             onClick={onNewScan}
             disabled={demo}
           >
-            <MaterialIcon name="add" size={14} color="ffffff" />
-            New Scan
+            <MaterialIcon name="add" size={16} color="ffffff" />
+            New investigation
           </button>
         </div>
       </header>
 
       <div className="ov__metrics">
-        {metrics.map((m) => (
-          <article key={m.label} className={`ov__metric${m.accent ? ` ov__metric--${m.accent}` : ""}`}>
-            <div className="ov__metric-icon">
-              <MaterialIcon
-                name={m.icon}
-                size={18}
-                color={m.accent === "ok" ? "22c55e" : m.accent === "warn" ? "eab308" : "ef4444"}
-              />
-            </div>
-            <div className="ov__metric-body">
-              <span className="ov__metric-label">{m.label}</span>
-              <strong>{m.value}</strong>
-              <em>{m.hint}</em>
-            </div>
-          </article>
-        ))}
+        <article className="ov__metric">
+          <span className="ov__metric-label">Open cases</span>
+          <strong>{stats.total}</strong>
+          <em>{stats.completed.length} completed</em>
+        </article>
+        <article className="ov__metric ov__metric--warn">
+          <span className="ov__metric-label">Waiting</span>
+          <strong>{stats.pending.length}</strong>
+          <em>PIN shared, no upload yet</em>
+        </article>
+        <article className="ov__metric ov__metric--warn">
+          <span className="ov__metric-label">In review</span>
+          <strong>{stats.inReview.length}</strong>
+          <em>Needs a verdict</em>
+        </article>
+        <article className="ov__metric ov__metric--bad">
+          <span className="ov__metric-label">Flagged</span>
+          <strong>{stats.flagged.length}</strong>
+          <em>Reviewer threat call</em>
+        </article>
+        <article className="ov__metric ov__metric--ok">
+          <span className="ov__metric-label">Cleared</span>
+          <strong>{stats.cleared.length}</strong>
+          <em>Clean verdicts</em>
+        </article>
       </div>
 
-      <div className="ov__layout">
-        <div className="ov__panel ov__panel--table">
-          <div className="ov__panel-head">
-            <h2>Recent scans</h2>
-            <span className="ov__chip">{sessions.length}</span>
-          </div>
-          <div className="ov__table-wrap">
-            <table className="ov__table">
-              <thead>
-                <tr>
-                  <th>PIN</th>
-                  <th>Result</th>
-                  <th>Updated</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {pageRows.length ? (
-                  pageRows.map((row) => {
-                    const tone =
-                      row.status === "completed" ? verdictTone(row.reviewer_verdict) : row.status;
-                    return (
-                      <tr
-                        key={row.id}
-                        onClick={() => {
-                          if (!demo) onOpenScan?.(row.id);
-                        }}
-                      >
-                        <td>
-                          <span className="ov__user">
-                            <span className="ov__avatar">{String(row.pin || "?").slice(0, 1)}</span>
-                            <span>
-                              <strong>{row.pin}</strong>
-                              <em>#{row.id}</em>
-                            </span>
-                          </span>
-                        </td>
-                        <td>
-                          <span className={`ov__pill ov__pill--${tone}`}>
-                            {statusLabel(row.status, row.reviewer_verdict)}
-                          </span>
-                        </td>
-                        <td>{relativeTime(row.completed_at || row.created_at)}</td>
-                        <td>
+      <div className="ov__panel ov__panel--table">
+        <div className="ov__panel-head">
+          <h2>Investigation queue</h2>
+          <span className="ov__chip">{sessions.length}</span>
+        </div>
+        <div className="ov__table-wrap">
+          <table className="ov__table">
+            <thead>
+              <tr>
+                <th>PIN</th>
+                <th>Status</th>
+                <th>Risk</th>
+                <th>Findings</th>
+                <th>Age</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pageRows.length ? (
+                pageRows.map((row) => {
+                  const status = queueStatus(row);
+                  const risk = riskLabel(row);
+                  return (
+                    <tr
+                      key={row.id}
+                      onClick={() => {
+                        if (!demo) onOpenScan?.(row.id);
+                      }}
+                    >
+                      <td>
+                        <span className="ov__pin-cell">
+                          <strong className="ov__pin">{row.pin}</strong>
+                          <em>#{row.id}</em>
+                        </span>
+                      </td>
+                      <td>
+                        <span className={`ov__pill ov__pill--${status.key}`}>{status.label}</span>
+                      </td>
+                      <td>
+                        {typeof risk === "object" ? (
+                          <span className={`ov__risk ov__risk--${risk.key}`}>{risk.label}</span>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                      <td className="ov__mono">{findingsCount(row)}</td>
+                      <td>{relativeTime(row.completed_at || row.created_at)}</td>
+                      <td>
+                        <div className="ov__row-actions" onClick={(e) => e.stopPropagation()}>
                           <button
                             type="button"
                             className="ov__icon-btn"
@@ -301,38 +290,51 @@ export function OverviewDashboard({
                               color={copiedId === row.id ? "22c55e" : "9aa3b2"}
                             />
                           </button>
-                        </td>
-                      </tr>
-                    );
-                  })
-                ) : (
-                  <tr>
-                    <td colSpan={4} className="ov__empty">
-                      No scans yet — create a PIN to start a review.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-          {pageCount > 1 ? (
-            <div className="ov__pager">
-              {Array.from({ length: Math.min(pageCount, 8) }, (_, i) => (
-                <button
-                  key={i}
-                  type="button"
-                  className={i === page ? "is-active" : ""}
-                  onClick={() => setPage(i)}
-                  disabled={demo}
-                >
-                  {i + 1}
-                </button>
-              ))}
-            </div>
-          ) : null}
+                          <button
+                            type="button"
+                            className="ov__text-btn"
+                            disabled={demo || row.status === "expired"}
+                            onClick={() => {
+                              if (!demo) onOpenScan?.(row.id);
+                            }}
+                          >
+                            Open
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
+              ) : (
+                <tr>
+                  <td colSpan={6} className="ov__empty">
+                    <strong>No investigations yet</strong>
+                    <span>Create a PIN, share it during screenshare, and open the case when the scan uploads.</span>
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
         </div>
+        {pageCount > 1 ? (
+          <div className="ov__pager">
+            {Array.from({ length: Math.min(pageCount, 8) }, (_, i) => (
+              <button
+                key={i}
+                type="button"
+                className={i === safePage ? "is-active" : ""}
+                onClick={() => setPage(i)}
+                disabled={demo}
+              >
+                {i + 1}
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </div>
 
-        <div className="ov__rail">
+      {!compact ? (
+        <div className="ov__bottom">
           <div className="ov__panel">
             <div className="ov__panel-head">
               <h2>Waiting for upload</h2>
@@ -340,7 +342,7 @@ export function OverviewDashboard({
             </div>
             {stats.pending.length ? (
               <ul className="ov__queue">
-                {stats.pending.slice(0, 5).map((s) => (
+                {stats.pending.slice(0, 6).map((s) => (
                   <li key={s.id}>
                     <button
                       type="button"
@@ -365,140 +367,63 @@ export function OverviewDashboard({
                 ))}
               </ul>
             ) : (
-              <p className="ov__blank">No active PINs. Start a new scan when you’re on a call.</p>
+              <p className="ov__blank">No active PINs awaiting upload.</p>
             )}
           </div>
 
           <div className="ov__panel">
             <div className="ov__panel-head">
-              <h2>Review queue</h2>
-              <span className="ov__chip ov__chip--warn">{stats.unreviewed.length}</span>
+              <h2>Flagged cases</h2>
+              <span className="ov__chip ov__chip--warn">{stats.flagged.length}</span>
             </div>
-            {stats.unreviewed.length ? (
-              <ul className="ov__queue">
-                {stats.unreviewed.slice(0, 5).map((s) => (
+            {stats.flagged.length ? (
+              <ul className="ov__threats">
+                {stats.flagged.slice(0, 6).map((s) => (
                   <li key={s.id}>
-                    <button
-                      type="button"
-                      className="ov__queue-main"
-                      onClick={() => {
-                        if (!demo) onOpenScan?.(s.id);
-                      }}
-                      disabled={demo}
-                    >
-                      <strong>{s.pin}</strong>
-                      <span>Completed {relativeTime(s.completed_at)}</span>
-                    </button>
-                    <span className="ov__pill ov__pill--watch">Open</span>
+                    <div>
+                      <strong
+                        role={demo ? undefined : "button"}
+                        tabIndex={demo ? undefined : 0}
+                        onClick={() => {
+                          if (!demo) onOpenScan?.(s.id);
+                        }}
+                        onKeyDown={(e) => {
+                          if (!demo && (e.key === "Enter" || e.key === " ")) onOpenScan?.(s.id);
+                        }}
+                      >
+                        {s.pin}
+                      </strong>
+                      <span>{s.reviewer_verdict}</span>
+                    </div>
+                    <em>{relativeTime(s.reviewed_at || s.completed_at)}</em>
                   </li>
                 ))}
               </ul>
             ) : (
-              <p className="ov__blank">You’re caught up — no unreviewed reports.</p>
+              <p className="ov__blank">No flagged verdicts recorded.</p>
             )}
           </div>
-        </div>
-      </div>
 
-      <div className="ov__bottom">
-        <div className="ov__panel ov__panel--chart">
-          <div className="ov__panel-head">
-            <h2>Scan activity</h2>
-            <span className="muted">Last 7 days</span>
-          </div>
-          <svg className="ov__chart" viewBox="0 0 240 90" preserveAspectRatio="none" aria-hidden="true">
-            <defs>
-              <linearGradient id="ovFill" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#ef4444" stopOpacity="0.35" />
-                <stop offset="100%" stopColor="#ef4444" stopOpacity="0" />
-              </linearGradient>
-            </defs>
-            <path d={areaPath} fill="url(#ovFill)" />
-            <path
-              d={linePath}
-              fill="none"
-              stroke="#ef4444"
-              strokeWidth="2.4"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-            {chartPoints.map((p, i) => (
-              <circle
-                key={p.label}
-                cx={(i / Math.max(chartPoints.length - 1, 1)) * 240}
-                cy={p.y}
-                r="3"
-                fill="#ef4444"
-              />
-            ))}
-          </svg>
-          <div className="ov__chart-labels">
-            {chartPoints.map((p) => (
-              <span key={p.label}>
-                {p.label}
-                <em>{p.count}</em>
-              </span>
-            ))}
-          </div>
-        </div>
-
-        <div className="ov__panel">
-          <div className="ov__panel-head">
-            <h2>Threat verdicts</h2>
-          </div>
-          {stats.threats.length ? (
-            <ul className="ov__threats">
-              {stats.threats.slice(0, 5).map((s) => (
+          <div className="ov__panel">
+            <div className="ov__panel-head">
+              <h2>Recent clearances</h2>
+            </div>
+            <ul className="ov__completions">
+              {stats.cleared.slice(0, 6).map((s) => (
                 <li key={s.id}>
-                  <MaterialIcon name="shield_alert" size={16} color="ef4444" />
-                  <div>
-                    <strong
-                      role={demo ? undefined : "button"}
-                      tabIndex={demo ? undefined : 0}
-                      onClick={() => {
-                        if (!demo) onOpenScan?.(s.id);
-                      }}
-                      onKeyDown={(e) => {
-                        if (!demo && (e.key === "Enter" || e.key === " ")) onOpenScan?.(s.id);
-                      }}
-                    >
-                      {s.pin}
-                    </strong>
-                    <span>{s.reviewer_verdict}</span>
-                  </div>
-                  <em>{relativeTime(s.reviewed_at || s.completed_at)}</em>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="ov__blank">No threat verdicts yet. Flagged cases will show up here.</p>
-          )}
-        </div>
-
-        <div className="ov__panel">
-          <div className="ov__panel-head">
-            <h2>Latest verdicts</h2>
-          </div>
-          <ul className="ov__completions">
-            {stats.completed
-              .filter((s) => s.reviewer_verdict)
-              .slice(0, 5)
-              .map((s) => (
-                <li key={s.id}>
-                  <span className={`ov__dot ov__dot--${verdictTone(s.reviewer_verdict)}`} />
+                  <span className="ov__dot ov__dot--clean" />
                   <div>
                     <strong>{s.pin}</strong>
-                    <span>{s.reviewer_verdict}</span>
+                    <span>{s.reviewer_verdict || "Cleared"}</span>
                   </div>
                   <em>{formatDisplayDate(s.reviewed_at || s.completed_at) || relativeTime(s.completed_at)}</em>
                 </li>
               ))}
-            {!stats.completed.some((s) => s.reviewer_verdict) ? (
-              <li className="ov__blank-row">No verdicts recorded yet.</li>
-            ) : null}
-          </ul>
+              {!stats.cleared.length ? <li className="ov__blank-row">No cleared cases yet.</li> : null}
+            </ul>
+          </div>
         </div>
-      </div>
+      ) : null}
     </section>
   );
 }

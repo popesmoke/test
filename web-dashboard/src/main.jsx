@@ -2606,7 +2606,7 @@ function WorkspaceInspector({
   );
 }
 
-function Results({ detail, token, onSessionReviewSaved }) {
+function Results({ detail, token, sessions, onSessionReviewSaved }) {
   const [tutorialOpen, setTutorialOpen] = useState(false);
 
   useEffect(() => {
@@ -2658,6 +2658,9 @@ function Results({ detail, token, onSessionReviewSaved }) {
               activityEventSummary={activityEventSummary}
               formatGmtPlus3={formatGmtPlus3}
               token={token}
+              detail={detail}
+              sessions={sessions}
+              brandName={BRAND_NAME}
             />
           )}
         </div>
@@ -3061,6 +3064,7 @@ export function Dashboard({ token, onLogout }) {
               <Results
                 detail={detail}
                 token={token}
+                sessions={sessions}
                 onSessionReviewSaved={(row) => {
                   setSessions((prev) => prev.map((s) => (s.id === row.id ? { ...s, ...row } : s)));
                   setDetail((prev) => (prev && prev.id === row.id ? { ...prev, ...row } : prev));

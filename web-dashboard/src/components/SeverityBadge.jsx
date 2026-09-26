@@ -21,7 +21,7 @@ export function SeverityBadge({ severity, compact = false, showIcon = true }) {
       ) : (
         <span className="sev-badge__dot" aria-hidden />
       )}
-      {!compact ? <span className="sev-badge__label">{meta.label}</span> : null}
+      <span className="sev-badge__label">{meta.label}</span>
     </span>
   );
 }

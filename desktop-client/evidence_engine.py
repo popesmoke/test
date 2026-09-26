@@ -5,6 +5,12 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
+try:
+    from virello.findings import build_findings_bundle, normalize_hit_to_finding
+except Exception:  # Nuitka / optional package missing at runtime
+    build_findings_bundle = None  # type: ignore[assignment]
+    normalize_hit_to_finding = None  # type: ignore[assignment]
+
 # Source reliability: how much we trust the artifact class alone (0–1).
 ARTIFACT_SOURCE_RELIABILITY: dict[str, float] = {
     "sha256_blocklist": 0.95,
@@ -114,6 +120,23 @@ def _confidence_tier(score: float) -> str:
     return "low"
 
 
+def _indicator_strength_for_hit(tier: str, hit: dict[str, Any]) -> str:
+    """Map confidence_tier (+ sha256) to indicator_strength."""
+    has_sha = bool(
+        hit.get("sha256")
+        or any(str(r).startswith("sha256_blocklist:") for r in (hit.get("reasons") or []))
+        or "sha256_blocklist" in str(hit.get("note") or "")
+        or str(hit.get("artifact_source") or "") == "sha256_blocklist"
+    )
+    if tier == "high" and has_sha:
+        return "confirmed"
+    if tier == "high":
+        return "strong"
+    if tier == "medium":
+        return "suspicious"
+    return "weak"
+
+
 def _recency_factor(iso_ts: str | None, *, now: datetime | None = None) -> float:
     if not iso_ts:
         return 0.85
@@ -179,6 +202,7 @@ def compute_hit_confidence(
     return {
         "confidence": round(confidence, 3),
         "confidence_tier": tier,
+        "indicator_strength": _indicator_strength_for_hit(tier, hit),
         "reliability_class": reliability_class_for_source(source),
         "source_reliability": round(base, 3),
         "corroboration_count": int(max(1, corroboration_count)),
@@ -245,6 +269,20 @@ def enrich_executor_artifact_evidence(
     bundle["high_confidence_hits"] = sum(1 for row in enriched if row.get("confidence_tier") == "high")
     bundle["medium_confidence_hits"] = sum(1 for row in enriched if row.get("confidence_tier") == "medium")
     bundle["confidence_engine_version"] = 2
+
+    if normalize_hit_to_finding is not None and build_findings_bundle is not None:
+        try:
+            bundle["normalized_findings"] = [
+                normalize_hit_to_finding(row, index=i) for i, row in enumerate(enriched)
+            ]
+            bundle["findings_bundle"] = build_findings_bundle(
+                {"available": True, "hits": enriched},
+                provenance_chains=[],
+                bypass_findings=[],
+            )
+        except Exception:
+            pass
+
     return bundle
 
 

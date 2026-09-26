@@ -80,6 +80,10 @@ call "..\.venv\Scripts\python.exe" -m nuitka ^
   --noinclude-setuptools-mode=nofollow ^
   --include-module=embedded_build_config ^
   --include-module=runtime_config ^
+  --include-module=evidence_engine ^
+  --include-module=roblox_runtime ^
+  --include-package=virello ^
+  --include-data-dir=virello=virello ^
   --nofollow-import-to=yara ^
   --python-flag=no_docstrings ^
   %ICON_ARG% %DATA_ARG%

@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-09-26T11:05:23Z",
+  "blocklist_path": "assets/executor_sha256_blocklist.json",
+  "description": "Pointer to verified executor SHA256 fingerprints used by hash-only matching.",
+  "format": "entries[].sha256 + entries[].label"
+}

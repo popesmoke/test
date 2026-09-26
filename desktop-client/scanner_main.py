@@ -42,13 +42,15 @@ from roblox_runtime import roblox_runtime_provenance_scan
 API_URL = get_api_url()
 CONSENT_VERSION = "2026-06-02.virello-scanner"
 
+# Professional forensic stages — progress is driven by real collector milestones, not faked.
 SCAN_STAGES = [
-    "Initializing Scan",
-    "System Environment Check",
-    "Application Data Review",
-    "Forensic Collection",
-    "Evidence Correlation",
-    "Uploading Report",
+    "Preparing",
+    "Environment analysis",
+    "Process analysis",
+    "File & artifact analysis",
+    "Signature matching",
+    "Correlation & risk",
+    "Report upload",
 ]
 
 # Progress bar: real milestones from build_report() plus a light animation between updates.
@@ -57,9 +59,9 @@ PROGRESS_STEP = 0.55
 PROGRESS_CAP_DURING_SCAN = 92.0
 PRE_SCAN_STAGE_DELAY_SEC = 0.08
 PRE_SCAN_STAGE_PROGRESS = {
-    "Initializing Scan": 8.0,
-    "System Environment Check": 14.0,
-    "Application Data Review": 20.0,
+    "Preparing": 6.0,
+    "Environment analysis": 12.0,
+    "Process analysis": 18.0,
 }
 
 COLLECTED_CATEGORIES = [
@@ -3080,6 +3082,68 @@ EXECUTOR_RBXASSET_SIGNATURES: dict[str, list[str]] = {
     "Comet": ["comet", "rbxasset://comet"],
     "Swift": ["swift", "rbxasset://swift"],
 }
+
+# Intelligence package version metadata (populated when virello.intelligence loads).
+INTELLIGENCE_SCHEMA_VERSION = 0
+INTELLIGENCE_UPDATED_AT = ""
+SCANNER_ENGINE_VERSION = "2.0.0"
+
+
+def _apply_intelligence_catalog() -> None:
+    """Override hardcoded catalogs from the structured intelligence DB when available."""
+    global EXECUTOR_NAMES, EXECUTOR_ALIASES, EXECUTOR_INSTALL_DIR_NAMES
+    global EXECUTOR_AMBIGUOUS_NAMES, EXECUTOR_BINARY_ONLY_ALIASES
+    global BENIGN_EXECUTABLE_STEMS, DEV_TOOL_PATH_FRAGMENTS
+    global EXECUTOR_KNOWN_RELATIVE_PATHS, EXECUTOR_DOWNLOAD_DOMAIN_HINTS
+    global ROBLOX_TRUSTED_LAUNCHER_FRAGMENTS, ROBLOX_AUTOEXEC_DIR_NAMES
+    global EXECUTOR_RBXASSET_SIGNATURES
+    global INTELLIGENCE_SCHEMA_VERSION, INTELLIGENCE_UPDATED_AT
+
+    try:
+        from virello.intelligence.loader import load_intelligence
+
+        db = load_intelligence()
+    except Exception:
+        return
+
+    if db.executor_names:
+        EXECUTOR_NAMES = list(db.executor_names)
+    if db.executor_aliases:
+        EXECUTOR_ALIASES = {str(k): list(v) for k, v in db.executor_aliases.items()}
+    if db.install_dir_names:
+        EXECUTOR_INSTALL_DIR_NAMES = frozenset(db.install_dir_names)
+    if db.ambiguous_names:
+        EXECUTOR_AMBIGUOUS_NAMES = frozenset(db.ambiguous_names)
+    if db.binary_only_aliases:
+        EXECUTOR_BINARY_ONLY_ALIASES = {
+            str(k): list(v) for k, v in db.binary_only_aliases.items()
+        }
+    if db.benign_executable_stems:
+        BENIGN_EXECUTABLE_STEMS = frozenset(db.benign_executable_stems)
+    if db.dev_tool_path_fragments:
+        DEV_TOOL_PATH_FRAGMENTS = tuple(db.dev_tool_path_fragments)
+    if db.known_relative_paths:
+        EXECUTOR_KNOWN_RELATIVE_PATHS = {
+            str(k): list(v) for k, v in db.known_relative_paths.items()
+        }
+    if db.download_domain_hints:
+        EXECUTOR_DOWNLOAD_DOMAIN_HINTS = {
+            str(k): list(v) for k, v in db.download_domain_hints.items()
+        }
+    if db.roblox_trusted_launcher_fragments:
+        ROBLOX_TRUSTED_LAUNCHER_FRAGMENTS = tuple(db.roblox_trusted_launcher_fragments)
+    if db.autoexec_dir_names:
+        ROBLOX_AUTOEXEC_DIR_NAMES = frozenset(db.autoexec_dir_names)
+    if db.rbxasset_signatures:
+        EXECUTOR_RBXASSET_SIGNATURES = {
+            str(k): list(v) for k, v in db.rbxasset_signatures.items()
+        }
+
+    INTELLIGENCE_SCHEMA_VERSION = int(db.schema_version or 0)
+    INTELLIGENCE_UPDATED_AT = str(db.updated_at or "")
+
+
+_apply_intelligence_catalog()
 
 # Target window: scans aim for ~90s on modern hardware; collectors wind down before the hard ceiling.
 SCAN_SOFT_TARGET_SECONDS = 55.0
@@ -17237,6 +17301,9 @@ def build_report() -> dict:
     _reset_binary_probe_result_cache()
     _reset_scan_deadline()
     scan_started_at = datetime.now(timezone.utc).isoformat()
+    scan_mode = str(os.environ.get("VIRELLO_SCAN_MODE") or "deep").strip().lower()
+    if scan_mode not in {"quick", "deep", "custom"}:
+        scan_mode = "deep"
     _report_scan_progress(24.0, SCAN_STAGES[3])
     _collect_started = _time.perf_counter()
     memory = psutil.virtual_memory()
@@ -17306,6 +17373,7 @@ def build_report() -> dict:
         designated, sha_blocklist = fut_folders.result()
         forensic_core = fut_forensic_core.result()
         _report_scan_progress(48.0, SCAN_STAGES[3])
+        _report_scan_progress(52.0, SCAN_STAGES[4])
         fut_disk_exe = pool.submit(recent_disk_executable_scan)
 
         fut_forensic = pool.submit(
@@ -17354,9 +17422,9 @@ def build_report() -> dict:
             wait(_barrier_two, timeout=max(0.0, scan_seconds_remaining()))
 
         _mark_phase("collectors", _collect_started)
-        _report_scan_progress(64.0, SCAN_STAGES[3])
+        _report_scan_progress(64.0, SCAN_STAGES[4])
         _correlate_started = _time.perf_counter()
-        _report_scan_progress(68.0, SCAN_STAGES[4])
+        _report_scan_progress(68.0, SCAN_STAGES[5])
         prefetched_artifact_scans = _resolve_prefetched_artifact_scans(artifact_scan_futures)
         roblox_surface = build_roblox_exploit_surface_report(prefetched_artifact_scans)
         forensic_bundle = fut_forensic.result()
@@ -17630,7 +17698,7 @@ def build_report() -> dict:
         )
 
     _mark_phase("correlation", _correlate_started)
-    _report_scan_progress(86.0, SCAN_STAGES[4])
+    _report_scan_progress(86.0, SCAN_STAGES[5])
     _phase_times["total_seconds"] = round(_time.perf_counter() - _phase_started, 2)
     _scan_budget = {
         "max_seconds": SCAN_MAX_SECONDS,
@@ -17660,9 +17728,29 @@ def build_report() -> dict:
             "runtime_reasons": evidence_verdict.get("runtime_reasons"),
         }
 
+    findings_bundle = None
+    try:
+        from virello.findings import build_findings_bundle
+
+        findings_bundle = build_findings_bundle(
+            executor_artifact_evidence,
+            provenance_chains=list(evidence_verdict.get("provenance_chains") or []),
+            bypass_findings=list((bypass_resilience or {}).get("findings") or []),
+        )
+    except Exception:
+        findings_bundle = (executor_artifact_evidence or {}).get("findings_bundle")
+
     return {
         "scan_started_at": scan_started_at,
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "scanner_meta": {
+            "engine_version": SCANNER_ENGINE_VERSION,
+            "intelligence_schema_version": INTELLIGENCE_SCHEMA_VERSION,
+            "intelligence_updated_at": INTELLIGENCE_UPDATED_AT,
+            "scan_mode": scan_mode,
+            "consent_version": CONSENT_VERSION,
+        },
+        "findings_bundle": findings_bundle,
         "system_overview": {
             "os": platform.platform(),
             "system": platform.system(),
@@ -17688,7 +17776,8 @@ def build_report() -> dict:
             "scan_max_seconds": SCAN_MAX_SECONDS,
             "scan_budget": _scan_budget,
             "scan_profile": {
-                "mode": "roblox_standard",
+                "mode": scan_mode,
+                "profile": "roblox_standard",
                 "target_executor_count": len(SCAN_TARGET_EXECUTORS),
                 "target_executors": SCAN_TARGET_EXECUTORS,
                 "user_zone_depth": FULL_PC_USER_ZONE_DEPTH,
@@ -17726,6 +17815,7 @@ def build_report() -> dict:
                     "roblox_protocol_registry",
                     "live_processes",
                     "roblox_autoexec",
+                    "virello_intelligence_db",
                 ],
             },
         },
@@ -18423,7 +18513,6 @@ class DiagnosticApp:
                     self.root.after(0, self.set_stage, collect_stage, "running")
                     anim_thread.start()
 
-                    scan_deadline = time.monotonic() + SCAN_MAX_SECONDS
                     while not report_future.done():
                         time.sleep(0.3)
 
@@ -18431,15 +18520,16 @@ class DiagnosticApp:
                     anim_thread.join(timeout=2.0)
                     report = report_future.result(timeout=15)
                     self.root.after(0, self.set_stage, collect_stage, "complete")
+                    self.root.after(0, self.set_stage, SCAN_STAGES[4], "complete")
 
-                    finalize_stage = SCAN_STAGES[4]
+                    finalize_stage = SCAN_STAGES[5]
                     self.root.after(0, self.set_stage, finalize_stage, "running")
                     progress_value["v"] = max(progress_value["v"], 90.0)
                     self.root.after(0, self.set_progress_percent, progress_value["v"])
                     time.sleep(0.04)
                     self.root.after(0, self.set_stage, finalize_stage, "complete")
 
-                    upload_stage = SCAN_STAGES[5]
+                    upload_stage = SCAN_STAGES[6]
                     self.root.after(0, self.set_stage, upload_stage, "running")
                     payload = {
                         "pin": self.pin.get().strip(),

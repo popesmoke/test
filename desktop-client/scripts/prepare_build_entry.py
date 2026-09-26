@@ -9,6 +9,16 @@ ROOT = Path(__file__).resolve().parent.parent
 OUT_DIR = ROOT / "_build_obf"
 
 
+def _copy_tree(src: Path, dst: Path) -> None:
+    if dst.exists():
+        shutil.rmtree(dst)
+    shutil.copytree(
+        src,
+        dst,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".pytest_cache"),
+    )
+
+
 def main() -> int:
     if OUT_DIR.exists():
         shutil.rmtree(OUT_DIR)
@@ -21,6 +31,11 @@ def main() -> int:
         module_path = ROOT / module_name
         if module_path.is_file():
             shutil.copy2(module_path, OUT_DIR / module_name)
+
+    virello_src = ROOT / "virello"
+    if virello_src.is_dir():
+        _copy_tree(virello_src, OUT_DIR / "virello")
+
     assets_src = ROOT / "assets"
     if assets_src.is_dir():
         assets_dst = OUT_DIR / "assets"
@@ -29,6 +44,8 @@ def main() -> int:
             if asset.is_file():
                 shutil.copy2(asset, assets_dst / asset.name)
     print(f"Build entry: {OUT_DIR / 'app.py'}")
+    if (OUT_DIR / "virello").is_dir():
+        print(f"Included intelligence package: {OUT_DIR / 'virello'}")
     return 0
 
 

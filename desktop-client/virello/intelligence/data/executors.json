@@ -1,0 +1,702 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-09-26T11:05:23Z",
+  "names": [
+    "Volt",
+    "Potassium",
+    "Wave",
+    "Synapse Z",
+    "Seliware",
+    "Madium",
+    "Cosmic",
+    "Velocity",
+    "SirHurt",
+    "Solara",
+    "Xeno",
+    "Serotonin",
+    "Severe",
+    "RbxCli",
+    "Lumen",
+    "Matcha",
+    "Matrix Hub",
+    "Photon",
+    "DX9WARE V2",
+    "MacSploit",
+    "Opiumware",
+    "Delta",
+    "Vega X",
+    "Codex",
+    "Arceus X",
+    "Fluxus",
+    "JJSploit",
+    "Hydrogen",
+    "Cryptic",
+    "Nucleus",
+    "Electron",
+    "Trigon",
+    "Ronix",
+    "Evon",
+    "KRNL",
+    "Oxygen U",
+    "Comet",
+    "Bunni",
+    "Nezur",
+    "Zorara",
+    "Swift",
+    "Temple",
+    "Valex",
+    "Pluto"
+  ],
+  "aliases": {
+    "Volt": [
+      "volt",
+      "voltexecutor",
+      "volt.exe",
+      "volt1",
+      "volt 1"
+    ],
+    "Potassium": [
+      "potassium",
+      "potass",
+      "kpotassium",
+      "potassiumware",
+      "potassium.exe",
+      "potassium 2"
+    ],
+    "Wave": [
+      "waveexecutor",
+      "wave.exe",
+      "wave 1",
+      "wave-1",
+      "wave135"
+    ],
+    "Synapse Z": [
+      "synapse",
+      "synapsez",
+      "synapse z",
+      "synapse-z",
+      "synapse z.exe"
+    ],
+    "Seliware": [
+      "seliware",
+      "seliware.exe",
+      "seliware 2"
+    ],
+    "Madium": [
+      "madium",
+      "madium.exe",
+      "madium 1"
+    ],
+    "Cosmic": [
+      "cosmic",
+      "cosmicexecutor",
+      "cosmicware",
+      "cosmic 3"
+    ],
+    "Velocity": [
+      "velocity",
+      "velocityexecutor",
+      "velocity 1",
+      "velocity.exe"
+    ],
+    "SirHurt": [
+      "sirhurt",
+      "sir_hurt",
+      "sirhurt.exe",
+      "sirhurt v5"
+    ],
+    "Solara": [
+      "solara",
+      "solarav3",
+      "solarav2",
+      "solara 3"
+    ],
+    "Xeno": [
+      "xenoexecutor",
+      "xeno.exe",
+      "xeno 1",
+      "xeno135",
+      "xeno.now"
+    ],
+    "Serotonin": [
+      "serotonin",
+      "serotonin.exe",
+      "serotonin v2",
+      "serotoninv2"
+    ],
+    "Severe": [
+      "severe",
+      "severe.exe",
+      "severe v2",
+      "severev2"
+    ],
+    "RbxCli": [
+      "rbxcli",
+      "rbxcli.exe",
+      "rbx cli",
+      "rbxcli-beta"
+    ],
+    "Lumen": [
+      "lumen",
+      "lumenexecutor",
+      "lumen.exe",
+      "lumen 1"
+    ],
+    "Matcha": [
+      "matcha",
+      "matcha.exe",
+      "matcha v2",
+      "matchav2"
+    ],
+    "Matrix Hub": [
+      "matrixhub",
+      "matrix hub",
+      "matrixhub.exe",
+      "matrix hub v2"
+    ],
+    "Photon": [
+      "photon",
+      "photon.exe",
+      "photon 6",
+      "photon6"
+    ],
+    "DX9WARE V2": [
+      "dx9ware",
+      "dx9warev2",
+      "dx9ware v2",
+      "dx9ware v2 1"
+    ],
+    "MacSploit": [
+      "macsploit",
+      "macsploit.exe"
+    ],
+    "Opiumware": [
+      "opiumware",
+      "opiumware.exe",
+      "opiumware v2"
+    ],
+    "Delta": [
+      "deltaexecutor",
+      "delta.exe",
+      "delta 2",
+      "deltaexecutor 2"
+    ],
+    "Vega X": [
+      "vegax",
+      "vega x",
+      "vegax.exe",
+      "vega x 2"
+    ],
+    "Codex": [
+      "codexexecutor",
+      "codex.exe",
+      "codex 2",
+      "codexexecutor 2"
+    ],
+    "Arceus X": [
+      "arceusx",
+      "arceus x",
+      "arceusx.exe",
+      "arceus executor"
+    ],
+    "Fluxus": [
+      "fluxus",
+      "fluxus.exe",
+      "fluxus executor",
+      "fluxusexecutor"
+    ],
+    "JJSploit": [
+      "jjsploit",
+      "jjsploit.exe",
+      "jj sploit"
+    ],
+    "Hydrogen": [
+      "hydrogenexecutor",
+      "hydrogen executor",
+      "hydrogen.exe"
+    ],
+    "Cryptic": [
+      "crypticexecutor",
+      "cryptic executor",
+      "cryptic.exe"
+    ],
+    "Nucleus": [
+      "nucleusexecutor",
+      "nucleus executor",
+      "nucleus.exe"
+    ],
+    "Electron": [
+      "electronexecutor",
+      "electron executor",
+      "electron-executor",
+      "electron.exe"
+    ],
+    "Trigon": [
+      "trigonexecutor",
+      "trigon executor",
+      "trigon.exe"
+    ],
+    "Ronix": [
+      "ronix",
+      "ronixexploit",
+      "ronix exploit",
+      "ronixexecutor"
+    ],
+    "Evon": [
+      "evon",
+      "evonexecutor",
+      "evon executor",
+      "evonmobile"
+    ],
+    "KRNL": [
+      "krnl",
+      "krnl.exe",
+      "krnlplace",
+      "krnl bootstrap"
+    ],
+    "Oxygen U": [
+      "oxygen",
+      "oxygen u",
+      "oxygenu",
+      "oxygen-u"
+    ],
+    "Comet": [
+      "comet",
+      "cometexecutor",
+      "comet executor"
+    ],
+    "Bunni": [
+      "bunni",
+      "bunniexecutor",
+      "bunni exploit"
+    ],
+    "Nezur": [
+      "nezur",
+      "nezurexecutor",
+      "nezur executor"
+    ],
+    "Zorara": [
+      "zorara",
+      "zoraraexecutor"
+    ],
+    "Swift": [
+      "swiftexecutor",
+      "swift executor",
+      "swiftdownload"
+    ],
+    "Temple": [
+      "temple",
+      "templeexecutor",
+      "temple executor"
+    ],
+    "Valex": [
+      "valex",
+      "valexexecutor",
+      "valex executor"
+    ],
+    "Pluto": [
+      "pluto",
+      "plutoexecutor",
+      "pluto executor"
+    ]
+  },
+  "install_dir_names": [
+    "bunni",
+    "codex",
+    "codexexecutor",
+    "comet",
+    "cosmic",
+    "delta",
+    "dx9ware",
+    "dx9ware v2",
+    "evon",
+    "krnl",
+    "lumen",
+    "macsploit",
+    "madium",
+    "matcha",
+    "matrix hub",
+    "matrixhub",
+    "nezur",
+    "opiumware",
+    "oxygen",
+    "photon",
+    "pluto",
+    "potassium",
+    "rbxcli",
+    "ronix",
+    "seliware",
+    "serotonin",
+    "severe",
+    "sirhurt",
+    "solara",
+    "swift",
+    "synapse z",
+    "synapsez",
+    "temple",
+    "valex",
+    "vega x",
+    "vegax",
+    "velocity",
+    "volt",
+    "wave",
+    "xeno",
+    "zorara"
+  ],
+  "ambiguous_names": [
+    "Arceus X",
+    "Codex",
+    "Cosmic",
+    "Cryptic",
+    "Delta",
+    "Electron",
+    "Fluxus",
+    "Hydrogen",
+    "Lumen",
+    "Matcha",
+    "Nucleus",
+    "Photon",
+    "Severe",
+    "Trigon",
+    "Velocity",
+    "Volt",
+    "Wave",
+    "Xeno"
+  ],
+  "binary_only_aliases": {
+    "Electron": [
+      "electronexecutor",
+      "electron executor",
+      "electron-executor"
+    ],
+    "Nucleus": [
+      "nucleusexecutor",
+      "nucleus executor"
+    ],
+    "Cryptic": [
+      "crypticexecutor",
+      "cryptic executor"
+    ],
+    "Hydrogen": [
+      "hydrogenexecutor",
+      "hydrogen executor"
+    ],
+    "Trigon": [
+      "trigonexecutor",
+      "trigon executor"
+    ],
+    "Fluxus": [
+      "fluxusexecutor",
+      "fluxus executor"
+    ],
+    "Arceus X": [
+      "arceusx",
+      "arceus executor"
+    ],
+    "Delta": [
+      "deltaexecutor",
+      "delta executor"
+    ],
+    "Codex": [
+      "codexexecutor",
+      "codex executor"
+    ],
+    "Photon": [
+      "photonexecutor",
+      "photon executor"
+    ],
+    "Cosmic": [
+      "cosmicexecutor",
+      "cosmic executor"
+    ],
+    "Velocity": [
+      "velocityexecutor",
+      "velocity executor"
+    ],
+    "Wave": [
+      "waveexecutor",
+      "wave executor"
+    ],
+    "Volt": [
+      "voltexecutor",
+      "volt executor"
+    ]
+  },
+  "known_relative_paths": {
+    "Volt": [
+      "AppData/Local/Volt",
+      "AppData/Roaming/Volt",
+      "Downloads/Volt"
+    ],
+    "Potassium": [
+      "AppData/Local/Potassium",
+      "AppData/Roaming/Potassium"
+    ],
+    "Wave": [
+      "AppData/Local/Wave",
+      "AppData/Local/WaveExecutor",
+      "Downloads/Wave"
+    ],
+    "Synapse Z": [
+      "AppData/Local/Synapse Z",
+      "AppData/Local/SynapseZ",
+      "AppData/Roaming/Synapse Z"
+    ],
+    "Seliware": [
+      "AppData/Local/Seliware",
+      "AppData/Roaming/Seliware"
+    ],
+    "Madium": [
+      "AppData/Local/Madium",
+      "AppData/Roaming/Madium"
+    ],
+    "Cosmic": [
+      "AppData/Local/Cosmic",
+      "AppData/Local/CosmicExecutor"
+    ],
+    "Velocity": [
+      "AppData/Local/Velocity",
+      "AppData/Roaming/Velocity"
+    ],
+    "SirHurt": [
+      "AppData/Local/SirHurt",
+      "AppData/Roaming/SirHurt"
+    ],
+    "Solara": [
+      "AppData/Local/Solara",
+      "AppData/Roaming/Solara"
+    ],
+    "Xeno": [
+      "AppData/Local/Xeno",
+      "AppData/Local/Xeno/workspace"
+    ],
+    "Serotonin": [
+      "AppData/Local/Serotonin",
+      "AppData/Roaming/Serotonin"
+    ],
+    "Severe": [
+      "AppData/Local/Severe",
+      "AppData/Roaming/Severe"
+    ],
+    "RbxCli": [
+      "AppData/Local/RbxCli",
+      "AppData/Local/RBX CLI"
+    ],
+    "Lumen": [
+      "AppData/Local/Lumen",
+      "AppData/Local/LumenExecutor"
+    ],
+    "Matcha": [
+      "AppData/Local/Matcha",
+      "AppData/Roaming/Matcha"
+    ],
+    "Matrix Hub": [
+      "AppData/Local/Matrix Hub",
+      "AppData/Local/MatrixHub"
+    ],
+    "Photon": [
+      "AppData/Local/Photon",
+      "AppData/Roaming/Photon"
+    ],
+    "DX9WARE V2": [
+      "AppData/Local/DX9WARE",
+      "AppData/Local/DX9WARE V2"
+    ],
+    "Delta": [
+      "AppData/Local/Delta",
+      "AppData/Local/DeltaExecutor"
+    ],
+    "Vega X": [
+      "AppData/Local/Vega X",
+      "AppData/Local/VegaX"
+    ],
+    "Codex": [
+      "AppData/Local/Codex",
+      "AppData/Local/CodexExecutor"
+    ],
+    "Ronix": [
+      "AppData/Local/Ronix",
+      "AppData/Local/RonixExploit"
+    ],
+    "Evon": [
+      "AppData/Local/Evon",
+      "AppData/Roaming/Evon"
+    ],
+    "KRNL": [
+      "AppData/Local/krnl",
+      "AppData/Local/KRNL"
+    ],
+    "Oxygen U": [
+      "AppData/Local/Oxygen",
+      "AppData/Local/Oxygen U"
+    ],
+    "Comet": [
+      "AppData/Local/Comet",
+      "AppData/Local/CometExecutor"
+    ],
+    "Nezur": [
+      "AppData/Local/Nezur",
+      "AppData/Roaming/Nezur"
+    ],
+    "Swift": [
+      "AppData/Local/Swift",
+      "AppData/Local/SwiftExecutor"
+    ]
+  },
+  "download_domain_hints": {
+    "Wave": [
+      "getwave.gg",
+      "waveinject.dev",
+      "wave.gg",
+      "waveexecutor"
+    ],
+    "Volt": [
+      "voltexecutor",
+      "volt.gg",
+      "volt-executor"
+    ],
+    "Potassium": [
+      "potassiumware",
+      "potassium-executor"
+    ],
+    "Synapse Z": [
+      "synapsez",
+      "synapse.to",
+      "synapsex"
+    ],
+    "Seliware": [
+      "seliware",
+      "seliware.com"
+    ],
+    "SirHurt": [
+      "sirhurt",
+      "sirhurt.net"
+    ],
+    "Solara": [
+      "solara",
+      "solarexecutor",
+      "wearedevs"
+    ],
+    "Xeno": [
+      "xenoexecutor",
+      "xeno.onl",
+      "xeno.now",
+      "xeno-executor"
+    ],
+    "Velocity": [
+      "velocityexecutor"
+    ],
+    "Cosmic": [
+      "cosmicexecutor",
+      "cosmic-executor"
+    ],
+    "Madium": [
+      "madiumexecutor"
+    ],
+    "Serotonin": [
+      "serotoninexecutor"
+    ],
+    "Photon": [
+      "photon-executor",
+      "photonexecutor"
+    ],
+    "DX9WARE V2": [
+      "dx9ware"
+    ],
+    "Delta": [
+      "deltaexecutor",
+      "delta-executor"
+    ],
+    "Vega X": [
+      "vegax",
+      "vega-x"
+    ],
+    "Codex": [
+      "codexexecutor",
+      "codex-executor"
+    ],
+    "Ronix": [
+      "ronix",
+      "ronixexploit",
+      "ronix-exploit"
+    ],
+    "Evon": [
+      "evon",
+      "evonexecutor",
+      "evon-mobile"
+    ],
+    "KRNL": [
+      "krnl",
+      "krnl.place",
+      "krnlplace"
+    ],
+    "Oxygen U": [
+      "oxygen",
+      "oxygenu",
+      "oxygen-u"
+    ],
+    "Comet": [
+      "cometexecutor",
+      "comet-executor"
+    ],
+    "Nezur": [
+      "nezur",
+      "nezurexecutor"
+    ],
+    "Swift": [
+      "swiftexecutor",
+      "swift-executor"
+    ]
+  },
+  "rbxasset_signatures": {
+    "Delta": [
+      "rbxasset://custom_gloop",
+      "custom_gloop/new_logo"
+    ],
+    "Ronix": [
+      "rbxasset://ronixexploit",
+      "rbxasset://RonixExploit"
+    ],
+    "Evon": [
+      "launching old evon gui",
+      "evonmobile"
+    ],
+    "Vega X": [
+      "depricated & drop support on",
+      "deprecated & drop support"
+    ],
+    "Trigon": [
+      "osebackground"
+    ],
+    "Arceus X": [
+      "arceusx",
+      "rbxasset://arceus"
+    ],
+    "Fluxus": [
+      "fluxus",
+      "rbxasset://fluxus"
+    ],
+    "KRNL": [
+      "krnl",
+      "rbxasset://krnl"
+    ],
+    "Comet": [
+      "comet",
+      "rbxasset://comet"
+    ],
+    "Swift": [
+      "swift",
+      "rbxasset://swift"
+    ]
+  },
+  "autoexec_dir_names": [
+    "auto execute",
+    "auto-execute",
+    "auto_execute",
+    "autoexec",
+    "script hub",
+    "scripthub",
+    "scripts",
+    "workspace"
+  ]
+}

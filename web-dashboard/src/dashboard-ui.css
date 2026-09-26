@@ -351,6 +351,19 @@
   font-size: 13px;
 }
 
+.ov__eyebrow {
+  margin: 0 0 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ws-dim);
+}
+
+.ov__cta {
+  min-height: 36px;
+}
+
 .ov__header-actions {
   display: flex;
   gap: 8px;
@@ -365,12 +378,25 @@
 
 .ov__metric {
   display: flex;
-  gap: 12px;
+  flex-direction: column;
+  gap: 0;
   align-items: flex-start;
   padding: 14px 14px 12px;
-  border-radius: 12px;
+  border-radius: 3px;
   border: 1px solid var(--ws-line);
   background: var(--ws-surface);
+}
+
+.ov__metric--bad {
+  border-left: 2px solid var(--ws-accent, #c43c3c);
+}
+
+.ov__metric--warn {
+  border-left: 2px solid var(--ws-warn, #b0892e);
+}
+
+.ov__metric--ok {
+  border-left: 2px solid var(--ws-ok, #3d8f6e);
 }
 
 .ov__metric-icon {
@@ -437,10 +463,14 @@
 }
 
 .ov__panel {
-  border-radius: 12px;
+  border-radius: 3px;
   border: 1px solid var(--ws-line);
   background: var(--ws-surface);
   padding: 14px 15px;
+}
+
+.ov__panel--table {
+  padding-bottom: 12px;
 }
 
 .ov__panel-head {
@@ -464,11 +494,12 @@
   min-width: 22px;
   height: 22px;
   padding: 0 7px;
-  border-radius: 999px;
+  border-radius: 2px;
   background: rgba(255, 255, 255, 0.06);
   color: var(--ws-muted);
   font-size: 11px;
   font-weight: 700;
+  font-family: var(--ws-font-mono, monospace);
 }
 
 .ov__chip--warn {
@@ -547,36 +578,139 @@
   color: var(--ws-dim);
 }
 
-.ov__pill {
+.ov__pin-cell {
+  display: grid;
+  gap: 2px;
+}
+
+.ov__pin {
+  font-family: var(--ws-font-mono, monospace);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.ov__pin-cell em {
+  font-style: normal;
+  font-size: 11px;
+  color: var(--ws-dim);
+}
+
+.ov__mono {
+  font-family: var(--ws-font-mono, monospace);
+  font-size: 12px;
+  color: var(--ws-muted);
+}
+
+.ov__risk {
   display: inline-flex;
-  padding: 3px 9px;
-  border-radius: 6px;
+  padding: 2px 7px;
+  border: 1px solid var(--ws-line);
+  border-radius: 2px;
   font-size: 11px;
   font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ws-muted);
+}
+
+.ov__risk--high {
+  border-color: rgba(196, 60, 60, 0.45);
+  color: #e07070;
+}
+
+.ov__risk--elevated {
+  border-color: rgba(176, 137, 46, 0.45);
+  color: #c4a04a;
+}
+
+.ov__risk--low {
+  border-color: rgba(61, 143, 110, 0.4);
+  color: #5bb08a;
+}
+
+.ov__risk--unknown {
+  color: var(--ws-dim);
+}
+
+.ov__row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ov__text-btn {
+  border: 1px solid var(--ws-line);
+  background: transparent;
+  color: var(--ws-muted);
+  border-radius: 2px;
+  padding: 4px 9px;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.ov__text-btn:hover:not(:disabled) {
+  color: var(--ws-text);
+  border-color: var(--ws-line-strong);
+}
+
+.ov__text-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.ov__pill {
+  display: inline-flex;
+  padding: 3px 8px;
+  border-radius: 2px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 .ov__pill--clean,
-.ov__pill--completed {
-  background: rgba(34, 197, 94, 0.14);
-  color: #4ade80;
+.ov__pill--completed,
+.ov__pill--cleared {
+  background: rgba(61, 143, 110, 0.14);
+  color: #5bb08a;
 }
 
 .ov__pill--threat,
-.ov__pill--expired {
-  background: rgba(239, 68, 68, 0.16);
-  color: #fca5a5;
+.ov__pill--expired,
+.ov__pill--flagged {
+  background: rgba(196, 60, 60, 0.16);
+  color: #e07070;
 }
 
 .ov__pill--watch,
-.ov__pill--pending {
-  background: rgba(234, 179, 8, 0.14);
-  color: #facc15;
+.ov__pill--pending,
+.ov__pill--waiting,
+.ov__pill--review {
+  background: rgba(176, 137, 46, 0.14);
+  color: #c4a04a;
 }
 
 .ov__empty {
   color: var(--ws-muted);
   text-align: center;
   padding: 28px 8px !important;
+}
+
+.ov__empty strong {
+  display: block;
+  color: var(--ws-text);
+  margin-bottom: 6px;
+}
+
+.ov__empty span {
+  display: block;
+  font-size: 12px;
+  line-height: 1.45;
+  max-width: 42ch;
+  margin: 0 auto;
 }
 
 .ov__icon-btn {
