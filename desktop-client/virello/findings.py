@@ -46,9 +46,11 @@ _SOURCE_LABELS: dict[str, str] = {
 }
 
 
-def _map_confidence_tier(raw_tier: str, *, has_sha256: bool) -> ConfidenceTier:
+def _map_confidence_tier(raw_tier: str, *, confirmed_hash_match: bool) -> ConfidenceTier:
     tier = str(raw_tier or "low").lower()
-    if tier == "high" and has_sha256:
+    if tier == "confirmed" and not confirmed_hash_match:
+        return "high"
+    if tier in {"high", "confirmed"} and confirmed_hash_match:
         return "confirmed"
     if tier == "medium":
         return "moderate"
@@ -60,12 +62,14 @@ def _map_confidence_tier(raw_tier: str, *, has_sha256: bool) -> ConfidenceTier:
 def derive_indicator_strength(
     confidence_tier: str,
     *,
-    has_sha256: bool = False,
+    confirmed_hash_match: bool = False,
     source_reliability: float | None = None,
 ) -> IndicatorStrength:
     """Map confidence tier (+ hash / reliability) to indicator strength."""
     tier = str(confidence_tier or "low").lower()
-    if tier in {"confirmed"} or (tier == "high" and has_sha256):
+    if tier == "confirmed" and not confirmed_hash_match:
+        return "strong"
+    if tier in {"high", "confirmed"} and confirmed_hash_match:
         return "confirmed"
     if tier == "high":
         return "strong"
@@ -164,9 +168,10 @@ def _evidence_from_hit(hit: dict[str, Any]) -> list[EvidenceItem]:
 def normalize_hit_to_finding(hit: dict[str, Any], *, index: int = 0) -> dict[str, Any]:
     """Convert a raw scan hit into a Finding-shaped dict."""
     row = dict(hit or {})
-    has_sha256 = bool(
-        row.get("sha256")
+    confirmed_hash_match = (
+        str(row.get("artifact_source") or "") == "sha256_blocklist"
         or any(str(r).startswith("sha256_blocklist:") for r in (row.get("reasons") or []))
+        or "sha256_blocklist" in str(row.get("note") or "").lower()
     )
     raw_tier = str(row.get("confidence_tier") or "low")
     confidence = float(row.get("confidence") or 0.0)
@@ -175,16 +180,18 @@ def normalize_hit_to_finding(hit: dict[str, Any], *, index: int = 0) -> dict[str
 
     # Prefer precomputed indicator_strength from evidence_engine when present.
     strength_raw = row.get("indicator_strength")
-    if strength_raw in {"informational", "weak", "suspicious", "strong", "confirmed"}:
+    if strength_raw in {"informational", "weak", "suspicious", "strong"} or (
+        strength_raw == "confirmed" and confirmed_hash_match
+    ):
         strength: IndicatorStrength = strength_raw  # type: ignore[assignment]
     else:
         strength = derive_indicator_strength(
             raw_tier,
-            has_sha256=has_sha256,
+            confirmed_hash_match=confirmed_hash_match,
             source_reliability=reliability,
         )
 
-    mapped_tier = _map_confidence_tier(raw_tier, has_sha256=has_sha256)
+    mapped_tier = _map_confidence_tier(raw_tier, confirmed_hash_match=confirmed_hash_match)
     labels = [str(x) for x in (row.get("executor_name_hits") or []) if x]
     title_brand = labels[0] if labels else "Tracked indicator"
     path = str(row.get("path") or "")

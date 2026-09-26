@@ -19,7 +19,7 @@ Detection layers include:
 - **Windows forensics** — BAM/DAM, Prefetch, USN journal, Amcache, Shimcache, UserAssist, recycle bin, scheduled tasks, persistence
 - **Roblox artifacts** — client logs, protocol-handler registry hijacks, offline DLL/injection signals
 - **Browser evidence** — download history and visit history for executor download domains
-- **Account context** — Roblox user hints from client logs and local Roblox app storage only (no browser cookies)
+- **Privacy boundary** — scans do not inspect browser profiles, collect Roblox/Discord account identifiers, or close browsers
 - **Anti-bypass** — prefetch/BAM tampering, log clearing, Defender exclusions, correlated deletion evidence
 
 Scans are capped at **3.5 minutes** (`SCAN_MAX_SECONDS = 210`).
@@ -157,7 +157,10 @@ The desktop client:
 - Collects a system overview, resource summary, process names/counts, installed app summary where available, and approved application logs only.
 - Hashes device identifiers locally before upload.
 - Does **not** read browser session cookies (including `.ROBLOSECURITY`), decrypt browser profiles, or terminate browsers during scans.
+- Does not collect Roblox or Discord account identifiers from local profiles, logs, or browser storage.
 - Does not run hidden background monitoring.
+
+Only an explicit match against the maintained SHA-256 blocklist is classified as a confirmed hash indicator. A file hash collected as supporting evidence does not establish that the file is malicious.
 
 ## Implementation Note
 

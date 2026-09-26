@@ -56,6 +56,22 @@ def test_normalize_sha256_high_maps_to_confirmed_tier():
     assert finding["hashes"].get("sha256") == "c" * 64
 
 
+def test_ordinary_sha256_does_not_confirm_a_finding():
+    finding = normalize_hit_to_finding(
+        {
+            "artifact_source": "prefetch_execution",
+            "path": r"C:\\Temp\\wave.exe",
+            "sha256": "e" * 64,
+            "confidence": 0.95,
+            "confidence_tier": "high",
+            "indicator_strength": "confirmed",
+        }
+    )
+    assert finding["confidence_tier"] == "high"
+    assert finding["indicator_strength"] == "strong"
+    assert finding["severity"] == "high"
+
+
 def test_finding_to_dict_roundtrip_fields():
     finding = Finding(
         id="f_test",
@@ -107,7 +123,7 @@ def test_build_findings_bundle_summary_counts():
 
 
 def test_derive_indicator_strength_mapping():
-    assert derive_indicator_strength("high", has_sha256=True) == "confirmed"
-    assert derive_indicator_strength("high", has_sha256=False) == "strong"
+    assert derive_indicator_strength("high", confirmed_hash_match=True) == "confirmed"
+    assert derive_indicator_strength("high") == "strong"
     assert derive_indicator_strength("medium") == "suspicious"
     assert derive_indicator_strength("low") == "weak"

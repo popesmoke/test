@@ -15,7 +15,7 @@ from evidence_engine import (  # noqa: E402
 )
 
 
-def test_indicator_strength_high_with_sha256_is_confirmed():
+def test_indicator_strength_high_with_blocklist_match_is_confirmed():
     hit = {
         "artifact_source": "sha256_blocklist",
         "sha256": "a" * 64,
@@ -43,7 +43,10 @@ def test_indicator_strength_high_without_sha_is_strong():
 
 def test_indicator_strength_medium_is_suspicious():
     assert _indicator_strength_for_hit("medium", {"artifact_source": "prefetch_execution"}) == "suspicious"
-    assert _indicator_strength_for_hit("high", {"sha256": "abc"}) == "confirmed"
+    assert _indicator_strength_for_hit("high", {"sha256": "a" * 64}) == "strong"
+    assert _indicator_strength_for_hit(
+        "high", {"sha256": "a" * 64, "reasons": ["sha256_blocklist:Wave"]}
+    ) == "confirmed"
     assert _indicator_strength_for_hit("high", {}) == "strong"
     assert _indicator_strength_for_hit("low", {}) == "weak"
 
@@ -57,6 +60,18 @@ def test_indicator_strength_low_is_weak():
     meta = compute_hit_confidence(hit, corroboration_count=1)
     assert meta["confidence_tier"] == "low"
     assert meta["indicator_strength"] == "weak"
+
+
+def test_arbitrary_file_hash_does_not_raise_confidence_or_confirm_finding():
+    hit = {
+        "artifact_source": "prefetch_execution",
+        "sha256": "a" * 64,
+        "executor_name_hits": ["Wave"],
+        "display_at": "2026-09-26T12:00:00Z",
+    }
+    meta = compute_hit_confidence(hit)
+    assert meta["indicator_strength"] != "confirmed"
+    assert meta["confidence"] < 0.82
 
 
 def test_enrich_attaches_findings_bundle_when_virello_available():

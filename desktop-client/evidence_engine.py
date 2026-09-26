@@ -121,14 +121,13 @@ def _confidence_tier(score: float) -> str:
 
 
 def _indicator_strength_for_hit(tier: str, hit: dict[str, Any]) -> str:
-    """Map confidence_tier (+ sha256) to indicator_strength."""
-    has_sha = bool(
-        hit.get("sha256")
-        or any(str(r).startswith("sha256_blocklist:") for r in (hit.get("reasons") or []))
-        or "sha256_blocklist" in str(hit.get("note") or "")
+    """Only a positive match against the known-hash list can confirm a finding."""
+    confirmed_hash_match = bool(
+        any(str(r).startswith("sha256_blocklist:") for r in (hit.get("reasons") or []))
+        or "sha256_blocklist" in str(hit.get("note") or "").lower()
         or str(hit.get("artifact_source") or "") == "sha256_blocklist"
     )
-    if tier == "high" and has_sha:
+    if tier == "high" and confirmed_hash_match:
         return "confirmed"
     if tier == "high":
         return "strong"
@@ -170,7 +169,12 @@ def compute_hit_confidence(
     reasons = list(hit.get("reasons") or [])
 
     strength = base
-    if hit.get("sha256") or "sha256_blocklist" in str(hit.get("note") or ""):
+    confirmed_hash_match = bool(
+        any(str(reason).startswith("sha256_blocklist:") for reason in reasons)
+        or "sha256_blocklist" in str(hit.get("note") or "").lower()
+        or source == "sha256_blocklist"
+    )
+    if confirmed_hash_match:
         strength = max(strength, 0.95)
     if hit.get("authenticode_status") == "Valid":
         strength = min(strength, max(0.35, strength * 0.75))
@@ -186,7 +190,7 @@ def compute_hit_confidence(
         strength = max(strength, min(0.92, strength + 0.08))
 
     for reason in reasons:
-        if reason.startswith("sha256_blocklist:"):
+        if str(reason).startswith("sha256_blocklist:"):
             strength = max(strength, 0.94)
         elif reason in {"module_from_high_risk_folder", "unsigned_module_in_roblox"}:
             strength = max(strength, 0.78)

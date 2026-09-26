@@ -12,7 +12,15 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.12.0"
-      - key: FRONTEND_ORIGIN
+      - key: FRONTEND_URL
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: API_TOKEN_SECRET
+        generateValue: true
+      - key: CHECKER_EMAIL
+        sync: false
+      - key: CHECKER_PASSWORD
         sync: false
       - key: DISCORD_CLIENT_ID
         sync: false
@@ -24,7 +32,5 @@ services:
         sync: false
       - key: DISCORD_GUILD_ID
         sync: false
-      - key: DISCORD_REQUIRED_ROLE_ID
+      - key: DISCORD_ACCESS_ROLE_ID
         sync: false
-      - key: SESSION_SECRET
-        generateValue: true

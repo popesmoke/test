@@ -65,8 +65,11 @@ function severityFromConfidenceTier(tier) {
 }
 
 function statusFromSignals({ severity, confidenceTier, removed, confirmedHash }) {
-  if (confirmedHash || (confidenceTier === "high" && (severity === "high" || severity === "critical"))) {
+  if (confirmedHash) {
     return "confirmed";
+  }
+  if (confidenceTier === "high" || severity === "high" || severity === "critical") {
+    return "suspicious";
   }
   if (removed && confidenceTier !== "low") return "suspicious";
   if (confidenceTier === "low" || severity === "low") return "inconclusive";
@@ -171,7 +174,10 @@ function fromArtifactHits(sec) {
       labels[0] ||
       genericFindingTitle(pathBasename(path) || hit.note || "Artifact evidence");
     const confidenceTier = normalizeConfidenceTier(hit.confidence_tier, hit.confidence);
-    const confirmedHash = Boolean(hit.sha256) || String(hit.note || "").includes("sha256_blocklist");
+    const confirmedHash =
+      hit.artifact_source === "sha256_blocklist" ||
+      (Array.isArray(hit.reasons) && hit.reasons.some((reason) => String(reason).startsWith("sha256_blocklist:"))) ||
+      String(hit.note || "").toLowerCase().includes("sha256_blocklist");
     return findingShell({
       id: stableId(["artifact", hit.artifact_source, path, hit.sha256, index]),
       title,
@@ -400,7 +406,8 @@ export function buildInvestigationFindings(report, summary = null) {
         finding.confidence,
       );
       const confidence = normalizeConfidence(finding.confidence);
-      const confirmedHash = Boolean(finding.hashes?.sha256 || finding.sha256);
+      const confirmedHash =
+        finding.detection_method === "sha256_blocklist" && Boolean(finding.hashes?.sha256 || finding.sha256);
       return {
         id: finding.id || stableId(["bundle", finding.location || finding.title, index]),
         title: finding.title || "Indicator",

@@ -10495,6 +10495,13 @@ def _roblox_browser_profile_account_hints() -> list[dict]:
 
 def roblox_browser_account_scan() -> dict:
     """Privacy-safe account hints — Roblox client logs/storage plus browser profiles."""
+    return {
+        "available": False,
+        "accounts": [],
+        "artifacts": [],
+        "reason": "Browser and account collection is disabled for privacy.",
+    }
+
     accounts: list[dict] = []
     seen_ids: set[str] = set()
     artifacts: list[dict] = []
@@ -10884,6 +10891,13 @@ def _discord_discover_roots() -> list[Path]:
 
 def discord_local_accounts_scan() -> dict[str, object]:
     """Read Discord user IDs and display names from local client storage only."""
+    return {
+        "available": False,
+        "account_count": 0,
+        "accounts": [],
+        "reason": "Discord account collection is disabled for privacy.",
+    }
+
     if platform.system() != "Windows":
         return {"available": False, "accounts": [], "reason": "Windows-only"}
     if scan_collect_phase_exhausted():
@@ -10969,9 +10983,8 @@ def discord_local_accounts_scan() -> dict[str, object]:
 
 def roblox_diagnostics() -> dict:
     logs = _roblox_read_client_logs()
-    browser_scan = roblox_browser_account_scan()
-    merged_accounts: list[dict] = list(browser_scan.get("accounts") or [])
-    accounts = _roblox_enrich_accounts(merged_accounts, include_headshots=False)
+    browser_scan = {"available": False, "accounts": [], "artifacts": []}
+    accounts: list[dict] = []
 
     log_locations_checked: list[str] = []
     if platform.system() == "Windows":
@@ -17324,7 +17337,6 @@ def build_report() -> dict:
         )
         fut_trash = pool.submit(recycle_bin_metadata)
         fut_roblox = pool.submit(roblox_diagnostics)
-        fut_discord = pool.submit(discord_local_accounts_scan)
         fut_amcache = pool.submit(amcache_metadata)
         fut_userassist = pool.submit(userassist_registry_entries)
         fut_defender = pool.submit(windows_defender_signals)
@@ -17478,7 +17490,6 @@ def build_report() -> dict:
         trash = fut_trash.result()
         userassist = fut_userassist.result()
         roblox = fut_roblox.result()
-        discord_accounts = fut_discord.result()
         command_history = fut_cmdhist.result()
         browser_download_history = fut_browser_downloads.result()
         browser_cache = fut_browser_cache.result()
@@ -17819,7 +17830,7 @@ def build_report() -> dict:
                 ],
             },
         },
-        "application_diagnostics": {"roblox": roblox, "roblox_exploit_surface": roblox_surface, "discord": discord_accounts},
+        "application_diagnostics": {"roblox": roblox, "roblox_exploit_surface": roblox_surface},
         "process_overview": process_overview,
         "security_integrity_signals": {
             "amcache": amcache,
