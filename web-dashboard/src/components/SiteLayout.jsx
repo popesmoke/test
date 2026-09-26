@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from "react";
 import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
+import "../marketing.css";
 import {
   BRAND_FULL,
   BRAND_LOGO,
-  BRAND_TAGLINE,
   DISCORD_INVITE_URL,
   FOOTER_LINKS,
   NAV_LINKS,
@@ -33,11 +33,10 @@ export function SiteLayout({ children, variant = "default" }) {
     <div className={`site ${variant === "minimal" ? "site--minimal" : ""}`}>
       <header className={`site-header${scrolled ? " site-header--scrolled" : ""}`}>
         <div className="site-header__inner">
-          <Link to="/" className="site-brand">
-            <img src={BRAND_LOGO} alt={BRAND_FULL} className="site-brand__logo" />
+          <Link to="/" className="site-brand" aria-label={BRAND_FULL}>
+            <img src={BRAND_LOGO} alt="" className="site-brand__logo" />
             <div className="site-brand__text">
               <span className="site-brand__name">{BRAND_FULL}</span>
-              <span className="site-brand__tag">{BRAND_TAGLINE}</span>
             </div>
           </Link>
 
@@ -73,7 +72,6 @@ export function SiteLayout({ children, variant = "default" }) {
               href={DISCORD_INVITE_URL}
               target="_blank"
               rel="noreferrer"
-              title="Join Virello Discord"
             >
               <IconDiscord size={16} />
               <span>Discord</span>
@@ -85,7 +83,9 @@ export function SiteLayout({ children, variant = "default" }) {
         </div>
       </header>
 
-      <main className="site-main page-enter" key={location.pathname}>{content}</main>
+      <main className="site-main page-enter" key={location.pathname}>
+        {content}
+      </main>
 
       <footer className="site-footer">
         <div className="site-footer__inner">
@@ -103,7 +103,7 @@ export function SiteLayout({ children, variant = "default" }) {
                 <span className="site-footer__col-title">Product</span>
                 <Link to="/download">Download</Link>
                 <Link to="/purchase">Pricing</Link>
-                <Link to="/workspace">Review Console</Link>
+                <Link to="/workspace">Console</Link>
               </div>
               <div className="site-footer__col">
                 <span className="site-footer__col-title">Company</span>

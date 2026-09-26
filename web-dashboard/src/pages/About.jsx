@@ -1,18 +1,15 @@
 import React from "react";
 import { DISCORD_INVITE_URL } from "../config/brand.js";
-import { MaterialIcon } from "../components/MaterialIcon.jsx";
 import { Reveal } from "../components/Reveal.jsx";
 import { IconDiscord } from "../components/VirelloIcons.jsx";
 import { LegalArticle, LegalDocument } from "../components/LegalPage.jsx";
 
-const ICON_ACCENT = "ff4d5f";
-
 export function AboutPage() {
   return (
-    <LegalDocument badge="About" title="Who we are" updated="June 2026">
+    <LegalDocument badge="About" title="About Virello" updated="June 2026">
       <p className="legal-doc__lead">
-        Virello helps reviewers run fast Roblox screenshare checks with clear results, without a messy
-        setup or vague verdicts.
+        Virello helps reviewers run Roblox screenshare checks with clear results — without messy setup or vague
+        verdicts.
       </p>
 
       <Reveal>
@@ -26,25 +23,22 @@ export function AboutPage() {
         </LegalArticle>
       </Reveal>
 
-      <Reveal delay={80}>
+      <Reveal delay={60}>
         <LegalArticle index="II" title="How we work">
           <p>
-            Purchases, support, verification, and account help run through private Discord lanes. The
-            review console on this site is where verified reviewers manage PIN sessions and read scans.
+            Purchases, support, and verification run through private Discord lanes. The review console on this site
+            is where verified reviewers manage PIN sessions and read scans.
           </p>
           <div className="about-cards">
             <div className="about-card">
-              <MaterialIcon name="lock" size={24} color={ICON_ACCENT} />
               <strong>Secure by design</strong>
               <p>Sensitive credentials and private messages are never collected.</p>
             </div>
             <div className="about-card">
-              <MaterialIcon name="verified" size={24} color={ICON_ACCENT} />
               <strong>Clear verdicts</strong>
               <p>Results are structured so your team can review them together on a call.</p>
             </div>
             <div className="about-card">
-              <MaterialIcon name="groups" size={24} color={ICON_ACCENT} />
               <strong>Community driven</strong>
               <p>Updates, support, and access verification flow through Discord.</p>
             </div>
@@ -52,9 +46,9 @@ export function AboutPage() {
         </LegalArticle>
       </Reveal>
 
-      <Reveal delay={160}>
+      <Reveal delay={100}>
         <LegalArticle index="III" title="Contact">
-          <p>For support or access questions, join our Discord and open a support lane.</p>
+          <p>For support or access questions, join Discord and open a support lane.</p>
           <a className="btn btn--discord" href={DISCORD_INVITE_URL} target="_blank" rel="noreferrer">
             <IconDiscord size={18} />
             Join Virello Discord
