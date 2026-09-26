@@ -124,10 +124,9 @@ def _indicator_strength_for_hit(tier: str, hit: dict[str, Any]) -> str:
     """Only a positive match against the known-hash list can confirm a finding."""
     confirmed_hash_match = bool(
         any(str(r).startswith("sha256_blocklist:") for r in (hit.get("reasons") or []))
-        or "sha256_blocklist" in str(hit.get("note") or "").lower()
         or str(hit.get("artifact_source") or "") == "sha256_blocklist"
     )
-    if tier == "high" and confirmed_hash_match:
+    if confirmed_hash_match:
         return "confirmed"
     if tier == "high":
         return "strong"
@@ -171,12 +170,11 @@ def compute_hit_confidence(
     strength = base
     confirmed_hash_match = bool(
         any(str(reason).startswith("sha256_blocklist:") for reason in reasons)
-        or "sha256_blocklist" in str(hit.get("note") or "").lower()
         or source == "sha256_blocklist"
     )
     if confirmed_hash_match:
         strength = max(strength, 0.95)
-    if hit.get("authenticode_status") == "Valid":
+    if hit.get("authenticode_status") == "Valid" and not confirmed_hash_match:
         strength = min(strength, max(0.35, strength * 0.75))
     elif hit.get("authenticode_status") in {"NotSigned", "NotTrusted", "HashMismatch"}:
         strength = max(strength, 0.62)
@@ -201,7 +199,11 @@ def compute_hit_confidence(
     recency = _recency_factor(hit.get("display_at") or hit.get("modified"))
     tamper_penalty = min(0.25, max(0.0, tamper_risk))
 
-    confidence = max(0.05, min(0.99, (strength * recency) + corroboration_boost - tamper_penalty))
+    confidence = (
+        0.99
+        if confirmed_hash_match
+        else max(0.05, min(0.99, (strength * recency) + corroboration_boost - tamper_penalty))
+    )
     tier = _confidence_tier(confidence)
     return {
         "confidence": round(confidence, 3),

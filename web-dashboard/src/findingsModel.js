@@ -176,8 +176,7 @@ function fromArtifactHits(sec) {
     const confidenceTier = normalizeConfidenceTier(hit.confidence_tier, hit.confidence);
     const confirmedHash =
       hit.artifact_source === "sha256_blocklist" ||
-      (Array.isArray(hit.reasons) && hit.reasons.some((reason) => String(reason).startsWith("sha256_blocklist:"))) ||
-      String(hit.note || "").toLowerCase().includes("sha256_blocklist");
+      (Array.isArray(hit.reasons) && hit.reasons.some((reason) => String(reason).startsWith("sha256_blocklist:")));
     return findingShell({
       id: stableId(["artifact", hit.artifact_source, path, hit.sha256, index]),
       title,

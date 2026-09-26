@@ -56,6 +56,20 @@ def test_normalize_sha256_high_maps_to_confirmed_tier():
     assert finding["hashes"].get("sha256") == "c" * 64
 
 
+def test_hash_blocklist_match_confirms_even_when_raw_confidence_is_low():
+    finding = normalize_hit_to_finding(
+        {
+            "artifact_source": "sha256_blocklist",
+            "path": r"C:\\Temp\\sample.exe",
+            "sha256": "f" * 64,
+            "confidence": 0.4,
+            "confidence_tier": "low",
+        }
+    )
+    assert finding["confidence_tier"] == "confirmed"
+    assert finding["indicator_strength"] == "confirmed"
+
+
 def test_ordinary_sha256_does_not_confirm_a_finding():
     finding = normalize_hit_to_finding(
         {

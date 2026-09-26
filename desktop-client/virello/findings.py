@@ -48,10 +48,10 @@ _SOURCE_LABELS: dict[str, str] = {
 
 def _map_confidence_tier(raw_tier: str, *, confirmed_hash_match: bool) -> ConfidenceTier:
     tier = str(raw_tier or "low").lower()
+    if confirmed_hash_match:
+        return "confirmed"
     if tier == "confirmed" and not confirmed_hash_match:
         return "high"
-    if tier in {"high", "confirmed"} and confirmed_hash_match:
-        return "confirmed"
     if tier == "medium":
         return "moderate"
     if tier in {"low", "moderate", "high", "confirmed"}:
@@ -67,10 +67,10 @@ def derive_indicator_strength(
 ) -> IndicatorStrength:
     """Map confidence tier (+ hash / reliability) to indicator strength."""
     tier = str(confidence_tier or "low").lower()
+    if confirmed_hash_match:
+        return "confirmed"
     if tier == "confirmed" and not confirmed_hash_match:
         return "strong"
-    if tier in {"high", "confirmed"} and confirmed_hash_match:
-        return "confirmed"
     if tier == "high":
         return "strong"
     if tier in {"medium", "moderate"}:
@@ -171,7 +171,6 @@ def normalize_hit_to_finding(hit: dict[str, Any], *, index: int = 0) -> dict[str
     confirmed_hash_match = (
         str(row.get("artifact_source") or "") == "sha256_blocklist"
         or any(str(r).startswith("sha256_blocklist:") for r in (row.get("reasons") or []))
-        or "sha256_blocklist" in str(row.get("note") or "").lower()
     )
     raw_tier = str(row.get("confidence_tier") or "low")
     confidence = float(row.get("confidence") or 0.0)
