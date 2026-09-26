@@ -22,7 +22,7 @@ Detection layers include:
 - **Privacy boundary** — scans do not inspect browser profiles, collect Roblox/Discord account identifiers, or close browsers
 - **Anti-bypass** — prefetch/BAM tampering, log clearing, Defender exclusions, correlated deletion evidence
 
-Scans are capped at **3.5 minutes** (`SCAN_MAX_SECONDS = 210`).
+Scans have a **6 minute hard ceiling** (`SCAN_MAX_SECONDS = 360`), with a shorter soft target on typical hardware.
 
 ## Quick Start
 
